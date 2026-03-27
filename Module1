@@ -44,9 +44,6 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim wsDst As Worksheet
     Dim srcLastRow As Long
     Dim srcLastCol As Long
-    Dim r As Long
-    Dim outRow As Long
-    Dim copiedCount As Long
     Dim col分類名1 As Long
     Dim col分類名2 As Long
     Dim col分類名3 As Long
@@ -88,40 +85,30 @@ Public Sub 手順2_新ファイル基準表を作成する()
     End If
 
     wsDst.Cells.Clear
-    wsDst.Range("A1:F1").Value = Array("分類名１", "分類名２", "分類名３", "タイトル", "保存期間", "媒体種別")
+    wsSrc.Range(wsSrc.Cells(1, 1), wsSrc.Cells(srcLastRow, srcLastCol)).Copy wsDst.Range("A1")
 
-    outRow = 2
-    copiedCount = 0
+    wsDst.Cells.EntireColumn.Hidden = True
+    wsDst.Columns(col分類名1).Hidden = False
+    wsDst.Columns(col分類名2).Hidden = False
+    wsDst.Columns(col分類名3).Hidden = False
+    wsDst.Columns(colタイトル).Hidden = False
+    wsDst.Columns(col保存期間).Hidden = False
+    wsDst.Columns(col媒体種別).Hidden = False
 
-    If srcLastRow >= 2 Then
-        For r = 2 To srcLastRow
-            If Application.WorksheetFunction.CountA(wsSrc.Range(wsSrc.Cells(r, 1), wsSrc.Cells(r, srcLastCol))) > 0 Then
-                wsDst.Cells(outRow, 1).Value = wsSrc.Cells(r, col分類名1).Value
-                wsDst.Cells(outRow, 2).Value = wsSrc.Cells(r, col分類名2).Value
-                wsDst.Cells(outRow, 3).Value = wsSrc.Cells(r, col分類名3).Value
-                wsDst.Cells(outRow, 4).Value = wsSrc.Cells(r, colタイトル).Value
-                wsDst.Cells(outRow, 5).Value = wsSrc.Cells(r, col保存期間).Value
-                wsDst.Cells(outRow, 6).Value = wsSrc.Cells(r, col媒体種別).Value
-                outRow = outRow + 1
-                copiedCount = copiedCount + 1
-            End If
-        Next r
-    End If
-
-    With wsDst.Range("A1:F1")
+    With wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol))
         .Font.Bold = True
         .Interior.Color = RGB(242, 242, 242)
     End With
 
-    Set targetRange = wsDst.Range("A1:F" & IIf(outRow > 1, outRow - 1, 1))
+    Set targetRange = wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(srcLastRow, srcLastCol))
     targetRange.Borders.LineStyle = xlContinuous
     targetRange.Borders.Weight = xlThin
 
-    wsDst.Range("A1:F1").AutoFilter
-    wsDst.Columns("A:F").AutoFit
+    wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol)).AutoFilter
+    wsDst.Columns.AutoFit
 
     MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
-           "出力件数: " & copiedCount & " 件", vbInformation
+           "出力行数(見出し除く): " & IIf(srcLastRow > 1, srcLastRow - 1, 0) & " 件", vbInformation
 
 SafeExit:
     Application.ScreenUpdating = True
