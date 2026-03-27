@@ -96,6 +96,7 @@ Sub CSVを旧基準表形式に整形()
     Dim headerRow As Long
     Dim dataStartRow As Long
     Dim lastRow As Long
+    Dim lastOutRow As Long
     Dim outRow As Long
     Dim i As Long
     
@@ -108,6 +109,8 @@ Sub CSVを旧基準表形式に整形()
     Dim colMedia As Long
     
     ' ===== 設定 =====
+    ' 処理フロー:
+    ' 目録CSV（元データ）→ 整形 → ファイル基準表（表示・編集用）
     Set wsSrc = ThisWorkbook.Worksheets("目録CSV")
     Set wsDst = ThisWorkbook.Worksheets("ファイル基準表")
     
@@ -122,6 +125,7 @@ Sub CSVを旧基準表形式に整形()
     
     ' ===== 元シートの見出し列を取得 =====
     colNendo = FindHeaderColumn(wsSrc, headerRow, "年度（和暦）")
+    If colNendo = 0 Then colNendo = FindHeaderColumn(wsSrc, headerRow, "年度(和暦)")
     colBunrui1 = FindHeaderColumn(wsSrc, headerRow, "分類名１")
     If colBunrui1 = 0 Then colBunrui1 = FindHeaderColumn(wsSrc, headerRow, "分類名1")
     
@@ -155,6 +159,10 @@ Sub CSVを旧基準表形式に整形()
     wsDst.Cells(1, 5).Value = "個別フォルダー"
     wsDst.Cells(1, 6).Value = "保存期間"
     wsDst.Cells(1, 7).Value = "媒体"
+    ' 将来拡張メモ（必要時に列追加）
+    ' - 処理区分（新規 / 更新）
+    ' - 更新フラグ
+    ' - ファイルID（裏で保持）
     
     ' ===== 最終行取得 =====
     lastRow = GetLastRowByColumns(wsSrc, Array(colNendo, colBunrui1, colBunrui2, colBunrui3, colTitle, colHozon, colMedia))
@@ -175,6 +183,24 @@ Sub CSVを旧基準表形式に整形()
             outRow = outRow + 1
         End If
     Next i
+    lastOutRow = outRow - 1
+    
+    ' ===== 並び替え =====
+    If lastOutRow >= 2 Then
+        With wsDst.Sort
+            .SortFields.Clear
+            .SortFields.Add Key:=wsDst.Range("A2:A" & lastOutRow), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+            .SortFields.Add Key:=wsDst.Range("B2:B" & lastOutRow), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+            .SortFields.Add Key:=wsDst.Range("C2:C" & lastOutRow), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+            .SortFields.Add Key:=wsDst.Range("D2:D" & lastOutRow), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+            .SortFields.Add Key:=wsDst.Range("E2:E" & lastOutRow), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+            .SetRange wsDst.Range("A1:G" & lastOutRow)
+            .Header = xlYes
+            .MatchCase = False
+            .Orientation = xlTopToBottom
+            .Apply
+        End With
+    End If
     
     ' ===== 体裁調整 =====
     With wsDst
@@ -182,10 +208,16 @@ Sub CSVを旧基準表形式に整形()
         .Rows(1).Interior.Color = RGB(217, 217, 217)
         .Rows(1).HorizontalAlignment = xlCenter
         .Columns("A:G").EntireColumn.AutoFit
+        .Range("A1:G1").AutoFilter
         
-        If outRow > 2 Then
-            .Range("A1:G" & outRow - 1).Borders.LineStyle = xlContinuous
-            .Range("A1:G" & outRow - 1).AutoFilter
+        If lastOutRow >= 1 Then
+            .Range("A1:G" & lastOutRow).Borders.LineStyle = xlContinuous
+        End If
+        
+        If lastOutRow >= 2 Then
+            .Range("A2:A" & lastOutRow).HorizontalAlignment = xlCenter
+            .Range("F2:G" & lastOutRow).HorizontalAlignment = xlCenter
+            .Range("E2:E" & lastOutRow).HorizontalAlignment = xlLeft
         End If
     End With
     
