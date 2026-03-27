@@ -242,9 +242,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
         "バーコード番号", _
         "原課", _
         "年度（和暦）", _
-        "分類名1", _
-        "分類名2", _
-        "分類名3", _
+        "分類名１", _
+        "分類名２", _
+        "分類名３", _
         "タイトル", _
         "保存期間", _
         "媒体種別")
@@ -252,7 +252,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     targetCol = 1
     For i = LBound(targetHeaders) To UBound(targetHeaders)
         srcLastCol = GetLastUsedCol(wsDst)
-        foundCol = FindHeaderColumn(wsDst, srcLastCol, Array(CStr(targetHeaders(i))))
+        foundCol = FindHeaderColumn(wsDst, srcLastCol, GetStep2HeaderCandidates(CStr(targetHeaders(i))))
 
         If foundCol > 0 Then
             If foundCol <> targetCol Then
@@ -286,6 +286,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
     If visibleCount > 0 Then
         wsDst.Range(wsDst.Columns(1), wsDst.Columns(visibleCount)).EntireColumn.AutoFit
     End If
+
+    ' 5) キー列は列を残したまま非表示にする（後続処理で利用するため）
+    HideKeyColumnsForStep2 wsDst
 
     MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
            "左側に表示した列数: " & visibleCount & " 列", vbInformation
@@ -322,6 +325,47 @@ Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, 
     Next c
 
 End Function
+
+Private Function GetStep2HeaderCandidates(ByVal targetHeader As String) As Variant
+
+    Select Case targetHeader
+        Case "分類名１"
+            GetStep2HeaderCandidates = Array("分類名１", "分類名1")
+        Case "分類名２"
+            GetStep2HeaderCandidates = Array("分類名２", "分類名2")
+        Case "分類名３"
+            GetStep2HeaderCandidates = Array("分類名３", "分類名3")
+        Case Else
+            GetStep2HeaderCandidates = Array(targetHeader)
+    End Select
+
+End Function
+
+Private Sub HideKeyColumnsForStep2(ByVal wsDst As Worksheet)
+
+    Dim lastCol As Long
+    Dim keyHeaders As Variant
+    Dim showHeaders As Variant
+    Dim i As Long
+    Dim colNo As Long
+
+    lastCol = GetLastUsedCol(wsDst)
+    keyHeaders = Array("ファイルID", "ファイル番号", "バーコード番号")
+    showHeaders = Array("原課", "年度（和暦）", "分類名１", "分類名２", "分類名３", "タイトル", "保存期間", "媒体種別")
+
+    ' キー列は非表示にする（列自体は保持）
+    For i = LBound(keyHeaders) To UBound(keyHeaders)
+        colNo = FindHeaderColumn(wsDst, lastCol, Array(CStr(keyHeaders(i))))
+        If colNo > 0 Then wsDst.Columns(colNo).Hidden = True
+    Next i
+
+    ' 編集対象列は表示状態に戻す（見出し未存在はスキップ）
+    For i = LBound(showHeaders) To UBound(showHeaders)
+        colNo = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates(CStr(showHeaders(i))))
+        If colNo > 0 Then wsDst.Columns(colNo).Hidden = False
+    Next i
+
+End Sub
 
 Private Function GetTrimmedCell(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As String
 
