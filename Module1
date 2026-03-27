@@ -3,6 +3,7 @@ Option Explicit
 Private Const SHEET_MOKUROKU_CSV As String = "目録CSV"
 Private Const SHEET_NEW_FILE_STANDARD As String = "新ファイル基準表"
 Private Const SHEET_CODE_MANAGEMENT As String = "コード管理CSV"
+Private Const SHEET_DIFF_IMPORT As String = "差分インポートCSV"
 
 Public Sub CSV取込_シンプル版()
 
@@ -36,6 +37,141 @@ Public Sub CSV取込_シンプル版()
     Application.DisplayAlerts = True
     
     MsgBox "CSV取込完了"
+
+End Sub
+
+Public Sub 手順4_差分インポートCSVを作成する()
+
+    Dim wsSrc As Worksheet
+    Dim wsEdit As Worksheet
+    Dim wsOut As Worksheet
+    Dim srcLastRow As Long
+    Dim srcLastCol As Long
+    Dim editLastRow As Long
+    Dim editLastCol As Long
+    Dim r As Long
+    Dim outRow As Long
+    Dim keyFileIdSrc As Long, keyFileNoSrc As Long, keyBarcodeSrc As Long
+    Dim keyFileIdEdit As Long, keyFileNoEdit As Long, keyBarcodeEdit As Long
+    Dim titleColEdit As Long
+    Dim compareDefs As Variant
+    Dim compareSrcCols() As Long
+    Dim compareEditCols() As Long
+    Dim i As Long
+    Dim srcDict As Object
+    Dim key As String
+    Dim isDifferent As Boolean
+    Dim srcRow As Long
+    Dim fileIdVal As String, fileNoVal As String, barcodeVal As String
+    Dim titleVal As String
+
+    On Error GoTo ErrorHandler
+
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    Set wsOut = ThisWorkbook.Worksheets(SHEET_DIFF_IMPORT)
+    Set srcDict = CreateObject("Scripting.Dictionary")
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    srcLastRow = GetLastUsedRow(wsSrc)
+    srcLastCol = GetLastUsedCol(wsSrc)
+    editLastRow = GetLastUsedRow(wsEdit)
+    editLastCol = GetLastUsedCol(wsEdit)
+
+    keyFileIdSrc = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイルID"))
+    keyFileNoSrc = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイル番号"))
+    keyBarcodeSrc = FindHeaderColumn(wsSrc, srcLastCol, Array("バーコード番号"))
+
+    keyFileIdEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイルID"))
+    keyFileNoEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイル番号"))
+    keyBarcodeEdit = FindHeaderColumn(wsEdit, editLastCol, Array("バーコード番号"))
+    titleColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("タイトル"))
+
+    compareDefs = Array("分類名1", "分類名2", "分類名3", "タイトル", "保存期間", "媒体種別")
+    ReDim compareSrcCols(LBound(compareDefs) To UBound(compareDefs))
+    ReDim compareEditCols(LBound(compareDefs) To UBound(compareDefs))
+
+    For i = LBound(compareDefs) To UBound(compareDefs)
+        compareSrcCols(i) = FindHeaderColumn(wsSrc, srcLastCol, Array(CStr(compareDefs(i))))
+        compareEditCols(i) = FindHeaderColumn(wsEdit, editLastCol, Array(CStr(compareDefs(i))))
+    Next i
+
+    ' ① 目録CSVをキーで辞書化
+    For r = 2 To srcLastRow
+        fileIdVal = GetTrimmedCell(wsSrc, r, keyFileIdSrc)
+        fileNoVal = GetTrimmedCell(wsSrc, r, keyFileNoSrc)
+        barcodeVal = GetTrimmedCell(wsSrc, r, keyBarcodeSrc)
+        key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
+
+        If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
+            If Not srcDict.Exists(key) Then
+                srcDict.Add key, r
+            End If
+        End If
+    Next r
+
+    wsOut.Cells.Clear
+    wsEdit.Range(wsEdit.Cells(1, 1), wsEdit.Cells(1, editLastCol)).Copy wsOut.Range("A1")
+    outRow = 2
+
+    ' ② 新ファイル基準表を1行ずつ処理
+    For r = 2 To editLastRow
+        fileIdVal = GetTrimmedCell(wsEdit, r, keyFileIdEdit)
+        fileNoVal = GetTrimmedCell(wsEdit, r, keyFileNoEdit)
+        barcodeVal = GetTrimmedCell(wsEdit, r, keyBarcodeEdit)
+        titleVal = GetTrimmedCell(wsEdit, r, titleColEdit)
+        key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
+
+        ' A. キー3項目がすべて空白 -> 新規追加候補
+        If fileIdVal = "" And fileNoVal = "" And barcodeVal = "" Then
+            If titleVal <> "" Then
+                wsEdit.Range(wsEdit.Cells(r, 1), wsEdit.Cells(r, editLastCol)).Copy wsOut.Cells(outRow, 1)
+                outRow = outRow + 1
+            End If
+
+        ' B. キー一致する行が存在 -> 比較列に差異があれば更新行として出力
+        ElseIf srcDict.Exists(key) Then
+            srcRow = CLng(srcDict(key))
+            isDifferent = False
+
+            For i = LBound(compareDefs) To UBound(compareDefs)
+                If compareSrcCols(i) > 0 And compareEditCols(i) > 0 Then
+                    If GetTrimmedCell(wsSrc, srcRow, compareSrcCols(i)) <> _
+                       GetTrimmedCell(wsEdit, r, compareEditCols(i)) Then
+                        isDifferent = True
+                        Exit For
+                    End If
+                End If
+            Next i
+
+            If isDifferent Then
+                wsEdit.Range(wsEdit.Cells(r, 1), wsEdit.Cells(r, editLastCol)).Copy wsOut.Cells(outRow, 1)
+                outRow = outRow + 1
+            End If
+        End If
+        ' C. キー一致しないがキー空白でない場合は無視
+    Next r
+
+    With wsOut.Range(wsOut.Cells(1, 1), wsOut.Cells(1, editLastCol))
+        .Font.Bold = True
+        .Interior.Color = RGB(242, 242, 242)
+        .AutoFilter
+    End With
+    wsOut.Columns.AutoFit
+
+    MsgBox "差分インポートCSV の作成が完了しました。" & vbCrLf & _
+           "出力件数: " & outRow - 2 & " 件", vbInformation
+
+SafeExit:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "差分インポートCSV の作成中にエラーが発生しました: " & Err.Description, vbExclamation
+    Resume SafeExit
 
 End Sub
 
@@ -149,6 +285,22 @@ Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, 
             End If
         Next i
     Next c
+
+End Function
+
+Private Function GetTrimmedCell(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As String
+
+    If colNo <= 0 Then
+        GetTrimmedCell = ""
+    Else
+        GetTrimmedCell = Trim(CStr(ws.Cells(rowNo, colNo).Value))
+    End If
+
+End Function
+
+Private Function BuildFileKey(ByVal fileId As String, ByVal fileNo As String, ByVal barcodeNo As String) As String
+
+    BuildFileKey = fileId & "|" & fileNo & "|" & barcodeNo
 
 End Function
 
