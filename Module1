@@ -6,17 +6,42 @@ Private Const SHEET_CODE As String = "コード管理CSV"
 Private Const SHEET_IMPORT As String = "差分インポートCSV"
 ' SHEET_CODE / SHEET_IMPORT are reserved for future code-completion/export features.
 
-Public Sub CSVを取り込む()
+Public Sub 手順1_目録CSVを取り込む()
     Call ImportCsvToMokurokuSheet
 End Sub
 
-Public Sub CSVを取り込んで整形()
+Public Sub 手順2_目録CSVの表示を整える()
+    Call Execute_目録CSVの表示列を整える
+End Sub
+
+Public Sub 手順3_旧基準表を作成する()
+    Call Execute_旧基準表を作成する
+End Sub
+
+Public Sub 一括_取込から旧基準表作成まで()
     If ImportCsvToMokurokuSheet() Then
-        CSVを旧基準表形式に整形
+        Call Execute_目録CSVの表示列を整える
+        Call Execute_旧基準表を作成する
     End If
 End Sub
 
-Public Sub 目録CSVの表示列を整える()
+Private Sub CSVを取り込む()
+    Call 手順1_目録CSVを取り込む
+End Sub
+
+Private Sub CSVを取り込んで整形()
+    Call 一括_取込から旧基準表作成まで
+End Sub
+
+Private Sub 目録CSVの表示列を整える()
+    Call Execute_目録CSVの表示列を整える
+End Sub
+
+Private Sub CSVを旧基準表形式に整形()
+    Call Execute_旧基準表を作成する
+End Sub
+
+Private Sub Execute_目録CSVの表示列を整える()
     Dim ws As Worksheet
     Dim desiredHeaders As Variant
     Dim headerName As Variant
@@ -169,7 +194,7 @@ Private Function OpenCsvAsWorkbook(ByVal csvPath As String, ByVal codePage As Lo
     Set OpenCsvAsWorkbook = ActiveWorkbook
 End Function
 
-Sub CSVを旧基準表形式に整形()
+Private Sub Execute_旧基準表を作成する()
 
     Dim wsSrc As Worksheet
     Dim wsDst As Worksheet
