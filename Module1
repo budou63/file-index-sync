@@ -629,6 +629,177 @@ Private Function BuildMissingHeadersMessage( _
 
 End Function
 
+'========================================================
+' 新ファイル基準表: 表示名入力時にIDを自動補完する
+' ※ Worksheet_Change から呼び出す共通処理
+'========================================================
+Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target As Range)
+
+    Dim wsEdit As Worksheet
+    Dim wsMaster As Worksheet
+    Dim editLastCol As Long
+    Dim targetRange As Range
+    Dim hitRange As Range
+    Dim watchRange As Range
+    Dim colDefs As Variant
+    Dim i As Long
+    Dim displayCol As Long
+    Dim idCol As Long
+    Dim changedCell As Range
+    Dim displayValue As String
+    Dim masterDict As Object
+    Dim masterKey As String
+    Dim lookupCode As String
+
+    On Error GoTo ErrorHandler
+
+    Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+
+    If Target Is Nothing Then Exit Sub
+    If Target.Worksheet.Name <> wsEdit.Name Then Exit Sub
+
+    editLastCol = GetLastUsedCol(wsEdit)
+    If editLastCol <= 0 Then Exit Sub
+
+    ' 表示列ヘッダー / ID列ヘッダー / コード管理CSVの区分
+    colDefs = Array( _
+        Array("原課", "原課ID", "原課"), _
+        Array("保存期間", "保存期間ID", "保存期間"), _
+        Array("分類名１", "分類コード１", "分類１"), _
+        Array("分類名２", "分類コード２", "分類２"), _
+        Array("分類名３", "分類コード３", "分類３"), _
+        Array("媒体種別", "媒体種別ID", "媒体種別") _
+    )
+
+    ' 対象表示列のUnionを作る（見出し未存在はスキップ）
+    For i = LBound(colDefs) To UBound(colDefs)
+        displayCol = FindHeaderColumn(wsEdit, editLastCol, Array(CStr(colDefs(i)(0))))
+        If displayCol > 0 Then
+            Set targetRange = wsEdit.Range(wsEdit.Cells(2, displayCol), wsEdit.Cells(wsEdit.Rows.Count, displayCol))
+            If watchRange Is Nothing Then
+                Set watchRange = targetRange
+            Else
+                Set watchRange = Union(watchRange, targetRange)
+            End If
+        End If
+    Next i
+
+    If watchRange Is Nothing Then Exit Sub
+
+    Set hitRange = Intersect(Target, watchRange)
+    If hitRange Is Nothing Then Exit Sub
+
+    ' ループ防止
+    Application.EnableEvents = False
+
+    ' マスタ(区分 + 表示名 => コード)を辞書化
+    Set masterDict = BuildCodeMasterDictionary(wsMaster)
+
+    ' 変更セルごとに対応するID列へ値を設定
+    For Each changedCell In hitRange.Cells
+        For i = LBound(colDefs) To UBound(colDefs)
+            displayCol = FindHeaderColumn(wsEdit, editLastCol, Array(CStr(colDefs(i)(0))))
+            If displayCol = 0 Then GoTo ContinuePairLoop
+
+            If changedCell.Column = displayCol Then
+                idCol = FindHeaderColumn(wsEdit, editLastCol, Array(CStr(colDefs(i)(1))))
+                If idCol = 0 Then Exit For ' ID列見出し未存在はスキップ
+
+                displayValue = Trim(CStr(changedCell.Value))
+                If Len(displayValue) = 0 Then
+                    wsEdit.Cells(changedCell.Row, idCol).Value = ""
+                Else
+                    masterKey = BuildMasterKey(CStr(colDefs(i)(2)), displayValue)
+                    If masterDict.Exists(masterKey) Then
+                        lookupCode = CStr(masterDict(masterKey))
+                        wsEdit.Cells(changedCell.Row, idCol).Value = lookupCode
+                    Else
+                        wsEdit.Cells(changedCell.Row, idCol).Value = ""
+                    End If
+                End If
+
+                Exit For
+            End If
+ContinuePairLoop:
+        Next i
+    Next changedCell
+
+SafeExit:
+    Application.EnableEvents = True
+    Exit Sub
+
+ErrorHandler:
+    ' 例外時もイベント状態を必ず復帰
+    Resume SafeExit
+
+End Sub
+
+'--------------------------------------------------------
+' コード管理CSV(区分/表示名/コード)を辞書化する
+'   key   : Trim(区分) & "|" & Trim(表示名)
+'   value : コード
+'--------------------------------------------------------
+Private Function BuildCodeMasterDictionary(ByVal wsMaster As Worksheet) As Object
+
+    Dim dict As Object
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim colKubun As Long
+    Dim colDisplay As Long
+    Dim colCode As Long
+    Dim r As Long
+    Dim kubun As String
+    Dim displayName As String
+    Dim codeValue As String
+    Dim key As String
+
+    Set dict = CreateObject("Scripting.Dictionary")
+    Set BuildCodeMasterDictionary = dict
+
+    If wsMaster Is Nothing Then Exit Function
+
+    lastRow = GetLastUsedRow(wsMaster)
+    lastCol = GetLastUsedCol(wsMaster)
+    If lastRow < 2 Or lastCol <= 0 Then Exit Function
+
+    ' 見出しは名前で取得。見つからない場合は列定義(A/B/C)をフォールバック利用
+    colKubun = FindHeaderColumn(wsMaster, lastCol, Array("区分", "項目名"))
+    colDisplay = FindHeaderColumn(wsMaster, lastCol, Array("表示名"))
+    colCode = FindHeaderColumn(wsMaster, lastCol, Array("コード"))
+
+    If colKubun = 0 Then colKubun = 1
+    If colDisplay = 0 Then colDisplay = 2
+    If colCode = 0 Then colCode = 3
+
+    For r = 2 To lastRow
+        kubun = Trim(CStr(wsMaster.Cells(r, colKubun).Value))
+        displayName = Trim(CStr(wsMaster.Cells(r, colDisplay).Value))
+        codeValue = Trim(CStr(wsMaster.Cells(r, colCode).Value))
+
+        If Len(kubun) > 0 And Len(displayName) > 0 Then
+            key = BuildMasterKey(kubun, displayName)
+            If Not dict.Exists(key) Then
+                dict.Add key, codeValue
+            End If
+        End If
+    Next r
+
+End Function
+
+Private Function BuildMasterKey(ByVal kubun As String, ByVal displayName As String) As String
+
+    BuildMasterKey = Trim(kubun) & "|" & Trim(displayName)
+
+End Function
+
+'--------------------------------------------------------
+' 新ファイル基準表シートモジュールへ貼り付けるイベントコード例
+'--------------------------------------------------------
+'Private Sub Worksheet_Change(ByVal Target As Range)
+'    新ファイル基準表_表示名からID自動補完 Target
+'End Sub
+
 Private Function GetLastUsedRow(ByVal ws As Worksheet) As Long
 
     Dim lastCell As Range
