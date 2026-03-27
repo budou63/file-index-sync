@@ -266,7 +266,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
         "ファイルID", _
         "ファイル番号", _
         "バーコード番号", _
-        "毎年度利用区分 1:毎年作成 2:単年のみ", _
+        "毎年度利用区分1:毎年作成 2:単年のみ", _
         "原課", _
         "年度（和暦）", _
         "分類名１", _
@@ -382,7 +382,7 @@ Private Sub HideKeyColumnsForStep2(ByVal wsDst As Worksheet)
 
     lastCol = GetLastUsedCol(wsDst)
     keyHeaders = Array("ファイルID", "ファイル番号", "バーコード番号")
-    showHeaders = Array("毎年度利用区分 1:毎年作成 2:単年のみ", "原課", "年度（和暦）", "分類名１", "分類名２", "分類名３", "タイトル", "保存期間", "媒体種別")
+    showHeaders = Array("毎年度利用区分1:毎年作成 2:単年のみ", "原課", "年度（和暦）", "分類名１", "分類名２", "分類名３", "タイトル", "保存期間", "媒体種別")
 
     ' キー列は非表示にする（列自体は保持）
     For i = LBound(keyHeaders) To UBound(keyHeaders)
@@ -406,14 +406,14 @@ Private Sub ConvertAnnualUseDivisionValues(ByVal wsDst As Worksheet, ByVal lastR
     Dim cellValue As String
 
     lastCol = GetLastUsedCol(wsDst)
-    targetCol = FindHeaderColumn(wsDst, lastCol, Array("毎年度利用区分 1:毎年作成 2:単年のみ"))
+    targetCol = FindHeaderColumn(wsDst, lastCol, Array("毎年度利用区分1:毎年作成 2:単年のみ"))
     If targetCol = 0 Then Exit Sub
 
     For r = 2 To lastRow
         cellValue = Trim(CStr(wsDst.Cells(r, targetCol).Value))
         Select Case cellValue
             Case "1"
-                wsDst.Cells(r, targetCol).Value = "毎年度作成"
+                wsDst.Cells(r, targetCol).Value = "毎年作成"
             Case "2"
                 wsDst.Cells(r, targetCol).Value = "単年のみ"
             Case Else
