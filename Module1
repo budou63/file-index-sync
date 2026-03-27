@@ -61,6 +61,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim i As Long
     Dim srcDict As Object
     Dim editHeaderMap As Object
+    Dim outputSourceMap As Object
     Dim key As String
     Dim isDifferent As Boolean
     Dim srcRow As Long
@@ -74,6 +75,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Set wsOut = ThisWorkbook.Worksheets(SHEET_DIFF_IMPORT)
     Set srcDict = CreateObject("Scripting.Dictionary")
     Set editHeaderMap = CreateObject("Scripting.Dictionary")
+    Set outputSourceMap = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -123,6 +125,10 @@ Public Sub 手順4_差分インポートCSVを作成する()
         End If
     Next i
 
+    ' 出力見出し -> 取得元見出し のマッピング定義
+    ' 固定見出し「所管所属」は新ファイル基準表の「原課ID」から取得する
+    outputSourceMap.Add "所管所属", "原課ID"
+
     ' ① 目録CSVをキーで辞書化
     For r = 2 To srcLastRow
         fileIdVal = GetTrimmedCell(wsSrc, r, keyFileIdSrc)
@@ -155,7 +161,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
         ' A. キー3項目がすべて空白 -> 新規追加候補
         If fileIdVal = "" And fileNoVal = "" And barcodeVal = "" Then
             If titleVal <> "" Then
-                WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap
+                WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
                 outRow = outRow + 1
             End If
 
@@ -175,7 +181,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
             Next i
 
             If isDifferent Then
-                WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap
+                WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
                 outRow = outRow + 1
             End If
         End If
@@ -234,6 +240,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
         "ファイルID", _
         "ファイル番号", _
         "バーコード番号", _
+        "原課", _
         "年度（和暦）", _
         "分類名1", _
         "分類名2", _
@@ -338,17 +345,24 @@ Private Sub WriteRowByFixedLayout( _
     ByVal srcRow As Long, _
     ByVal outRow As Long, _
     ByVal fixedHeaders As Variant, _
-    ByVal editHeaderMap As Object)
+    ByVal editHeaderMap As Object, _
+    ByVal outputSourceMap As Object)
 
     Dim i As Long
     Dim headerName As String
+    Dim sourceHeaderName As String
     Dim editCol As Long
 
     For i = LBound(fixedHeaders) To UBound(fixedHeaders)
         headerName = CStr(fixedHeaders(i))
+        sourceHeaderName = headerName
 
-        If editHeaderMap.Exists(headerName) Then
-            editCol = CLng(editHeaderMap(headerName))
+        If outputSourceMap.Exists(headerName) Then
+            sourceHeaderName = CStr(outputSourceMap(headerName))
+        End If
+
+        If editHeaderMap.Exists(sourceHeaderName) Then
+            editCol = CLng(editHeaderMap(sourceHeaderName))
             wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).Value = wsEdit.Cells(srcRow, editCol).Value
         Else
             wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).Value = ""
