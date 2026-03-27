@@ -489,7 +489,6 @@ Public Sub 手順3_コード管理CSVを作成する()
     Dim nameValue As String
     Dim uniqueKey As String
     Dim dict As Object
-    Dim missingHeaders As String
 
     On Error GoTo ErrorHandler
 
@@ -506,54 +505,65 @@ Public Sub 手順3_コード管理CSVを作成する()
     pairDefs = Array( _
         Array("原課", Array("原課ID"), Array("原課")), _
         Array("保存期間", Array("保存期間ID"), Array("保存期間")), _
-        Array("分類１", Array("分類コード１", "分類コード1"), Array("分類名１", "分類名1")), _
-        Array("分類２", Array("分類コード２", "分類コード2"), Array("分類名２", "分類名2")), _
-        Array("分類３", Array("分類コード３", "分類コード3"), Array("分類名３", "分類名3")), _
+        Array("分類名１", Array("分類コード１"), Array("分類名１")), _
+        Array("分類名２", Array("分類コード２"), Array("分類名２")), _
+        Array("分類名３", Array("分類コード３"), Array("分類名３")), _
         Array("色", Array("色ID"), Array("色名")), _
         Array("媒体種別", Array("媒体種別ID"), Array("媒体種別")) _
     )
 
-    For i = LBound(pairDefs) To UBound(pairDefs)
-        codeCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(1))
-        nameCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(2))
-
-        If codeCol = 0 Then
-            missingHeaders = missingHeaders & "- " & pairDefs(i)(0) & " のコード見出し: " & pairDefs(i)(1)(0) & vbCrLf
-        End If
-        If nameCol = 0 Then
-            missingHeaders = missingHeaders & "- " & pairDefs(i)(0) & " の表示名見出し: " & pairDefs(i)(2)(0) & vbCrLf
-        End If
-    Next i
-
-    If Len(missingHeaders) > 0 Then
-        MsgBox "目録CSV の見出しが不足しています:" & vbCrLf & missingHeaders, vbExclamation
-        GoTo SafeExit
-    End If
-
     wsDst.Cells.Clear
-    wsDst.Range("A1:C1").Value = Array("区分", "表示名", "コード")
+    wsDst.Range("A1:C1").Value = Array("項目名", "コード", "表示名")
     outRow = 2
 
+    ' ① 実データからコード⇔表示名を抽出（見出し未存在はスキップ）
     For i = LBound(pairDefs) To UBound(pairDefs)
         codeCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(1))
         nameCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(2))
+        If codeCol = 0 Or nameCol = 0 Then GoTo ContinuePairLoop
 
         For r = 2 To srcLastRow
             codeValue = Trim(CStr(wsSrc.Cells(r, codeCol).Value))
             nameValue = Trim(CStr(wsSrc.Cells(r, nameCol).Value))
 
             If Len(codeValue) > 0 And Len(nameValue) > 0 Then
-                uniqueKey = pairDefs(i)(0) & "|" & nameValue & "|" & codeValue
+                uniqueKey = pairDefs(i)(0) & "|" & codeValue & "|" & nameValue
                 If Not dict.Exists(uniqueKey) Then
                     dict.Add uniqueKey, True
                     wsDst.Cells(outRow, 1).Value = pairDefs(i)(0)
-                    wsDst.Cells(outRow, 2).Value = nameValue
-                    wsDst.Cells(outRow, 3).Value = codeValue
+                    wsDst.Cells(outRow, 2).Value = codeValue
+                    wsDst.Cells(outRow, 3).Value = nameValue
                     outRow = outRow + 1
                 End If
             End If
         Next r
+ContinuePairLoop:
     Next i
+
+    ' ② 固定選択肢マスタを追加（重複キーで除外）
+    AddCodeMasterRecord wsDst, dict, outRow, "毎年度利用区分", "1", "毎年作成"
+    AddCodeMasterRecord wsDst, dict, outRow, "毎年度利用区分", "2", "単年のみ"
+
+    AddCodeMasterRecord wsDst, dict, outRow, "年度暦年区分", "1", "年度"
+    AddCodeMasterRecord wsDst, dict, outRow, "年度暦年区分", "2", "暦年"
+
+    AddCodeMasterRecord wsDst, dict, outRow, "完結区分", "-1", "未完結"
+    AddCodeMasterRecord wsDst, dict, outRow, "完結区分", "1", "完結"
+
+    AddCodeMasterRecord wsDst, dict, outRow, "公開区分", "-1", "非公開"
+    AddCodeMasterRecord wsDst, dict, outRow, "公開区分", "1", "公開"
+
+    AddCodeMasterRecord wsDst, dict, outRow, "歴史資料区分", "-1", "非該当"
+    AddCodeMasterRecord wsDst, dict, outRow, "歴史資料区分", "1", "該当"
+
+    AddCodeMasterRecord wsDst, dict, outRow, "廃棄区分", "1", "未廃棄"
+    AddCodeMasterRecord wsDst, dict, outRow, "廃棄区分", "2", "廃棄済"
+    AddCodeMasterRecord wsDst, dict, outRow, "廃棄区分", "3", "不明"
+
+    AddCodeMasterRecord wsDst, dict, outRow, "履歴ファイル区分", "-1", "非該当"
+    AddCodeMasterRecord wsDst, dict, outRow, "履歴ファイル区分", "1", "該当"
+
+    AddCodeMasterRecord wsDst, dict, outRow, "機密ファイル区分", "-1", "機密ファイル"
 
     With wsDst.Range("A1:C1")
         .Font.Bold = True
@@ -574,6 +584,27 @@ SafeExit:
 ErrorHandler:
     MsgBox "コード管理CSV の作成中にエラーが発生しました: " & Err.Description, vbCritical
     Resume SafeExit
+
+End Sub
+
+Private Sub AddCodeMasterRecord( _
+    ByVal wsDst As Worksheet, _
+    ByVal dict As Object, _
+    ByRef outRow As Long, _
+    ByVal itemName As String, _
+    ByVal codeValue As String, _
+    ByVal displayName As String)
+
+    Dim uniqueKey As String
+
+    uniqueKey = itemName & "|" & Trim(codeValue) & "|" & Trim(displayName)
+    If dict.Exists(uniqueKey) Then Exit Sub
+
+    dict.Add uniqueKey, True
+    wsDst.Cells(outRow, 1).Value = itemName
+    wsDst.Cells(outRow, 2).Value = codeValue
+    wsDst.Cells(outRow, 3).Value = displayName
+    outRow = outRow + 1
 
 End Sub
 
