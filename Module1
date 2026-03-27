@@ -124,9 +124,14 @@ Sub CSVを旧基準表形式に整形()
     Set wsSrc = GetWorksheetByName(SHEET_MOKUROKU)
     Set wsDst = GetWorksheetByName(SHEET_VIEW)
     
-    ' 今回のサンプル前提
-    headerRow = 2
-    dataStartRow = 3
+    ' 現在のCSV構造:
+    ' 1行目=正式見出し、2～10行目=補助情報、11行目以降=実データ
+    ' 見出し行は自動検出し、データ開始は11行目以降を保証する。
+    headerRow = DetectHeaderRow(wsSrc)
+    If headerRow = 0 Then
+        headerRow = 1
+    End If
+    dataStartRow = Application.WorksheetFunction.Max(11, headerRow + 1)
     
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -240,7 +245,12 @@ Sub CSVを旧基準表形式に整形()
 ErrHandler:
     Application.ScreenUpdating = True
     Application.EnableEvents = True
-    MsgBox "エラーが発生しました：" & vbCrLf & Err.Description, vbExclamation
+    If InStr(Err.Description, "見出し「") > 0 Then
+        MsgBox "エラーが発生しました：" & vbCrLf & Err.Description & vbCrLf & _
+               "想定している見出し行と実際のCSV構造が異なる可能性があります。", vbExclamation
+    Else
+        MsgBox "エラーが発生しました：" & vbCrLf & Err.Description, vbExclamation
+    End If
 
 End Sub
 
@@ -252,6 +262,48 @@ Private Function GetWorksheetByName(ByVal sheetName As String) As Worksheet
     If GetWorksheetByName Is Nothing Then
         Err.Raise vbObjectError + 1100, , "シート '" & sheetName & "' が見つかりません。"
     End If
+End Function
+
+Private Function DetectHeaderRow(ByVal ws As Worksheet) As Long
+    Dim r As Long
+    Const SEARCH_LIMIT As Long = 30
+    
+    For r = 1 To SEARCH_LIMIT
+        If HasRequiredHeadersInRow(ws, r) Then
+            DetectHeaderRow = r
+            Exit Function
+        End If
+    Next r
+    
+    DetectHeaderRow = 0
+End Function
+
+Private Function HasRequiredHeadersInRow(ByVal ws As Worksheet, ByVal rowNum As Long) As Boolean
+    If FindHeaderColumn(ws, rowNum, "年度（和暦）") = 0 And _
+       FindHeaderColumn(ws, rowNum, "年度(和暦)") = 0 Then
+        Exit Function
+    End If
+    
+    If FindHeaderColumn(ws, rowNum, "分類名１") = 0 And _
+       FindHeaderColumn(ws, rowNum, "分類名1") = 0 Then
+        Exit Function
+    End If
+    
+    If FindHeaderColumn(ws, rowNum, "分類名２") = 0 And _
+       FindHeaderColumn(ws, rowNum, "分類名2") = 0 Then
+        Exit Function
+    End If
+    
+    If FindHeaderColumn(ws, rowNum, "分類名３") = 0 And _
+       FindHeaderColumn(ws, rowNum, "分類名3") = 0 Then
+        Exit Function
+    End If
+    
+    If FindHeaderColumn(ws, rowNum, "タイトル") = 0 Then Exit Function
+    If FindHeaderColumn(ws, rowNum, "保存期間") = 0 Then Exit Function
+    If FindHeaderColumn(ws, rowNum, "媒体種別") = 0 Then Exit Function
+    
+    HasRequiredHeadersInRow = True
 End Function
 
 Private Function FindHeaderColumn(ws As Worksheet, headerRow As Long, headerName As String) As Long
