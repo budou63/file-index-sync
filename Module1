@@ -10,18 +10,13 @@ Public Sub 手順1_目録CSVを取り込む()
     Call ImportCsvToMokurokuSheet
 End Sub
 
-Public Sub 手順2_目録CSVの表示を整える()
-    Call Execute_目録CSVの表示列を整える
+Public Sub 手順2_新ファイル基準表を作成する()
+    Call Execute_新ファイル基準表を作成する
 End Sub
 
-Public Sub 手順3_旧基準表を作成する()
-    Call Execute_旧基準表を作成する
-End Sub
-
-Public Sub 一括_取込から旧基準表作成まで()
+Public Sub 一括_取込から新ファイル基準表作成まで()
     If ImportCsvToMokurokuSheet() Then
-        Call Execute_目録CSVの表示列を整える
-        Call Execute_旧基準表を作成する
+        Call Execute_新ファイル基準表を作成する
     End If
 End Sub
 
@@ -30,15 +25,15 @@ Private Sub CSVを取り込む()
 End Sub
 
 Private Sub CSVを取り込んで整形()
-    Call 一括_取込から旧基準表作成まで
+    Call 一括_取込から新ファイル基準表作成まで
 End Sub
 
 Private Sub 目録CSVの表示列を整える()
-    Call Execute_目録CSVの表示列を整える
+    MsgBox "目録CSVは元データ保持用のため、この処理は現在利用しません。", vbInformation
 End Sub
 
 Private Sub CSVを旧基準表形式に整形()
-    Call Execute_旧基準表を作成する
+    Call Execute_新ファイル基準表を作成する
 End Sub
 
 Private Sub Execute_目録CSVの表示列を整える()
@@ -194,7 +189,7 @@ Private Function OpenCsvAsWorkbook(ByVal csvPath As String, ByVal codePage As Lo
     Set OpenCsvAsWorkbook = ActiveWorkbook
 End Function
 
-Private Sub Execute_旧基準表を作成する()
+Private Sub Execute_新ファイル基準表を作成する()
 
     Dim wsSrc As Worksheet
     Dim wsDst As Worksheet
@@ -205,7 +200,6 @@ Private Sub Execute_旧基準表を作成する()
     Dim outRow As Long
     Dim i As Long
     
-    Dim colNendo As Long
     Dim colBunrui1 As Long
     Dim colBunrui2 As Long
     Dim colBunrui3 As Long
@@ -215,7 +209,7 @@ Private Sub Execute_旧基準表を作成する()
     
     ' ===== 設定 =====
     ' 処理フロー:
-    ' 目録CSV（元データ）→ 整形 → 新ファイル基準表（表示・編集用）
+    ' 目録CSV（元データ）→ 新ファイル基準表（表示用）
     Set wsSrc = GetWorksheetByName(SHEET_MOKUROKU)
     Set wsDst = GetWorksheetByName(SHEET_VIEW)
     
@@ -234,8 +228,6 @@ Private Sub Execute_旧基準表を作成する()
     On Error GoTo ErrHandler
     
     ' ===== 元シートの見出し列を取得 =====
-    colNendo = FindHeaderColumn(wsSrc, headerRow, "年度（和暦）")
-    If colNendo = 0 Then colNendo = FindHeaderColumn(wsSrc, headerRow, "年度(和暦)")
     colBunrui1 = FindHeaderColumn(wsSrc, headerRow, "分類名１")
     If colBunrui1 = 0 Then colBunrui1 = FindHeaderColumn(wsSrc, headerRow, "分類名1")
     
@@ -250,7 +242,6 @@ Private Sub Execute_旧基準表を作成する()
     colMedia = FindHeaderColumn(wsSrc, headerRow, "媒体種別")
     
     ' 必須チェック
-    CheckColumn colNendo, "年度（和暦）"
     CheckColumn colBunrui1, "分類名１"
     CheckColumn colBunrui2, "分類名２"
     CheckColumn colBunrui3, "分類名３"
@@ -262,20 +253,19 @@ Private Sub Execute_旧基準表を作成する()
     wsDst.Cells.Clear
     
     ' ===== 出力見出し =====
-    wsDst.Cells(1, 1).Value = "年度"
-    wsDst.Cells(1, 2).Value = "第0ガイド"
-    wsDst.Cells(1, 3).Value = "第1ガイド"
-    wsDst.Cells(1, 4).Value = "第2ガイド"
-    wsDst.Cells(1, 5).Value = "個別フォルダー"
-    wsDst.Cells(1, 6).Value = "保存期間"
-    wsDst.Cells(1, 7).Value = "媒体"
+    wsDst.Cells(1, 1).Value = "分類名１"
+    wsDst.Cells(1, 2).Value = "分類名２"
+    wsDst.Cells(1, 3).Value = "分類名３"
+    wsDst.Cells(1, 4).Value = "タイトル"
+    wsDst.Cells(1, 5).Value = "保存期間"
+    wsDst.Cells(1, 6).Value = "媒体種別"
     ' 将来拡張メモ（必要時に列追加）
     ' - 処理区分（新規 / 更新）
     ' - 更新フラグ
     ' - ファイルID（裏で保持）
     
     ' ===== 最終行取得 =====
-    lastRow = GetLastRowByColumns(wsSrc, Array(colNendo, colBunrui1, colBunrui2, colBunrui3, colTitle, colHozon, colMedia))
+    lastRow = GetLastRowByColumns(wsSrc, Array(colBunrui1, colBunrui2, colBunrui3, colTitle, colHozon, colMedia))
     
     ' ===== データ転記 =====
     outRow = 2
@@ -283,51 +273,27 @@ Private Sub Execute_旧基準表を作成する()
         
         ' 完全空行はスキップ
         If Application.WorksheetFunction.CountA(wsSrc.Rows(i)) > 0 Then
-            wsDst.Cells(outRow, 1).Value = wsSrc.Cells(i, colNendo).Value
-            wsDst.Cells(outRow, 2).Value = wsSrc.Cells(i, colBunrui1).Value
-            wsDst.Cells(outRow, 3).Value = wsSrc.Cells(i, colBunrui2).Value
-            wsDst.Cells(outRow, 4).Value = wsSrc.Cells(i, colBunrui3).Value
-            wsDst.Cells(outRow, 5).Value = wsSrc.Cells(i, colTitle).Value
-            wsDst.Cells(outRow, 6).Value = wsSrc.Cells(i, colHozon).Value
-            wsDst.Cells(outRow, 7).Value = wsSrc.Cells(i, colMedia).Value
+            wsDst.Cells(outRow, 1).Value = wsSrc.Cells(i, colBunrui1).Value
+            wsDst.Cells(outRow, 2).Value = wsSrc.Cells(i, colBunrui2).Value
+            wsDst.Cells(outRow, 3).Value = wsSrc.Cells(i, colBunrui3).Value
+            wsDst.Cells(outRow, 4).Value = wsSrc.Cells(i, colTitle).Value
+            wsDst.Cells(outRow, 5).Value = wsSrc.Cells(i, colHozon).Value
+            wsDst.Cells(outRow, 6).Value = wsSrc.Cells(i, colMedia).Value
             outRow = outRow + 1
         End If
     Next i
     lastOutRow = outRow - 1
-    
-    ' ===== 並び替え =====
-    If lastOutRow >= 2 Then
-        With wsDst.Sort
-            .SortFields.Clear
-            .SortFields.Add Key:=wsDst.Range("A2:A" & lastOutRow), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
-            .SortFields.Add Key:=wsDst.Range("B2:B" & lastOutRow), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
-            .SortFields.Add Key:=wsDst.Range("C2:C" & lastOutRow), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
-            .SortFields.Add Key:=wsDst.Range("D2:D" & lastOutRow), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
-            .SortFields.Add Key:=wsDst.Range("E2:E" & lastOutRow), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
-            .SetRange wsDst.Range("A1:G" & lastOutRow)
-            .Header = xlYes
-            .MatchCase = False
-            .Orientation = xlTopToBottom
-            .Apply
-        End With
-    End If
     
     ' ===== 体裁調整 =====
     With wsDst
         .Rows(1).Font.Bold = True
         .Rows(1).Interior.Color = RGB(217, 217, 217)
         .Rows(1).HorizontalAlignment = xlCenter
-        .Columns("A:G").EntireColumn.AutoFit
-        .Range("A1:G1").AutoFilter
+        .Columns("A:F").EntireColumn.AutoFit
+        .Range("A1:F1").AutoFilter
         
         If lastOutRow >= 1 Then
-            .Range("A1:G" & lastOutRow).Borders.LineStyle = xlContinuous
-        End If
-        
-        If lastOutRow >= 2 Then
-            .Range("A2:A" & lastOutRow).HorizontalAlignment = xlCenter
-            .Range("F2:G" & lastOutRow).HorizontalAlignment = xlCenter
-            .Range("E2:E" & lastOutRow).HorizontalAlignment = xlLeft
+            .Range("A1:F" & lastOutRow).Borders.LineStyle = xlContinuous
         End If
     End With
     
@@ -374,11 +340,6 @@ Private Function DetectHeaderRow(ByVal ws As Worksheet) As Long
 End Function
 
 Private Function HasRequiredHeadersInRow(ByVal ws As Worksheet, ByVal rowNum As Long) As Boolean
-    If FindHeaderColumn(ws, rowNum, "年度（和暦）") = 0 And _
-       FindHeaderColumn(ws, rowNum, "年度(和暦)") = 0 Then
-        Exit Function
-    End If
-    
     If FindHeaderColumn(ws, rowNum, "分類名１") = 0 And _
        FindHeaderColumn(ws, rowNum, "分類名1") = 0 Then
         Exit Function
