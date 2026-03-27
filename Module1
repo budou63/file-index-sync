@@ -120,7 +120,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     keyBarcodeEdit = FindHeaderColumn(wsEdit, editLastCol, Array("バーコード番号"))
     titleColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("タイトル"))
 
-    compareDefs = Array("分類名1", "分類名2", "分類名3", "タイトル", "保存期間", "媒体種別")
+    compareDefs = Array("分類名１", "分類名２", "分類名３", "タイトル", "保存期間", "媒体種別")
     ReDim compareSrcCols(LBound(compareDefs) To UBound(compareDefs))
     ReDim compareEditCols(LBound(compareDefs) To UBound(compareDefs))
 
@@ -154,6 +154,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     ' 出力見出し -> 取得元見出し のマッピング定義
     ' 固定見出し「所管所属」は新ファイル基準表の「原課ID」から取得する
     outputSourceMap.Add "所管所属", "原課ID"
+    ' 固定見出し「毎年度利用区分」は新ファイル基準表の正式見出しから取得する
+    outputSourceMap.Add "毎年度利用区分", "毎年度利用区分1:毎年作成 2:単年のみ"
 
     ' ① 目録CSVをキーで辞書化
     For r = 2 To srcLastRow
