@@ -51,6 +51,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim col保存期間 As Long
     Dim col媒体種別 As Long
     Dim missingHeaders As String
+    Dim targetData(1 To 6) As Variant
+    Dim i As Long
+    Dim sourceCols(1 To 6) As Long
     Dim targetRange As Range
 
     On Error GoTo ErrorHandler
@@ -87,28 +90,38 @@ Public Sub 手順2_新ファイル基準表を作成する()
     wsDst.Cells.Clear
     wsSrc.Range(wsSrc.Cells(1, 1), wsSrc.Cells(srcLastRow, srcLastCol)).Copy wsDst.Range("A1")
 
-    wsDst.Cells.EntireColumn.Hidden = True
-    wsDst.Columns(col分類名1).Hidden = False
-    wsDst.Columns(col分類名2).Hidden = False
-    wsDst.Columns(col分類名3).Hidden = False
-    wsDst.Columns(colタイトル).Hidden = False
-    wsDst.Columns(col保存期間).Hidden = False
-    wsDst.Columns(col媒体種別).Hidden = False
+    sourceCols(1) = col分類名1
+    sourceCols(2) = col分類名2
+    sourceCols(3) = col分類名3
+    sourceCols(4) = colタイトル
+    sourceCols(5) = col保存期間
+    sourceCols(6) = col媒体種別
 
-    With wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol))
+    For i = 1 To 6
+        targetData(i) = wsDst.Range(wsDst.Cells(1, sourceCols(i)), wsDst.Cells(srcLastRow, sourceCols(i))).Value
+    Next i
+
+    For i = 1 To 6
+        wsDst.Range(wsDst.Cells(1, i), wsDst.Cells(srcLastRow, i)).Value = targetData(i)
+    Next i
+
+    wsDst.Cells.EntireColumn.Hidden = True
+    wsDst.Columns("A:F").Hidden = False
+
+    With wsDst.Range("A1:F1")
         .Font.Bold = True
         .Interior.Color = RGB(242, 242, 242)
     End With
 
-    Set targetRange = wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(srcLastRow, srcLastCol))
+    Set targetRange = wsDst.Range("A1:F" & srcLastRow)
     targetRange.Borders.LineStyle = xlContinuous
     targetRange.Borders.Weight = xlThin
 
     wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol)).AutoFilter
-    wsDst.Columns.AutoFit
+    wsDst.Columns("A:F").AutoFit
 
     MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
-           "出力行数(見出し除く): " & IIf(srcLastRow > 1, srcLastRow - 1, 0) & " 件", vbInformation
+           "左側A～F列に指定6列を並べ替えました。", vbInformation
 
 SafeExit:
     Application.ScreenUpdating = True
