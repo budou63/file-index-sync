@@ -1,0 +1,150 @@
+Option Explicit
+
+Sub CSVを旧基準表形式に整形()
+
+    Dim wsSrc As Worksheet
+    Dim wsDst As Worksheet
+    Dim headerRow As Long
+    Dim dataStartRow As Long
+    Dim lastRow As Long
+    Dim outRow As Long
+    Dim i As Long
+    
+    Dim colNendo As Long
+    Dim colBunrui1 As Long
+    Dim colBunrui2 As Long
+    Dim colBunrui3 As Long
+    Dim colTitle As Long
+    Dim colHozon As Long
+    Dim colMedia As Long
+    
+    ' ===== 設定 =====
+    Set wsSrc = ThisWorkbook.Worksheets("CSV_RAW")
+    Set wsDst = ThisWorkbook.Worksheets("基準表_VIEW")
+    
+    ' 今回のサンプル前提
+    headerRow = 2
+    dataStartRow = 3
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    On Error GoTo ErrHandler
+    
+    ' ===== 元シートの見出し列を取得 =====
+    colNendo = FindHeaderColumn(wsSrc, headerRow, "年度（和暦）")
+    colBunrui1 = FindHeaderColumn(wsSrc, headerRow, "分類名１")
+    If colBunrui1 = 0 Then colBunrui1 = FindHeaderColumn(wsSrc, headerRow, "分類名1")
+    
+    colBunrui2 = FindHeaderColumn(wsSrc, headerRow, "分類名２")
+    If colBunrui2 = 0 Then colBunrui2 = FindHeaderColumn(wsSrc, headerRow, "分類名2")
+    
+    colBunrui3 = FindHeaderColumn(wsSrc, headerRow, "分類名３")
+    If colBunrui3 = 0 Then colBunrui3 = FindHeaderColumn(wsSrc, headerRow, "分類名3")
+    
+    colTitle = FindHeaderColumn(wsSrc, headerRow, "タイトル")
+    colHozon = FindHeaderColumn(wsSrc, headerRow, "保存期間")
+    colMedia = FindHeaderColumn(wsSrc, headerRow, "媒体種別")
+    
+    ' 必須チェック
+    CheckColumn colNendo, "年度（和暦）"
+    CheckColumn colBunrui1, "分類名１"
+    CheckColumn colBunrui2, "分類名２"
+    CheckColumn colBunrui3, "分類名３"
+    CheckColumn colTitle, "タイトル"
+    CheckColumn colHozon, "保存期間"
+    CheckColumn colMedia, "媒体種別"
+    
+    ' ===== 出力先クリア =====
+    wsDst.Cells.Clear
+    
+    ' ===== 出力見出し =====
+    wsDst.Cells(1, 1).Value = "年度"
+    wsDst.Cells(1, 2).Value = "第0ガイド"
+    wsDst.Cells(1, 3).Value = "第1ガイド"
+    wsDst.Cells(1, 4).Value = "第2ガイド"
+    wsDst.Cells(1, 5).Value = "個別フォルダー"
+    wsDst.Cells(1, 6).Value = "保存期間"
+    wsDst.Cells(1, 7).Value = "媒体"
+    
+    ' ===== 最終行取得 =====
+    lastRow = GetLastRowByColumns(wsSrc, Array(colNendo, colBunrui1, colBunrui2, colBunrui3, colTitle, colHozon, colMedia))
+    
+    ' ===== データ転記 =====
+    outRow = 2
+    For i = dataStartRow To lastRow
+        
+        ' 完全空行はスキップ
+        If Application.WorksheetFunction.CountA(wsSrc.Rows(i)) > 0 Then
+            wsDst.Cells(outRow, 1).Value = wsSrc.Cells(i, colNendo).Value
+            wsDst.Cells(outRow, 2).Value = wsSrc.Cells(i, colBunrui1).Value
+            wsDst.Cells(outRow, 3).Value = wsSrc.Cells(i, colBunrui2).Value
+            wsDst.Cells(outRow, 4).Value = wsSrc.Cells(i, colBunrui3).Value
+            wsDst.Cells(outRow, 5).Value = wsSrc.Cells(i, colTitle).Value
+            wsDst.Cells(outRow, 6).Value = wsSrc.Cells(i, colHozon).Value
+            wsDst.Cells(outRow, 7).Value = wsSrc.Cells(i, colMedia).Value
+            outRow = outRow + 1
+        End If
+    Next i
+    
+    ' ===== 体裁調整 =====
+    With wsDst
+        .Rows(1).Font.Bold = True
+        .Rows(1).Interior.Color = RGB(217, 217, 217)
+        .Rows(1).HorizontalAlignment = xlCenter
+        .Columns("A:G").EntireColumn.AutoFit
+        
+        If outRow > 2 Then
+            .Range("A1:G" & outRow - 1).Borders.LineStyle = xlContinuous
+            .Range("A1:G" & outRow - 1).AutoFilter
+        End If
+    End With
+    
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    
+    MsgBox "整形が完了しました。", vbInformation
+    Exit Sub
+
+ErrHandler:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    MsgBox "エラーが発生しました：" & vbCrLf & Err.Description, vbExclamation
+
+End Sub
+
+Private Function FindHeaderColumn(ws As Worksheet, headerRow As Long, headerName As String) As Long
+    Dim lastCol As Long
+    Dim c As Long
+    
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    
+    For c = 1 To lastCol
+        If Trim(CStr(ws.Cells(headerRow, c).Value)) = headerName Then
+            FindHeaderColumn = c
+            Exit Function
+        End If
+    Next c
+    
+    FindHeaderColumn = 0
+End Function
+
+Private Sub CheckColumn(colNum As Long, headerName As String)
+    If colNum = 0 Then
+        Err.Raise vbObjectError + 1000, , "見出し「" & headerName & "」が見つかりません。"
+    End If
+End Sub
+
+Private Function GetLastRowByColumns(ws As Worksheet, cols As Variant) As Long
+    Dim i As Long
+    Dim tmpLast As Long
+    Dim maxLast As Long
+    
+    maxLast = 0
+    For i = LBound(cols) To UBound(cols)
+        tmpLast = ws.Cells(ws.Rows.Count, cols(i)).End(xlUp).Row
+        If tmpLast > maxLast Then maxLast = tmpLast
+    Next i
+    
+    GetLastRowByColumns = maxLast
+End Function
