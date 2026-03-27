@@ -30,6 +30,9 @@ Public Sub CSV取込_シンプル版()
     
     ' そのままコピー
     wbCSV.Sheets(1).UsedRange.Copy ws.Range("A1")
+
+    ' 見出し一致を安定させるため、取込直後に1行目の改行コードを除去
+    NormalizeHeaderLineBreaks ws
     
     wbCSV.Close False
     
@@ -37,6 +40,29 @@ Public Sub CSV取込_シンプル版()
     Application.DisplayAlerts = True
     
     MsgBox "CSV取込完了"
+
+End Sub
+
+Private Sub NormalizeHeaderLineBreaks(ByVal ws As Worksheet)
+
+    Dim lastCol As Long
+    Dim c As Range
+
+    On Error GoTo SafeExit
+
+    lastCol = GetLastUsedCol(ws)
+    If lastCol <= 0 Then Exit Sub
+
+    For Each c In ws.Range(ws.Cells(1, 1), ws.Cells(1, lastCol))
+        If Not IsEmpty(c.Value) Then
+            c.Value = Replace(CStr(c.Value), vbCrLf, "")
+            c.Value = Replace(CStr(c.Value), vbCr, "")
+            c.Value = Replace(CStr(c.Value), vbLf, "")
+        End If
+    Next c
+
+SafeExit:
+    ' 改行除去は補助処理のため、失敗しても取込本体を止めない
 
 End Sub
 
