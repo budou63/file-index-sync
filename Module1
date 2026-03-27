@@ -1,5 +1,11 @@
 Option Explicit
 
+Private Const SHEET_MOKUROKU As String = "目録CSV"
+Private Const SHEET_VIEW As String = "新ファイル基準表"
+Private Const SHEET_CODE As String = "コード管理CSV"
+Private Const SHEET_IMPORT As String = "差分インポートCSV"
+' SHEET_CODE / SHEET_IMPORT are reserved for future code-completion/export features.
+
 Public Sub CSVを取り込む()
     Call ImportCsvToMokurokuSheet
 End Sub
@@ -31,7 +37,7 @@ Private Function ImportCsvToMokurokuSheet() As Boolean
         End If
     End If
     
-    Set wsSrc = ThisWorkbook.Worksheets("目録CSV")
+    Set wsSrc = GetWorksheetByName(SHEET_MOKUROKU)
     
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -61,9 +67,13 @@ Cleanup:
     
 ErrHandler:
     ImportCsvToMokurokuSheet = False
-    MsgBox "CSVの取り込みに失敗しました。" & vbCrLf & _
-           "このCSVはShift-JIS(932)前提で読み込みます。将来的にUTF-8対応を追加可能です。" & vbCrLf & _
-           Err.Description, vbExclamation
+    If InStr(Err.Description, "シート '") > 0 Then
+        MsgBox Err.Description, vbExclamation
+    Else
+        MsgBox "CSVの取り込みに失敗しました。" & vbCrLf & _
+               "このCSVはShift-JIS(932)前提で読み込みます。将来的にUTF-8対応を追加可能です。" & vbCrLf & _
+               Err.Description, vbExclamation
+    End If
     Resume Cleanup
 End Function
 
@@ -110,9 +120,9 @@ Sub CSVを旧基準表形式に整形()
     
     ' ===== 設定 =====
     ' 処理フロー:
-    ' 目録CSV（元データ）→ 整形 → ファイル基準表（表示・編集用）
-    Set wsSrc = ThisWorkbook.Worksheets("目録CSV")
-    Set wsDst = ThisWorkbook.Worksheets("ファイル基準表")
+    ' 目録CSV（元データ）→ 整形 → 新ファイル基準表（表示・編集用）
+    Set wsSrc = GetWorksheetByName(SHEET_MOKUROKU)
+    Set wsDst = GetWorksheetByName(SHEET_VIEW)
     
     ' 今回のサンプル前提
     headerRow = 2
@@ -233,6 +243,16 @@ ErrHandler:
     MsgBox "エラーが発生しました：" & vbCrLf & Err.Description, vbExclamation
 
 End Sub
+
+Private Function GetWorksheetByName(ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetWorksheetByName = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+    
+    If GetWorksheetByName Is Nothing Then
+        Err.Raise vbObjectError + 1100, , "シート '" & sheetName & "' が見つかりません。"
+    End If
+End Function
 
 Private Function FindHeaderColumn(ws As Worksheet, headerRow As Long, headerName As String) As Long
     Dim lastCol As Long
