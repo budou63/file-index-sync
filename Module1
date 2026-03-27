@@ -16,6 +16,76 @@ Public Sub CSVを取り込んで整形()
     End If
 End Sub
 
+Public Sub 目録CSVの表示列を整える()
+    Dim ws As Worksheet
+    Dim desiredHeaders As Variant
+    Dim headerName As Variant
+    Dim missingHeaders As String
+    Dim currentCol As Long
+    Dim targetCol As Long
+    Dim i As Long
+    Dim lastHeaderCol As Long
+    Dim lastDataCol As Long
+    Dim lastCol As Long
+    
+    On Error GoTo ErrHandler
+    
+    Set ws = GetWorksheetByName(SHEET_MOKUROKU)
+    desiredHeaders = Array("分類名１", "分類名２", "分類名３", "タイトル", "保存期間", "媒体種別")
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    ' Validate required headers in row 1 before moving any column.
+    For Each headerName In desiredHeaders
+        currentCol = FindHeaderColumn(ws, 1, CStr(headerName))
+        If currentCol = 0 Then
+            If Len(missingHeaders) > 0 Then missingHeaders = missingHeaders & vbCrLf
+            missingHeaders = missingHeaders & "・" & CStr(headerName)
+        End If
+    Next headerName
+    
+    If Len(missingHeaders) > 0 Then
+        Err.Raise vbObjectError + 1200, , _
+            "目録CSVの1行目で見出しが見つかりませんでした:" & vbCrLf & missingHeaders
+    End If
+    
+    ws.Cells.EntireColumn.Hidden = False
+    
+    ' Move only target columns to A:F from left to right.
+    For i = LBound(desiredHeaders) To UBound(desiredHeaders)
+        targetCol = (i - LBound(desiredHeaders)) + 1
+        currentCol = FindHeaderColumn(ws, 1, CStr(desiredHeaders(i)))
+        
+        If currentCol <> targetCol Then
+            ws.Columns(currentCol).Cut
+            ws.Columns(targetCol).Insert Shift:=xlToRight
+        End If
+    Next i
+    
+    Application.CutCopyMode = False
+    
+    lastHeaderCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    lastDataCol = ws.UsedRange.Column + ws.UsedRange.Columns.Count - 1
+    lastCol = Application.WorksheetFunction.Max(6, lastHeaderCol, lastDataCol)
+    
+    If lastCol > 6 Then
+        ws.Range(ws.Columns(7), ws.Columns(lastCol)).EntireColumn.Hidden = True
+    End If
+    
+    MsgBox "目録CSVの表示列を整えました。", vbInformation
+    
+Cleanup:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.CutCopyMode = False
+    Exit Sub
+    
+ErrHandler:
+    MsgBox "目録CSVの表示列調整でエラーが発生しました。" & vbCrLf & Err.Description, vbExclamation
+    Resume Cleanup
+End Sub
+
 Private Function ImportCsvToMokurokuSheet() As Boolean
     Dim wsSrc As Worksheet
     Dim selectedPath As Variant
