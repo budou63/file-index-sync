@@ -1,5 +1,80 @@
 Option Explicit
 
+Public Sub CSVを取り込む()
+    Call ImportCsvToMokurokuSheet
+End Sub
+
+Public Sub CSVを取り込んで整形()
+    If ImportCsvToMokurokuSheet() Then
+        CSVを旧基準表形式に整形
+    End If
+End Sub
+
+Private Function ImportCsvToMokurokuSheet() As Boolean
+    Dim wsSrc As Worksheet
+    Dim selectedPath As Variant
+    Dim qt As QueryTable
+    
+    On Error GoTo ErrHandler
+    
+    selectedPath = Application.GetOpenFilename( _
+        FileFilter:="CSV Files (*.csv),*.csv", _
+        Title:="取り込むCSVファイルを選択してください")
+    
+    If VarType(selectedPath) = vbBoolean Then
+        If selectedPath = False Then
+            MsgBox "CSVファイルが選択されなかったため、処理を終了しました。", vbExclamation
+            ImportCsvToMokurokuSheet = False
+            Exit Function
+        End If
+    End If
+    
+    Set wsSrc = ThisWorkbook.Worksheets("目録CSV")
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    wsSrc.Cells.Clear
+    
+    Do While wsSrc.QueryTables.Count > 0
+        wsSrc.QueryTables(1).Delete
+    Loop
+    
+    Set qt = wsSrc.QueryTables.Add( _
+        Connection:="TEXT;" & CStr(selectedPath), _
+        Destination:=wsSrc.Range("A1"))
+    
+    With qt
+        .TextFileParseType = xlDelimited
+        .TextFileCommaDelimiter = True
+        .TextFileTabDelimiter = False
+        .TextFileSemicolonDelimiter = False
+        .TextFileSpaceDelimiter = False
+        .TextFileConsecutiveDelimiter = False
+        .TextFileTextQualifier = xlTextQualifierDoubleQuote
+        ' Default import encoding is Windows locale (commonly Shift-JIS on JA Windows).
+        ' If your CSV is UTF-8 and mojibake occurs, try changing this to 65001.
+        .TextFilePlatform = xlWindows
+        .AdjustColumnWidth = False
+        .PreserveFormatting = True
+        .Refresh BackgroundQuery:=False
+        .Delete
+    End With
+    
+    ImportCsvToMokurokuSheet = True
+    MsgBox "CSVを目録CSVシートに取り込みました。", vbInformation
+    
+Cleanup:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Exit Function
+    
+ErrHandler:
+    ImportCsvToMokurokuSheet = False
+    MsgBox "CSVの取り込みに失敗しました。" & vbCrLf & Err.Description, vbExclamation
+    Resume Cleanup
+End Function
+
 Sub CSVを旧基準表形式に整形()
 
     Dim wsSrc As Worksheet
