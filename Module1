@@ -2,6 +2,7 @@ Option Explicit
 
 Private Const SHEET_MOKUROKU_CSV As String = "目録CSV"
 Private Const SHEET_NEW_FILE_STANDARD As String = "新ファイル基準表"
+Private Const SHEET_CODE_MANAGEMENT As String = "コード管理CSV"
 
 Public Sub CSV取込_シンプル版()
 
@@ -155,6 +156,110 @@ Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, 
     Next c
 
 End Function
+
+Public Sub 手順3_コード管理CSVを作成する()
+
+    Dim wsSrc As Worksheet
+    Dim wsDst As Worksheet
+    Dim srcLastRow As Long
+    Dim srcLastCol As Long
+    Dim pairDefs As Variant
+    Dim i As Long
+    Dim r As Long
+    Dim outRow As Long
+    Dim codeCol As Long
+    Dim nameCol As Long
+    Dim codeValue As String
+    Dim nameValue As String
+    Dim uniqueKey As String
+    Dim dict As Object
+    Dim missingHeaders As String
+
+    On Error GoTo ErrorHandler
+
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    srcLastCol = GetLastUsedCol(wsSrc)
+    srcLastRow = GetLastUsedRow(wsSrc)
+
+    pairDefs = Array( _
+        Array("原課", Array("原課ID"), Array("原課")), _
+        Array("保存期間", Array("保存期間ID"), Array("保存期間")), _
+        Array("分類１", Array("分類コード１", "分類コード1"), Array("分類名１", "分類名1")), _
+        Array("分類２", Array("分類コード２", "分類コード2"), Array("分類名２", "分類名2")), _
+        Array("分類３", Array("分類コード３", "分類コード3"), Array("分類名３", "分類名3")), _
+        Array("色", Array("色ID"), Array("色名")), _
+        Array("媒体種別", Array("媒体種別ID"), Array("媒体種別")) _
+    )
+
+    For i = LBound(pairDefs) To UBound(pairDefs)
+        codeCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(1))
+        nameCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(2))
+
+        If codeCol = 0 Then
+            missingHeaders = missingHeaders & "- " & pairDefs(i)(0) & " のコード見出し: " & pairDefs(i)(1)(0) & vbCrLf
+        End If
+        If nameCol = 0 Then
+            missingHeaders = missingHeaders & "- " & pairDefs(i)(0) & " の表示名見出し: " & pairDefs(i)(2)(0) & vbCrLf
+        End If
+    Next i
+
+    If Len(missingHeaders) > 0 Then
+        MsgBox "目録CSV の見出しが不足しています:" & vbCrLf & missingHeaders, vbExclamation
+        GoTo SafeExit
+    End If
+
+    wsDst.Cells.Clear
+    wsDst.Range("A1:C1").Value = Array("区分", "表示名", "コード")
+    outRow = 2
+
+    For i = LBound(pairDefs) To UBound(pairDefs)
+        codeCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(1))
+        nameCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(2))
+
+        For r = 2 To srcLastRow
+            codeValue = Trim(CStr(wsSrc.Cells(r, codeCol).Value))
+            nameValue = Trim(CStr(wsSrc.Cells(r, nameCol).Value))
+
+            If Len(codeValue) > 0 And Len(nameValue) > 0 Then
+                uniqueKey = pairDefs(i)(0) & "|" & nameValue & "|" & codeValue
+                If Not dict.Exists(uniqueKey) Then
+                    dict.Add uniqueKey, True
+                    wsDst.Cells(outRow, 1).Value = pairDefs(i)(0)
+                    wsDst.Cells(outRow, 2).Value = nameValue
+                    wsDst.Cells(outRow, 3).Value = codeValue
+                    outRow = outRow + 1
+                End If
+            End If
+        Next r
+    Next i
+
+    With wsDst.Range("A1:C1")
+        .Font.Bold = True
+        .Interior.Color = RGB(242, 242, 242)
+    End With
+
+    wsDst.Range("A1:C1").AutoFilter
+    wsDst.Columns("A:C").AutoFit
+
+    MsgBox "コード管理CSV の作成が完了しました。" & vbCrLf & _
+           "出力件数: " & outRow - 2 & " 件", vbInformation
+
+SafeExit:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "コード管理CSV の作成中にエラーが発生しました: " & Err.Description, vbCritical
+    Resume SafeExit
+
+End Sub
 
 Private Function BuildMissingHeadersMessage( _
     ByVal col1 As Long, ByVal header1 As String, _
