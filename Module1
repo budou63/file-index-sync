@@ -45,16 +45,11 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim wsDst As Worksheet
     Dim srcLastRow As Long
     Dim srcLastCol As Long
-    Dim col分類名1 As Long
-    Dim col分類名2 As Long
-    Dim col分類名3 As Long
-    Dim colタイトル As Long
-    Dim col保存期間 As Long
-    Dim col媒体種別 As Long
-    Dim missingHeaders As String
-    Dim targetData(1 To 6) As Variant
+    Dim targetHeaders As Variant
     Dim i As Long
-    Dim sourceCols(1 To 6) As Long
+    Dim targetCol As Long
+    Dim foundCol As Long
+    Dim visibleCount As Long
     Dim targetRange As Range
 
     On Error GoTo ErrorHandler
@@ -68,61 +63,61 @@ Public Sub 手順2_新ファイル基準表を作成する()
     srcLastCol = GetLastUsedCol(wsSrc)
     srcLastRow = GetLastUsedRow(wsSrc)
 
-    col分類名1 = FindHeaderColumn(wsSrc, srcLastCol, Array("分類名１", "分類名1"))
-    col分類名2 = FindHeaderColumn(wsSrc, srcLastCol, Array("分類名２", "分類名2"))
-    col分類名3 = FindHeaderColumn(wsSrc, srcLastCol, Array("分類名３", "分類名3"))
-    colタイトル = FindHeaderColumn(wsSrc, srcLastCol, Array("タイトル"))
-    col保存期間 = FindHeaderColumn(wsSrc, srcLastCol, Array("保存期間"))
-    col媒体種別 = FindHeaderColumn(wsSrc, srcLastCol, Array("媒体種別"))
-
-    missingHeaders = BuildMissingHeadersMessage( _
-        col分類名1, "分類名１", _
-        col分類名2, "分類名２", _
-        col分類名3, "分類名３", _
-        colタイトル, "タイトル", _
-        col保存期間, "保存期間", _
-        col媒体種別, "媒体種別")
-
-    If Len(missingHeaders) > 0 Then
-        MsgBox "目録CSV の見出しが不足しています: " & vbCrLf & missingHeaders, vbExclamation
-        GoTo SafeExit
-    End If
-
     wsDst.Cells.Clear
     wsSrc.Range(wsSrc.Cells(1, 1), wsSrc.Cells(srcLastRow, srcLastCol)).Copy wsDst.Range("A1")
 
-    sourceCols(1) = col分類名1
-    sourceCols(2) = col分類名2
-    sourceCols(3) = col分類名3
-    sourceCols(4) = colタイトル
-    sourceCols(5) = col保存期間
-    sourceCols(6) = col媒体種別
+    targetHeaders = Array( _
+        "ファイルID", _
+        "ファイル番号", _
+        "バーコード番号", _
+        "年度（和暦）", _
+        "分類名1", _
+        "分類名2", _
+        "分類名3", _
+        "タイトル", _
+        "保存期間", _
+        "媒体種別")
 
-    For i = 1 To 6
-        targetData(i) = wsDst.Range(wsDst.Cells(1, sourceCols(i)), wsDst.Cells(srcLastRow, sourceCols(i))).Value
-    Next i
+    targetCol = 1
+    For i = LBound(targetHeaders) To UBound(targetHeaders)
+        srcLastCol = GetLastUsedCol(wsDst)
+        foundCol = FindHeaderColumn(wsDst, srcLastCol, Array(CStr(targetHeaders(i))))
 
-    For i = 1 To 6
-        wsDst.Range(wsDst.Cells(1, i), wsDst.Cells(srcLastRow, i)).Value = targetData(i)
+        If foundCol > 0 Then
+            If foundCol <> targetCol Then
+                wsDst.Columns(foundCol).Cut
+                wsDst.Columns(targetCol).Insert Shift:=xlToRight
+                Application.CutCopyMode = False
+            End If
+            targetCol = targetCol + 1
+        End If
     Next i
+    visibleCount = targetCol - 1
 
     wsDst.Cells.EntireColumn.Hidden = True
-    wsDst.Columns("A:F").Hidden = False
+    If visibleCount > 0 Then
+        wsDst.Range(wsDst.Columns(1), wsDst.Columns(visibleCount)).EntireColumn.Hidden = False
+    End If
 
-    With wsDst.Range("A1:F1")
-        .Font.Bold = True
-        .Interior.Color = RGB(242, 242, 242)
-    End With
+    If visibleCount > 0 Then
+        With wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, visibleCount))
+            .Font.Bold = True
+            .Interior.Color = RGB(242, 242, 242)
+        End With
 
-    Set targetRange = wsDst.Range("A1:F" & srcLastRow)
-    targetRange.Borders.LineStyle = xlContinuous
-    targetRange.Borders.Weight = xlThin
+        Set targetRange = wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(srcLastRow, visibleCount))
+        targetRange.Borders.LineStyle = xlContinuous
+        targetRange.Borders.Weight = xlThin
+    End If
 
+    srcLastCol = GetLastUsedCol(wsDst)
     wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol)).AutoFilter
-    wsDst.Columns("A:F").AutoFit
+    If visibleCount > 0 Then
+        wsDst.Range(wsDst.Columns(1), wsDst.Columns(visibleCount)).EntireColumn.AutoFit
+    End If
 
     MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
-           "左側A～F列に指定6列を並べ替えました。", vbInformation
+           "左側に表示した列数: " & visibleCount & " 列", vbInformation
 
 SafeExit:
     Application.ScreenUpdating = True
