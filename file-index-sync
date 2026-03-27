@@ -19,8 +19,8 @@ Sub CSVを旧基準表形式に整形()
     Dim colMedia As Long
     
     ' ===== 設定 =====
-    Set wsSrc = ThisWorkbook.Worksheets("CSV_RAW")
-    Set wsDst = ThisWorkbook.Worksheets("基準表_VIEW")
+    Set wsSrc = ThisWorkbook.Worksheets("目録CSV")
+    Set wsDst = ThisWorkbook.Worksheets("ファイル基準表")
     
     ' 今回のサンプル前提
     headerRow = 2
