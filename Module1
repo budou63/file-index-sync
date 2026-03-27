@@ -13,7 +13,9 @@ End Sub
 Private Function ImportCsvToMokurokuSheet() As Boolean
     Dim wsSrc As Worksheet
     Dim selectedPath As Variant
-    Dim qt As QueryTable
+    Dim csvWb As Workbook
+    Dim csvWs As Worksheet
+    Const UTF8_CODEPAGE As Long = 65001
     
     On Error GoTo ErrHandler
     
@@ -33,46 +35,55 @@ Private Function ImportCsvToMokurokuSheet() As Boolean
     
     Application.ScreenUpdating = False
     Application.EnableEvents = False
+    Application.DisplayAlerts = False
     
     wsSrc.Cells.Clear
     
-    Do While wsSrc.QueryTables.Count > 0
-        wsSrc.QueryTables(1).Delete
-    Loop
+    Set csvWb = OpenCsvAsWorkbook(CStr(selectedPath), UTF8_CODEPAGE)
+    Set csvWs = csvWb.Worksheets(1)
     
-    Set qt = wsSrc.QueryTables.Add( _
-        Connection:="TEXT;" & CStr(selectedPath), _
-        Destination:=wsSrc.Range("A1"))
-    
-    With qt
-        .TextFileParseType = xlDelimited
-        .TextFileCommaDelimiter = True
-        .TextFileTabDelimiter = False
-        .TextFileSemicolonDelimiter = False
-        .TextFileSpaceDelimiter = False
-        .TextFileConsecutiveDelimiter = False
-        .TextFileTextQualifier = xlTextQualifierDoubleQuote
-        ' Default import encoding is Windows locale (commonly Shift-JIS on JA Windows).
-        ' If your CSV is UTF-8 and mojibake occurs, try changing this to 65001.
-        .TextFilePlatform = xlWindows
-        .AdjustColumnWidth = False
-        .PreserveFormatting = True
-        .Refresh BackgroundQuery:=False
-        .Delete
-    End With
+    csvWs.UsedRange.Copy Destination:=wsSrc.Range("A1")
+    csvWb.Close SaveChanges:=False
+    Set csvWb = Nothing
     
     ImportCsvToMokurokuSheet = True
-    MsgBox "CSVを目録CSVシートに取り込みました。", vbInformation
+    MsgBox "CSVを目録CSVシートにそのまま取り込みました。", vbInformation
     
 Cleanup:
+    If Not csvWb Is Nothing Then
+        csvWb.Close SaveChanges:=False
+    End If
     Application.ScreenUpdating = True
     Application.EnableEvents = True
+    Application.DisplayAlerts = True
     Exit Function
     
 ErrHandler:
     ImportCsvToMokurokuSheet = False
-    MsgBox "CSVの取り込みに失敗しました。" & vbCrLf & Err.Description, vbExclamation
+    MsgBox "CSVの取り込みに失敗しました。" & vbCrLf & _
+           "UTF-8で読めないCSVの場合は、将来 932(Shift-JIS) 切替対応を検討してください。" & vbCrLf & _
+           Err.Description, vbExclamation
     Resume Cleanup
+End Function
+
+Private Function OpenCsvAsWorkbook(ByVal csvPath As String, ByVal codePage As Long) As Workbook
+    ' Use Excel's text import engine so delimiter and quoting behavior
+    ' stays close to opening the CSV directly in Excel.
+    Workbooks.OpenText _
+        Filename:=csvPath, _
+        Origin:=codePage, _
+        StartRow:=1, _
+        DataType:=xlDelimited, _
+        TextQualifier:=xlTextQualifierDoubleQuote, _
+        ConsecutiveDelimiter:=False, _
+        Tab:=False, _
+        Semicolon:=False, _
+        Comma:=True, _
+        Space:=False, _
+        Other:=False, _
+        Local:=True
+    
+    Set OpenCsvAsWorkbook = ActiveWorkbook
 End Function
 
 Sub CSVを旧基準表形式に整形()
