@@ -15,7 +15,7 @@ Private Function ImportCsvToMokurokuSheet() As Boolean
     Dim selectedPath As Variant
     Dim csvWb As Workbook
     Dim csvWs As Worksheet
-    Const UTF8_CODEPAGE As Long = 65001
+    Const SHIFT_JIS_CODEPAGE As Long = 932
     
     On Error GoTo ErrHandler
     
@@ -39,7 +39,8 @@ Private Function ImportCsvToMokurokuSheet() As Boolean
     
     wsSrc.Cells.Clear
     
-    Set csvWb = OpenCsvAsWorkbook(CStr(selectedPath), UTF8_CODEPAGE)
+    ' This project currently assumes Shift-JIS CSV from upstream systems.
+    Set csvWb = OpenCsvAsWorkbook(CStr(selectedPath), SHIFT_JIS_CODEPAGE)
     Set csvWs = csvWb.Worksheets(1)
     
     csvWs.UsedRange.Copy Destination:=wsSrc.Range("A1")
@@ -61,7 +62,7 @@ Cleanup:
 ErrHandler:
     ImportCsvToMokurokuSheet = False
     MsgBox "CSVの取り込みに失敗しました。" & vbCrLf & _
-           "UTF-8で読めないCSVの場合は、将来 932(Shift-JIS) 切替対応を検討してください。" & vbCrLf & _
+           "このCSVはShift-JIS(932)前提で読み込みます。将来的にUTF-8対応を追加可能です。" & vbCrLf & _
            Err.Description, vbExclamation
     Resume Cleanup
 End Function
@@ -69,6 +70,8 @@ End Function
 Private Function OpenCsvAsWorkbook(ByVal csvPath As String, ByVal codePage As Long) As Workbook
     ' Use Excel's text import engine so delimiter and quoting behavior
     ' stays close to opening the CSV directly in Excel.
+    ' Current default is Shift-JIS (932). For future extension, this function
+    ' can be called with 65001 (UTF-8) and fallback logic can be added.
     Workbooks.OpenText _
         Filename:=csvPath, _
         Origin:=codePage, _
