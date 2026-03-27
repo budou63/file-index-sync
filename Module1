@@ -1,5 +1,9 @@
 Option Explicit
 
+Private Const SHEET_MOKUROKU_CSV As String = "目録CSV"
+Private Const SHEET_NEW_FILE_STANDARD As String = "新ファイル基準表"
+Private Const SHEET_CODE_MANAGEMENT As String = "コード管理CSV"
+
 Public Sub CSV取込_シンプル版()
 
     Dim ws As Worksheet
@@ -34,3 +38,267 @@ Public Sub CSV取込_シンプル版()
     MsgBox "CSV取込完了"
 
 End Sub
+
+Public Sub 手順2_新ファイル基準表を作成する()
+
+    Dim wsSrc As Worksheet
+    Dim wsDst As Worksheet
+    Dim srcLastRow As Long
+    Dim srcLastCol As Long
+    Dim targetHeaders As Variant
+    Dim i As Long
+    Dim targetCol As Long
+    Dim foundCol As Long
+    Dim visibleCount As Long
+    Dim targetRange As Range
+
+    On Error GoTo ErrorHandler
+
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    srcLastCol = GetLastUsedCol(wsSrc)
+    srcLastRow = GetLastUsedRow(wsSrc)
+
+    wsDst.Cells.Clear
+    wsSrc.Range(wsSrc.Cells(1, 1), wsSrc.Cells(srcLastRow, srcLastCol)).Copy wsDst.Range("A1")
+
+    targetHeaders = Array( _
+        "ファイルID", _
+        "ファイル番号", _
+        "バーコード番号", _
+        "年度（和暦）", _
+        "分類名1", _
+        "分類名2", _
+        "分類名3", _
+        "タイトル", _
+        "保存期間", _
+        "媒体種別")
+
+    targetCol = 1
+    For i = LBound(targetHeaders) To UBound(targetHeaders)
+        srcLastCol = GetLastUsedCol(wsDst)
+        foundCol = FindHeaderColumn(wsDst, srcLastCol, Array(CStr(targetHeaders(i))))
+
+        If foundCol > 0 Then
+            If foundCol <> targetCol Then
+                wsDst.Columns(foundCol).Cut
+                wsDst.Columns(targetCol).Insert Shift:=xlToRight
+                Application.CutCopyMode = False
+            End If
+            targetCol = targetCol + 1
+        End If
+    Next i
+    visibleCount = targetCol - 1
+
+    wsDst.Cells.EntireColumn.Hidden = True
+    If visibleCount > 0 Then
+        wsDst.Range(wsDst.Columns(1), wsDst.Columns(visibleCount)).EntireColumn.Hidden = False
+    End If
+
+    If visibleCount > 0 Then
+        With wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, visibleCount))
+            .Font.Bold = True
+            .Interior.Color = RGB(242, 242, 242)
+        End With
+
+        Set targetRange = wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(srcLastRow, visibleCount))
+        targetRange.Borders.LineStyle = xlContinuous
+        targetRange.Borders.Weight = xlThin
+    End If
+
+    srcLastCol = GetLastUsedCol(wsDst)
+    wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol)).AutoFilter
+    If visibleCount > 0 Then
+        wsDst.Range(wsDst.Columns(1), wsDst.Columns(visibleCount)).EntireColumn.AutoFit
+    End If
+
+    MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
+           "左側に表示した列数: " & visibleCount & " 列", vbInformation
+
+SafeExit:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & Err.Description, vbCritical
+    Resume SafeExit
+
+End Sub
+
+Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal candidates As Variant) As Long
+
+    Dim c As Long
+    Dim i As Long
+    Dim headerValue As String
+
+    FindHeaderColumn = 0
+
+    If lastCol <= 0 Then Exit Function
+
+    For c = 1 To lastCol
+        headerValue = Trim(CStr(ws.Cells(1, c).Value))
+        For i = LBound(candidates) To UBound(candidates)
+            If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+                FindHeaderColumn = c
+                Exit Function
+            End If
+        Next i
+    Next c
+
+End Function
+
+Public Sub 手順3_コード管理CSVを作成する()
+
+    Dim wsSrc As Worksheet
+    Dim wsDst As Worksheet
+    Dim srcLastRow As Long
+    Dim srcLastCol As Long
+    Dim pairDefs As Variant
+    Dim i As Long
+    Dim r As Long
+    Dim outRow As Long
+    Dim codeCol As Long
+    Dim nameCol As Long
+    Dim codeValue As String
+    Dim nameValue As String
+    Dim uniqueKey As String
+    Dim dict As Object
+    Dim missingHeaders As String
+
+    On Error GoTo ErrorHandler
+
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    srcLastCol = GetLastUsedCol(wsSrc)
+    srcLastRow = GetLastUsedRow(wsSrc)
+
+    pairDefs = Array( _
+        Array("原課", Array("原課ID"), Array("原課")), _
+        Array("保存期間", Array("保存期間ID"), Array("保存期間")), _
+        Array("分類１", Array("分類コード１", "分類コード1"), Array("分類名１", "分類名1")), _
+        Array("分類２", Array("分類コード２", "分類コード2"), Array("分類名２", "分類名2")), _
+        Array("分類３", Array("分類コード３", "分類コード3"), Array("分類名３", "分類名3")), _
+        Array("色", Array("色ID"), Array("色名")), _
+        Array("媒体種別", Array("媒体種別ID"), Array("媒体種別")) _
+    )
+
+    For i = LBound(pairDefs) To UBound(pairDefs)
+        codeCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(1))
+        nameCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(2))
+
+        If codeCol = 0 Then
+            missingHeaders = missingHeaders & "- " & pairDefs(i)(0) & " のコード見出し: " & pairDefs(i)(1)(0) & vbCrLf
+        End If
+        If nameCol = 0 Then
+            missingHeaders = missingHeaders & "- " & pairDefs(i)(0) & " の表示名見出し: " & pairDefs(i)(2)(0) & vbCrLf
+        End If
+    Next i
+
+    If Len(missingHeaders) > 0 Then
+        MsgBox "目録CSV の見出しが不足しています:" & vbCrLf & missingHeaders, vbExclamation
+        GoTo SafeExit
+    End If
+
+    wsDst.Cells.Clear
+    wsDst.Range("A1:C1").Value = Array("区分", "表示名", "コード")
+    outRow = 2
+
+    For i = LBound(pairDefs) To UBound(pairDefs)
+        codeCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(1))
+        nameCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(2))
+
+        For r = 2 To srcLastRow
+            codeValue = Trim(CStr(wsSrc.Cells(r, codeCol).Value))
+            nameValue = Trim(CStr(wsSrc.Cells(r, nameCol).Value))
+
+            If Len(codeValue) > 0 And Len(nameValue) > 0 Then
+                uniqueKey = pairDefs(i)(0) & "|" & nameValue & "|" & codeValue
+                If Not dict.Exists(uniqueKey) Then
+                    dict.Add uniqueKey, True
+                    wsDst.Cells(outRow, 1).Value = pairDefs(i)(0)
+                    wsDst.Cells(outRow, 2).Value = nameValue
+                    wsDst.Cells(outRow, 3).Value = codeValue
+                    outRow = outRow + 1
+                End If
+            End If
+        Next r
+    Next i
+
+    With wsDst.Range("A1:C1")
+        .Font.Bold = True
+        .Interior.Color = RGB(242, 242, 242)
+    End With
+
+    wsDst.Range("A1:C1").AutoFilter
+    wsDst.Columns("A:C").AutoFit
+
+    MsgBox "コード管理CSV の作成が完了しました。" & vbCrLf & _
+           "出力件数: " & outRow - 2 & " 件", vbInformation
+
+SafeExit:
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "コード管理CSV の作成中にエラーが発生しました: " & Err.Description, vbCritical
+    Resume SafeExit
+
+End Sub
+
+Private Function BuildMissingHeadersMessage( _
+    ByVal col1 As Long, ByVal header1 As String, _
+    ByVal col2 As Long, ByVal header2 As String, _
+    ByVal col3 As Long, ByVal header3 As String, _
+    ByVal col4 As Long, ByVal header4 As String, _
+    ByVal col5 As Long, ByVal header5 As String, _
+    ByVal col6 As Long, ByVal header6 As String) As String
+
+    Dim items As String
+
+    If col1 = 0 Then items = items & "- " & header1 & vbCrLf
+    If col2 = 0 Then items = items & "- " & header2 & vbCrLf
+    If col3 = 0 Then items = items & "- " & header3 & vbCrLf
+    If col4 = 0 Then items = items & "- " & header4 & vbCrLf
+    If col5 = 0 Then items = items & "- " & header5 & vbCrLf
+    If col6 = 0 Then items = items & "- " & header6 & vbCrLf
+
+    BuildMissingHeadersMessage = items
+
+End Function
+
+Private Function GetLastUsedRow(ByVal ws As Worksheet) As Long
+
+    Dim lastCell As Range
+
+    Set lastCell = ws.Cells.Find(What:="*", LookIn:=xlFormulas, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    If lastCell Is Nothing Then
+        GetLastUsedRow = 1
+    Else
+        GetLastUsedRow = lastCell.Row
+    End If
+
+End Function
+
+Private Function GetLastUsedCol(ByVal ws As Worksheet) As Long
+
+    Dim lastCell As Range
+
+    Set lastCell = ws.Cells.Find(What:="*", LookIn:=xlFormulas, SearchOrder:=xlByColumns, SearchDirection:=xlPrevious)
+    If lastCell Is Nothing Then
+        GetLastUsedCol = 0
+    Else
+        GetLastUsedCol = lastCell.Column
+    End If
+
+End Function
