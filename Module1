@@ -629,6 +629,158 @@ Private Function BuildMissingHeadersMessage( _
 
 End Function
 
+'========================================================
+' 新ファイル基準表: Worksheet_Changeから呼び出す処理本体
+'========================================================
+Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target As Range)
+
+    Dim wsEdit As Worksheet
+    Dim lastCol As Long
+    Dim pairDefs As Variant
+    Dim i As Long
+    Dim displayCol As Long
+    Dim idCol As Long
+    Dim watchRange As Range
+    Dim workRange As Range
+    Dim changedCell As Range
+    Dim inputName As String
+    Dim codeValue As String
+
+    If Target Is Nothing Then Exit Sub
+    If Target.CountLarge > 1000 Then Exit Sub
+
+    On Error GoTo ExitHandler
+    Application.EnableEvents = False
+
+    Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    If Target.Worksheet.Name <> wsEdit.Name Then GoTo ExitHandler
+
+    lastCol = GetLastUsedCol(wsEdit)
+    If lastCol <= 0 Then GoTo ExitHandler
+
+    ' 表示列ヘッダー / ID列ヘッダー / コード管理CSV上の項目名
+    pairDefs = Array( _
+        Array("原課", "原課ID", "原課"), _
+        Array("保存期間", "保存期間ID", "保存期間"), _
+        Array("分類名１", "分類コード１", "分類名１"), _
+        Array("分類名２", "分類コード２", "分類名２"), _
+        Array("分類名３", "分類コード３", "分類名３"), _
+        Array("媒体種別", "媒体種別ID", "媒体種別") _
+    )
+
+    ' 対象表示列だけを監視対象にする（見出し未存在はスキップ）
+    For i = LBound(pairDefs) To UBound(pairDefs)
+        displayCol = GetHeaderColumnExact(wsEdit, CStr(pairDefs(i)(0)))
+        If displayCol > 0 Then
+            Set workRange = wsEdit.Range(wsEdit.Cells(2, displayCol), wsEdit.Cells(wsEdit.Rows.Count, displayCol))
+            If watchRange Is Nothing Then
+                Set watchRange = workRange
+            Else
+                Set watchRange = Union(watchRange, workRange)
+            End If
+        End If
+    Next i
+
+    If watchRange Is Nothing Then GoTo ExitHandler
+    Set workRange = Intersect(Target, watchRange)
+    If workRange Is Nothing Then GoTo ExitHandler
+
+    ' 変更セルごとに表示列→ID列の補完を実施
+    For Each changedCell In workRange.Cells
+        For i = LBound(pairDefs) To UBound(pairDefs)
+            displayCol = GetHeaderColumnExact(wsEdit, CStr(pairDefs(i)(0)))
+            If displayCol = 0 Then GoTo ContinuePair
+            If changedCell.Column <> displayCol Then GoTo ContinuePair
+
+            idCol = GetHeaderColumnExact(wsEdit, CStr(pairDefs(i)(1)))
+            If idCol = 0 Then Exit For ' ID見出しが無ければその項目はスキップ
+
+            inputName = Trim(CStr(changedCell.Value))
+            If Len(inputName) = 0 Then
+                wsEdit.Cells(changedCell.Row, idCol).Value = ""
+            Else
+                codeValue = GetCodeFromCodeMaster(CStr(pairDefs(i)(2)), inputName)
+                If Len(codeValue) > 0 Then
+                    wsEdit.Cells(changedCell.Row, idCol).Value = codeValue
+                Else
+                    wsEdit.Cells(changedCell.Row, idCol).Value = ""
+                End If
+            End If
+            Exit For
+ContinuePair:
+        Next i
+    Next changedCell
+
+ExitHandler:
+    Application.EnableEvents = True
+
+End Sub
+
+'--------------------------------------------------------
+' 見出し名(完全一致)から列番号を取得する
+' 見つからない場合は0を返す
+'--------------------------------------------------------
+Private Function GetHeaderColumnExact(ByVal ws As Worksheet, ByVal headerName As String) As Long
+
+    Dim c As Long
+    Dim lastCol As Long
+    Dim headerValue As String
+
+    GetHeaderColumnExact = 0
+    If ws Is Nothing Then Exit Function
+
+    lastCol = GetLastUsedCol(ws)
+    If lastCol <= 0 Then Exit Function
+
+    For c = 1 To lastCol
+        headerValue = Trim(CStr(ws.Cells(1, c).Value))
+        If StrComp(headerValue, Trim(headerName), vbBinaryCompare) = 0 Then
+            GetHeaderColumnExact = c
+            Exit Function
+        End If
+    Next c
+
+End Function
+
+'--------------------------------------------------------
+' コード管理CSVから 区分 + 表示名 の完全一致でコードを取得する
+' 見つからない場合は空文字を返す
+'--------------------------------------------------------
+Private Function GetCodeFromCodeMaster(ByVal kubunName As String, ByVal displayName As String) As String
+
+    Dim wsMaster As Worksheet
+    Dim lastRow As Long
+    Dim r As Long
+    Dim kubunValue As String
+    Dim nameValue As String
+
+    GetCodeFromCodeMaster = ""
+
+    On Error GoTo SafeExit
+
+    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    If wsMaster Is Nothing Then GoTo SafeExit
+
+    lastRow = GetLastUsedRow(wsMaster)
+    If lastRow < 2 Then GoTo SafeExit
+
+    ' コード管理CSV仕様: A列=項目名 / B列=コード / C列=表示名
+    For r = 2 To lastRow
+        kubunValue = Trim(CStr(wsMaster.Cells(r, 1).Value))
+        nameValue = Trim(CStr(wsMaster.Cells(r, 3).Value))
+
+        If StrComp(kubunValue, Trim(kubunName), vbBinaryCompare) = 0 _
+           And StrComp(nameValue, Trim(displayName), vbBinaryCompare) = 0 Then
+            GetCodeFromCodeMaster = Trim(CStr(wsMaster.Cells(r, 2).Value))
+            Exit For
+        End If
+    Next r
+
+SafeExit:
+    ' 見つからない場合やエラー時は空文字のまま返す
+
+End Function
+
 Private Function GetLastUsedRow(ByVal ws As Worksheet) As Long
 
     Dim lastCell As Range
