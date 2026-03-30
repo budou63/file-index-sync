@@ -646,11 +646,13 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
     Dim inputName As String
     Dim codeValue As String
 
+    If Target Is Nothing Then Exit Sub
+    If Target.CountLarge > 1000 Then Exit Sub
+
     On Error GoTo ExitHandler
     Application.EnableEvents = False
 
     Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
-    If Target Is Nothing Then GoTo ExitHandler
     If Target.Worksheet.Name <> wsEdit.Name Then GoTo ExitHandler
 
     lastCol = GetLastUsedCol(wsEdit)
