@@ -781,19 +781,6 @@ SafeExit:
 
 End Function
 
-'--------------------------------------------------------
-' 新ファイル基準表シートモジュールに貼り付ける Worksheet_Change
-'--------------------------------------------------------
-'Private Sub Worksheet_Change(ByVal Target As Range)
-'    On Error GoTo ExitHandler
-'    Application.EnableEvents = False
-'
-'    新ファイル基準表_表示名からID自動補完 Target
-'
-'ExitHandler:
-'    Application.EnableEvents = True
-'End Sub
-
 Private Function GetLastUsedRow(ByVal ws As Worksheet) As Long
 
     Dim lastCell As Range
