@@ -77,4 +77,4 @@ End Sub
 1. 上記 `Worksheet_Change` が「新ファイル基準表」シートモジュールに存在するか
 2. 標準モジュール `Module1` に `Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target As Range)` が存在するか
 3. 即時ウィンドウで `Application.EnableEvents = True` を実行し、イベント無効化が残っていないか
-4. `コード管理CSV` の構成が `A列=区分 / B列=表示名 / C列=コード` になっているか
+4. `コード管理CSV` の構成が `A列=項目名 / B列=コード / C列=表示名` になっているか

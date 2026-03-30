@@ -658,13 +658,13 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
     lastCol = GetLastUsedCol(wsEdit)
     If lastCol <= 0 Then GoTo ExitHandler
 
-    ' 表示列ヘッダー / ID列ヘッダー / コード管理CSV上の区分名
+    ' 表示列ヘッダー / ID列ヘッダー / コード管理CSV上の項目名
     pairDefs = Array( _
         Array("原課", "原課ID", "原課"), _
         Array("保存期間", "保存期間ID", "保存期間"), _
-        Array("分類名１", "分類コード１", "分類１"), _
-        Array("分類名２", "分類コード２", "分類２"), _
-        Array("分類名３", "分類コード３", "分類３"), _
+        Array("分類名１", "分類コード１", "分類名１"), _
+        Array("分類名２", "分類コード２", "分類名２"), _
+        Array("分類名３", "分類コード３", "分類名３"), _
         Array("媒体種別", "媒体種別ID", "媒体種別") _
     )
 
@@ -764,14 +764,14 @@ Private Function GetCodeFromCodeMaster(ByVal kubunName As String, ByVal displayN
     lastRow = GetLastUsedRow(wsMaster)
     If lastRow < 2 Then GoTo SafeExit
 
-    ' コード管理CSV仕様: A列=区分 / B列=表示名 / C列=コード
+    ' コード管理CSV仕様: A列=項目名 / B列=コード / C列=表示名
     For r = 2 To lastRow
         kubunValue = Trim(CStr(wsMaster.Cells(r, 1).Value))
-        nameValue = Trim(CStr(wsMaster.Cells(r, 2).Value))
+        nameValue = Trim(CStr(wsMaster.Cells(r, 3).Value))
 
         If StrComp(kubunValue, Trim(kubunName), vbBinaryCompare) = 0 _
            And StrComp(nameValue, Trim(displayName), vbBinaryCompare) = 0 Then
-            GetCodeFromCodeMaster = Trim(CStr(wsMaster.Cells(r, 3).Value))
+            GetCodeFromCodeMaster = Trim(CStr(wsMaster.Cells(r, 2).Value))
             Exit For
         End If
     Next r
