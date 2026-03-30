@@ -1,11 +1,9 @@
 Option Explicit
 
 '========================================================
-' frmSeal に貼り付ける btnApply_Click（新仕様）
-'--------------------------------------------------------
-' 前提:
-' - 標準モジュール側に ApplyBySerial_NewSpec が存在
-' - 開始通し番号は txtSerial（なければ txtStart）から取得
+' frmSeal（新基準表対応）
+' - 開始通し番号は txtSerial 優先、未存在/空欄時は txtStart を参照
+' - 実処理は標準モジュールの ApplyBySerial_NewSpec に委譲
 '========================================================
 Private Sub btnApply_Click()
 
@@ -13,15 +11,7 @@ Private Sub btnApply_Click()
 
     On Error GoTo ErrorHandler
 
-    ' 既存フォーム名に合わせて必要に応じて調整
-    startSerial = ""
-    On Error Resume Next
-    startSerial = Trim$(CStr(Me.Controls("txtSerial").value))
-    If Len(startSerial) = 0 Then
-        startSerial = Trim$(CStr(Me.Controls("txtStart").value))
-    End If
-    On Error GoTo ErrorHandler
-
+    startSerial = GetStartSerialFromForm(Me)
     If Len(startSerial) = 0 Then
         MsgBox "通し番号（開始番号）を入力してください。", vbExclamation
         Exit Sub
@@ -34,30 +24,36 @@ Private Sub btnApply_Click()
 ErrorHandler:
     MsgBox "反映処理でエラーが発生しました: " & Err.Description, vbExclamation
 
-End SubOption Explicit
+End Sub
+
+Private Function GetStartSerialFromForm(ByVal frm As Object) As String
+
+    Dim v As String
+
+    v = ""
+
+    On Error Resume Next
+    v = Trim$(CStr(frm.Controls("txtSerial").Value))
+    If Len(v) = 0 Then
+        v = Trim$(CStr(frm.Controls("txtStart").Value))
+    End If
+    On Error GoTo 0
+
+    GetStartSerialFromForm = v
+
+End Function
 
 '========================================================
-' frmSeal 差し替え用（新基準表対応）
-'--------------------------------------------------------
-' 既存の frmSeal に以下の関数を貼り付けて置き換えてください。
-' - WriteOneSeal
-' - BuildIndexes（必要なら置換）
-' - 補助関数群
-'
+' 見出し辞書/通し番号辞書の作成
 ' 前提:
-' - GroupBase / PutMergeTopLeft / ClearMergeTarget は既存実装を流用
-' - 転記元は「新ファイル基準表」
-' - キーは「通し番号」
+' - 1行目を見出し
+' - 2行目以降をデータ
 '========================================================
-
-'--------------------------------------------------------
-' 必要見出しを候補付きで解決し、通し番号→行番号インデックスを作成
-' ※既存BuildIndexesを置き換える場合に使用
-'--------------------------------------------------------
 Public Sub BuildIndexes_NewSpec(ByVal wsSrc As Worksheet, ByRef serialIndex As Object, ByRef headerIndex As Object)
 
-    Dim lastCol As Long, lastRow As Long
-    Dim c As Long, r As Long
+    Dim lastCol As Long
+    Dim lastRow As Long
+    Dim r As Long
     Dim key As String
 
     Set serialIndex = CreateObject("Scripting.Dictionary")
@@ -66,7 +62,6 @@ Public Sub BuildIndexes_NewSpec(ByVal wsSrc As Worksheet, ByRef serialIndex As O
     lastCol = LastUsedCol(wsSrc)
     lastRow = LastUsedRow(wsSrc)
 
-    ' 見出し候補（表記ゆれ吸収）
     headerIndex("通し番号") = FindHeaderByCandidates(wsSrc, lastCol, Array("通し番号"))
     headerIndex("タイトル") = FindHeaderByCandidates(wsSrc, lastCol, Array("タイトル"))
     headerIndex("分類名2") = FindHeaderByCandidates(wsSrc, lastCol, Array("分類名２", "分類名2"))
@@ -79,7 +74,7 @@ Public Sub BuildIndexes_NewSpec(ByVal wsSrc As Worksheet, ByRef serialIndex As O
     If CLng(headerIndex("通し番号")) = 0 Then Exit Sub
 
     For r = 2 To lastRow
-        key = Trim$(CStr(wsSrc.Cells(r, CLng(headerIndex("通し番号"))).value))
+        key = Trim$(CStr(wsSrc.Cells(r, CLng(headerIndex("通し番号"))).Value))
         If Len(key) > 0 Then
             If Not serialIndex.Exists(key) Then
                 serialIndex.Add key, r
@@ -89,15 +84,15 @@ Public Sub BuildIndexes_NewSpec(ByVal wsSrc As Worksheet, ByRef serialIndex As O
 
 End Sub
 
-'--------------------------------------------------------
-' WriteOneSeal（新仕様）
-' 左上ブロック基準:
-'   A2 = 保存期間（継続なら「継」）
-'   B2 = タイトル
-'   H2 = 分類名2
-'   A3 = 年度（和暦の数値部）
-'   B3 = 分類名3
-'--------------------------------------------------------
+'========================================================
+' 1面分の転記
+' 左上基準:
+'   A2: 保存期間（継続→継）
+'   B2: タイトル
+'   H2: 分類名2
+'   A3: 年度（和暦の数値部）
+'   B3: 分類名3
+'========================================================
 Public Sub WriteOneSeal_NewSpec( _
     ByVal wsSrc As Worksheet, _
     ByVal srcRow As Long, _
@@ -109,12 +104,18 @@ Public Sub WriteOneSeal_NewSpec( _
     ByVal colWareki As Long, _
     ByVal colSaveTerm As Long)
 
-    Dim baseCol As Long, baseRow As Long
-    Dim vTitle As String, vClass2 As String, vClass3 As String
-    Dim vWareki As String, vSave As String
+    Dim baseCol As Long
+    Dim baseRow As Long
+    Dim offSlash As Long
+    Dim offG1 As Long
 
-    ' 既存のGroupBaseを流用（左6面＋右6面レイアウト）
-    GroupBase slot, baseRow, baseCol
+    Dim vTitle As String
+    Dim vClass2 As String
+    Dim vClass3 As String
+    Dim vWareki As String
+    Dim vSave As String
+
+    GroupBase slot, baseCol, baseRow, offSlash, offG1
 
     vTitle = GetCellTrim(wsSrc, srcRow, colTitle)
     vClass2 = GetCellTrim(wsSrc, srcRow, colClass2)
@@ -122,29 +123,26 @@ Public Sub WriteOneSeal_NewSpec( _
     vWareki = GetCellTrim(wsSrc, srcRow, colWareki)
     vSave = GetCellTrim(wsSrc, srcRow, colSaveTerm)
 
-    ' 念のため対象セルをクリア（結合セル対応は既存ヘルパーを流用）
-    ClearMergeTarget wsSeal.Cells(baseRow, baseCol)       ' A2
-    ClearMergeTarget wsSeal.Cells(baseRow, baseCol + 1)   ' B2
-    ClearMergeTarget wsSeal.Cells(baseRow, baseCol + 7)   ' H2
-    ClearMergeTarget wsSeal.Cells(baseRow + 1, baseCol)   ' A3
-    ClearMergeTarget wsSeal.Cells(baseRow + 1, baseCol + 1) ' B3
+    ClearMergeTarget wsSeal, baseRow, baseCol
+    ClearMergeTarget wsSeal, baseRow, baseCol + 1
+    ClearMergeTarget wsSeal, baseRow, baseCol + 7
+    ClearMergeTarget wsSeal, baseRow + 1, baseCol
+    ClearMergeTarget wsSeal, baseRow + 1, baseCol + 1
 
-    ' 新仕様の転記
-    PutMergeTopLeft wsSeal.Cells(baseRow, baseCol), SaveTermToKei(vSave)          ' A2
-    PutMergeTopLeft wsSeal.Cells(baseRow, baseCol + 1), vTitle                     ' B2
-    PutMergeTopLeft wsSeal.Cells(baseRow, baseCol + 7), vClass2                    ' H2
-    PutMergeTopLeft wsSeal.Cells(baseRow + 1, baseCol), ExtractWarekiNumber(vWareki) ' A3
-    PutMergeTopLeft wsSeal.Cells(baseRow + 1, baseCol + 1), vClass3                ' B3
+    PutMergeTopLeft wsSeal, baseRow, baseCol, SaveTermToKei(vSave)
+    PutMergeTopLeft wsSeal, baseRow, baseCol + 1, vTitle
+    PutMergeTopLeft wsSeal, baseRow, baseCol + 7, vClass2
+    PutMergeTopLeft wsSeal, baseRow + 1, baseCol, ExtractWarekiNumber(vWareki)
+    PutMergeTopLeft wsSeal, baseRow + 1, baseCol + 1, vClass3
 
 End Sub
 
-'--------------------------------------------------------
-' 年度（和暦）から数値部分のみ抽出
-' 例: 令和7年度 / R7 / r07 / 7 -> "7"
-'--------------------------------------------------------
 Public Function ExtractWarekiNumber(ByVal s As String) As String
 
-    Dim t As String, i As Long, ch As String, buf As String
+    Dim t As String
+    Dim i As Long
+    Dim ch As String
+    Dim buf As String
 
     t = Trim$(CStr(s))
     If Len(t) = 0 Then
@@ -158,8 +156,6 @@ Public Function ExtractWarekiNumber(ByVal s As String) As String
     t = Replace(t, "r", "")
     t = Replace(t, " ", "")
     t = Replace(t, "　", "")
-
-    ' 全角数字を半角へ寄せる
     t = StrConv(t, vbNarrow)
 
     For i = 1 To Len(t)
@@ -170,14 +166,11 @@ Public Function ExtractWarekiNumber(ByVal s As String) As String
     If Len(buf) = 0 Then
         ExtractWarekiNumber = ""
     Else
-        ExtractWarekiNumber = CStr(CLng(buf)) ' 07 -> 7
+        ExtractWarekiNumber = CStr(CLng(buf))
     End If
 
 End Function
 
-'--------------------------------------------------------
-' 保存期間が「継続」の時だけ「継」を返す
-'--------------------------------------------------------
 Public Function SaveTermToKei(ByVal s As String) As String
 
     If StrComp(Trim$(CStr(s)), "継続", vbBinaryCompare) = 0 Then
@@ -188,19 +181,17 @@ Public Function SaveTermToKei(ByVal s As String) As String
 
 End Function
 
-'--------------------------------------------------------
-' ヘッダー候補から列番号取得（完全一致）
-'--------------------------------------------------------
 Public Function FindHeaderByCandidates(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal candidates As Variant) As Long
 
-    Dim c As Long, i As Long
+    Dim c As Long
+    Dim i As Long
     Dim hv As String
 
     FindHeaderByCandidates = 0
     If lastCol <= 0 Then Exit Function
 
     For c = 1 To lastCol
-        hv = Trim$(CStr(ws.Cells(1, c).value))
+        hv = Trim$(CStr(ws.Cells(1, c).Value))
         For i = LBound(candidates) To UBound(candidates)
             If StrComp(hv, Trim$(CStr(candidates(i))), vbBinaryCompare) = 0 Then
                 FindHeaderByCandidates = c
@@ -216,7 +207,7 @@ Private Function GetCellTrim(ByVal ws As Worksheet, ByVal r As Long, ByVal c As 
     If c <= 0 Then
         GetCellTrim = ""
     Else
-        GetCellTrim = Trim$(CStr(ws.Cells(r, c).value))
+        GetCellTrim = Trim$(CStr(ws.Cells(r, c).Value))
     End If
 
 End Function
@@ -224,11 +215,12 @@ End Function
 Private Function LastUsedRow(ByVal ws As Worksheet) As Long
 
     Dim lastCell As Range
+
     Set lastCell = ws.Cells.Find(What:="*", LookIn:=xlFormulas, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
     If lastCell Is Nothing Then
         LastUsedRow = 1
     Else
-        LastUsedRow = lastCell.row
+        LastUsedRow = lastCell.Row
     End If
 
 End Function
@@ -236,6 +228,7 @@ End Function
 Private Function LastUsedCol(ByVal ws As Worksheet) As Long
 
     Dim lastCell As Range
+
     Set lastCell = ws.Cells.Find(What:="*", LookIn:=xlFormulas, SearchOrder:=xlByColumns, SearchDirection:=xlPrevious)
     If lastCell Is Nothing Then
         LastUsedCol = 0
@@ -244,11 +237,3 @@ Private Function LastUsedCol(ByVal ws As Worksheet) As Long
     End If
 
 End Function
-
-Private Sub btnApply_Click()
-
-End Sub
-
-Private Sub UserForm_Click()
-
-End Sub
