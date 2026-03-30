@@ -645,6 +645,9 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
     Dim changedCell As Range
     Dim inputName As String
     Dim codeValue As String
+    Dim warekiCol As Long
+    Dim seirekiCol As Long
+    Dim westernYear As String
 
     If Target Is Nothing Then Exit Sub
     If Target.CountLarge > 1000 Then Exit Sub
@@ -668,6 +671,10 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
         Array("媒体種別", "媒体種別ID", "媒体種別") _
     )
 
+    ' 追加機能: 年度（和暦）→ 年度（西暦）自動反映
+    warekiCol = GetHeaderColumnExact(wsEdit, "年度（和暦）")
+    seirekiCol = GetHeaderColumnExact(wsEdit, "年度")
+
     ' 対象表示列だけを監視対象にする（見出し未存在はスキップ）
     For i = LBound(pairDefs) To UBound(pairDefs)
         displayCol = GetHeaderColumnExact(wsEdit, CStr(pairDefs(i)(0)))
@@ -681,12 +688,33 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
         End If
     Next i
 
+    ' 追加機能: 「年度（和暦）」列も変更監視対象に含める
+    If warekiCol > 0 Then
+        Set workRange = wsEdit.Range(wsEdit.Cells(2, warekiCol), wsEdit.Cells(wsEdit.Rows.Count, warekiCol))
+        If watchRange Is Nothing Then
+            Set watchRange = workRange
+        Else
+            Set watchRange = Union(watchRange, workRange)
+        End If
+    End If
+
     If watchRange Is Nothing Then GoTo ExitHandler
     Set workRange = Intersect(Target, watchRange)
     If workRange Is Nothing Then GoTo ExitHandler
 
     ' 変更セルごとに表示列→ID列の補完を実施
     For Each changedCell In workRange.Cells
+        '--------------------------------------------------------
+        ' 追加機能: 年度（和暦）入力時に「年度」列へ西暦を反映
+        '--------------------------------------------------------
+        If warekiCol > 0 And seirekiCol > 0 Then
+            If changedCell.Column = warekiCol Then
+                westernYear = ConvertReiwaToWesternYear(CStr(changedCell.Value))
+                wsEdit.Cells(changedCell.Row, seirekiCol).Value = westernYear
+                GoTo ContinueCellLoop
+            End If
+        End If
+
         For i = LBound(pairDefs) To UBound(pairDefs)
             displayCol = GetHeaderColumnExact(wsEdit, CStr(pairDefs(i)(0)))
             If displayCol = 0 Then GoTo ContinuePair
@@ -709,6 +737,7 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
             Exit For
 ContinuePair:
         Next i
+ContinueCellLoop:
     Next changedCell
 
 ExitHandler:
@@ -778,6 +807,66 @@ Private Function GetCodeFromCodeMaster(ByVal kubunName As String, ByVal displayN
 
 SafeExit:
     ' 見つからない場合やエラー時は空文字のまま返す
+
+End Function
+
+'--------------------------------------------------------
+' 令和表記を西暦へ変換する
+' 対応例: R7 / r7 / R07 / 令和7 / 令和7年度
+' 変換式: 西暦 = 2018 + 令和年
+' 変換不可・空白時は空文字を返す
+'--------------------------------------------------------
+Private Function ConvertReiwaToWesternYear(ByVal warekiText As String) As String
+
+    Dim s As String
+    Dim numPart As String
+    Dim i As Long
+    Dim ch As String
+    Dim n As Long
+
+    ConvertReiwaToWesternYear = ""
+
+    s = Trim(CStr(warekiText))
+    If Len(s) = 0 Then Exit Function
+
+    ' 全角/半角スペースを除去
+    s = Replace(s, " ", "")
+    s = Replace(s, "　", "")
+
+    ' 接頭辞を除去（R / r / 令和）
+    If LCase$(Left$(s, 1)) = "r" Then
+        numPart = Mid$(s, 2)
+    ElseIf Left$(s, 2) = "令和" Then
+        numPart = Mid$(s, 3)
+    Else
+        Exit Function
+    End If
+
+    ' 「年度」を除去
+    numPart = Replace(numPart, "年度", "")
+    numPart = Trim$(numPart)
+    If Len(numPart) = 0 Then Exit Function
+
+    ' 数字だけを抽出
+    For i = 1 To Len(numPart)
+        ch = Mid$(numPart, i, 1)
+        If ch Like "#" Then
+            ConvertReiwaToWesternYear = ConvertReiwaToWesternYear & ch
+        End If
+    Next i
+
+    If Len(ConvertReiwaToWesternYear) = 0 Then
+        ConvertReiwaToWesternYear = ""
+        Exit Function
+    End If
+
+    n = CLng(ConvertReiwaToWesternYear)
+    If n <= 0 Then
+        ConvertReiwaToWesternYear = ""
+        Exit Function
+    End If
+
+    ConvertReiwaToWesternYear = CStr(2018 + n)
 
 End Function
 
