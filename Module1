@@ -895,3 +895,166 @@ Private Function GetLastUsedCol(ByVal ws As Worksheet) As Long
     End If
 
 End Function
+
+'========================================================
+' frmSeal から呼び出す新基準表→個別フォルダシール反映
+'========================================================
+Public Sub ApplyBySerial_NewSpec(ByVal startSerial As String)
+
+    Dim wsSrc As Worksheet
+    Dim wsSeal As Worksheet
+    Dim serialIndex As Object
+    Dim headerIndex As Object
+
+    Dim startNo As Long
+    Dim slot As Long
+    Dim serialKey As String
+    Dim srcRow As Long
+
+    On Error GoTo ErrorHandler
+
+    Set wsSrc = ResolveWorksheetByCandidates(ThisWorkbook, Array("新ファイル基準表"))
+    Set wsSeal = ResolveWorksheetByCandidates(ThisWorkbook, Array("個別フォルダシール", "個別フォルダーシール", "フォルダシール"))
+
+    If wsSrc Is Nothing Then
+        Err.Raise vbObjectError + 1201, , "転記元シート（新ファイル基準表）が見つかりません。"
+    End If
+
+    If wsSeal Is Nothing Then
+        Err.Raise vbObjectError + 1202, , "転記先シート（個別フォルダシール）が見つかりません。"
+    End If
+
+    frmSeal.BuildIndexes_NewSpec wsSrc, serialIndex, headerIndex
+
+    If serialIndex Is Nothing Or headerIndex Is Nothing Then
+        Err.Raise vbObjectError + 1203, , "見出しインデックスの作成に失敗しました。"
+    End If
+
+    If CLng(headerIndex("通し番号")) = 0 Then
+        Err.Raise vbObjectError + 1204, , "見出し「通し番号」が見つかりません。"
+    End If
+
+    startNo = CLng(Val(startSerial))
+    If startNo <= 0 Then
+        Err.Raise vbObjectError + 1205, , "開始通し番号は 1 以上の数値で入力してください。"
+    End If
+
+    For slot = 1 To 12
+        serialKey = CStr(startNo + slot - 1)
+
+        If serialIndex.Exists(serialKey) Then
+            srcRow = CLng(serialIndex(serialKey))
+            frmSeal.WriteOneSeal_NewSpec _
+                wsSrc, srcRow, wsSeal, slot, _
+                CLng(headerIndex("タイトル")), _
+                CLng(headerIndex("分類名2")), _
+                CLng(headerIndex("分類名3")), _
+                CLng(headerIndex("年度和暦")), _
+                CLng(headerIndex("保存期間"))
+        Else
+            ClearOneSealSlot wsSeal, slot
+        End If
+    Next slot
+
+    Exit Sub
+
+ErrorHandler:
+    Err.Raise Err.Number, Err.Source, Err.Description
+
+End Sub
+
+Private Sub ClearOneSealSlot(ByVal wsSeal As Worksheet, ByVal slot As Long)
+
+    Dim baseCol As Long
+    Dim baseRow As Long
+    Dim offSlash As Long
+    Dim offG1 As Long
+
+    GroupBase slot, baseCol, baseRow, offSlash, offG1
+
+    ClearMergeTarget wsSeal, baseRow, baseCol
+    ClearMergeTarget wsSeal, baseRow, baseCol + 1
+    ClearMergeTarget wsSeal, baseRow, baseCol + 7
+    ClearMergeTarget wsSeal, baseRow + 1, baseCol
+    ClearMergeTarget wsSeal, baseRow + 1, baseCol + 1
+
+    PutMergeTopLeft wsSeal, baseRow, baseCol, ""
+    PutMergeTopLeft wsSeal, baseRow, baseCol + 1, ""
+    PutMergeTopLeft wsSeal, baseRow, baseCol + 7, ""
+    PutMergeTopLeft wsSeal, baseRow + 1, baseCol, ""
+    PutMergeTopLeft wsSeal, baseRow + 1, baseCol + 1, ""
+
+End Sub
+
+Private Function ResolveWorksheetByCandidates(ByVal wb As Workbook, ByVal candidates As Variant) As Worksheet
+
+    Dim i As Long
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    For i = LBound(candidates) To UBound(candidates)
+        Set ws = Nothing
+        Set ws = wb.Worksheets(CStr(candidates(i)))
+        If Not ws Is Nothing Then
+            Set ResolveWorksheetByCandidates = ws
+            Exit Function
+        End If
+    Next i
+    On Error GoTo 0
+
+End Function
+
+'========================================================
+' 個別フォルダシール配置ユーティリティ
+' 既存frmSealのPrivate実装を標準モジュールへ移設
+'========================================================
+Public Sub GroupBase( _
+    ByVal idx As Long, _
+    ByRef baseCol As Long, _
+    ByRef baseRow As Long, _
+    ByRef offSlash As Long, _
+    ByRef offG1 As Long)
+
+    Dim rowMap As Variant
+
+    rowMap = Array(2, 5, 8, 11, 14, 17)
+
+    If idx < 1 Then idx = 1
+    If idx > 12 Then idx = 12
+
+    If idx <= 6 Then
+        baseCol = 1                ' 左ブロック A列起点
+        baseRow = CLng(rowMap(idx - 1))
+    Else
+        baseCol = 12               ' 右ブロック L列起点
+        baseRow = CLng(rowMap(idx - 7))
+    End If
+
+    offSlash = 6
+    offG1 = 7
+
+End Sub
+
+Public Sub ClearMergeTarget(ByVal ws As Worksheet, ByVal r As Long, ByVal c As Long)
+
+    With ws.Cells(r, c)
+        If .MergeCells Then
+            .MergeArea.ClearContents
+        Else
+            .ClearContents
+        End If
+    End With
+
+End Sub
+
+Public Sub PutMergeTopLeft(ByVal ws As Worksheet, ByVal r As Long, ByVal c As Long, ByVal v As Variant)
+
+    With ws.Cells(r, c)
+        If .MergeCells Then
+            .MergeArea.Cells(1, 1).Value = v
+        Else
+            .Value = v
+        End If
+    End With
+
+End Sub
