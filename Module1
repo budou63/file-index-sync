@@ -54,10 +54,10 @@ Private Sub NormalizeHeaderLineBreaks(ByVal ws As Worksheet)
     If lastCol <= 0 Then Exit Sub
 
     For Each c In ws.Range(ws.Cells(1, 1), ws.Cells(1, lastCol))
-        If Not IsEmpty(c.Value) Then
-            c.Value = Replace(CStr(c.Value), vbCrLf, "")
-            c.Value = Replace(CStr(c.Value), vbCr, "")
-            c.Value = Replace(CStr(c.Value), vbLf, "")
+        If Not IsEmpty(c.value) Then
+            c.value = Replace(CStr(c.value), vbCrLf, "")
+            c.value = Replace(CStr(c.value), vbCr, "")
+            c.value = Replace(CStr(c.value), vbLf, "")
         End If
     Next c
 
@@ -144,9 +144,9 @@ Public Sub 手順4_差分インポートCSVを作成する()
 
     ' 新ファイル基準表の見出しを辞書化（固定見出しとの同名照合で使用）
     For i = 1 To editLastCol
-        If Len(Trim(CStr(wsEdit.Cells(1, i).Value))) > 0 Then
-            If Not editHeaderMap.Exists(Trim(CStr(wsEdit.Cells(1, i).Value))) Then
-                editHeaderMap.Add Trim(CStr(wsEdit.Cells(1, i).Value)), i
+        If Len(Trim(CStr(wsEdit.Cells(1, i).value))) > 0 Then
+            If Not editHeaderMap.Exists(Trim(CStr(wsEdit.Cells(1, i).value))) Then
+                editHeaderMap.Add Trim(CStr(wsEdit.Cells(1, i).value)), i
             End If
         End If
     Next i
@@ -174,7 +174,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     wsOut.Cells.Clear
     ' 1行目に固定見出しを厳密順で出力
     For i = LBound(fixedHeaders) To UBound(fixedHeaders)
-        wsOut.Cells(1, i - LBound(fixedHeaders) + 1).Value = fixedHeaders(i)
+        wsOut.Cells(1, i - LBound(fixedHeaders) + 1).value = fixedHeaders(i)
     Next i
     outRow = 2
 
@@ -348,7 +348,7 @@ Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, 
     If lastCol <= 0 Then Exit Function
 
     For c = 1 To lastCol
-        headerValue = Trim(CStr(ws.Cells(1, c).Value))
+        headerValue = Trim(CStr(ws.Cells(1, c).value))
         For i = LBound(candidates) To UBound(candidates)
             If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
                 FindHeaderColumn = c
@@ -412,12 +412,12 @@ Private Sub ConvertAnnualUseDivisionValues(ByVal wsDst As Worksheet, ByVal lastR
     If targetCol = 0 Then Exit Sub
 
     For r = 2 To lastRow
-        cellValue = Trim(CStr(wsDst.Cells(r, targetCol).Value))
+        cellValue = Trim(CStr(wsDst.Cells(r, targetCol).value))
         Select Case cellValue
             Case "1"
-                wsDst.Cells(r, targetCol).Value = "毎年作成"
+                wsDst.Cells(r, targetCol).value = "毎年作成"
             Case "2"
-                wsDst.Cells(r, targetCol).Value = "単年のみ"
+                wsDst.Cells(r, targetCol).value = "単年のみ"
             Case Else
                 ' 空白または定義外はそのまま
         End Select
@@ -430,7 +430,7 @@ Private Function GetTrimmedCell(ByVal ws As Worksheet, ByVal rowNo As Long, ByVa
     If colNo <= 0 Then
         GetTrimmedCell = ""
     Else
-        GetTrimmedCell = Trim(CStr(ws.Cells(rowNo, colNo).Value))
+        GetTrimmedCell = Trim(CStr(ws.Cells(rowNo, colNo).value))
     End If
 
 End Function
@@ -465,9 +465,9 @@ Private Sub WriteRowByFixedLayout( _
 
         If editHeaderMap.Exists(sourceHeaderName) Then
             editCol = CLng(editHeaderMap(sourceHeaderName))
-            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).Value = wsEdit.Cells(srcRow, editCol).Value
+            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = wsEdit.Cells(srcRow, editCol).value
         Else
-            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).Value = ""
+            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = ""
         End If
     Next i
 
@@ -513,7 +513,7 @@ Public Sub 手順3_コード管理CSVを作成する()
     )
 
     wsDst.Cells.Clear
-    wsDst.Range("A1:C1").Value = Array("項目名", "コード", "表示名")
+    wsDst.Range("A1:C1").value = Array("項目名", "コード", "表示名")
     outRow = 2
 
     ' ① 実データからコード⇔表示名を抽出（見出し未存在はスキップ）
@@ -523,16 +523,16 @@ Public Sub 手順3_コード管理CSVを作成する()
         If codeCol = 0 Or nameCol = 0 Then GoTo ContinuePairLoop
 
         For r = 2 To srcLastRow
-            codeValue = Trim(CStr(wsSrc.Cells(r, codeCol).Value))
-            nameValue = Trim(CStr(wsSrc.Cells(r, nameCol).Value))
+            codeValue = Trim(CStr(wsSrc.Cells(r, codeCol).value))
+            nameValue = Trim(CStr(wsSrc.Cells(r, nameCol).value))
 
             If Len(codeValue) > 0 And Len(nameValue) > 0 Then
                 uniqueKey = pairDefs(i)(0) & "|" & codeValue & "|" & nameValue
                 If Not dict.Exists(uniqueKey) Then
                     dict.Add uniqueKey, True
-                    wsDst.Cells(outRow, 1).Value = pairDefs(i)(0)
-                    wsDst.Cells(outRow, 2).Value = codeValue
-                    wsDst.Cells(outRow, 3).Value = nameValue
+                    wsDst.Cells(outRow, 1).value = pairDefs(i)(0)
+                    wsDst.Cells(outRow, 2).value = codeValue
+                    wsDst.Cells(outRow, 3).value = nameValue
                     outRow = outRow + 1
                 End If
             End If
@@ -601,9 +601,9 @@ Private Sub AddCodeMasterRecord( _
     If dict.Exists(uniqueKey) Then Exit Sub
 
     dict.Add uniqueKey, True
-    wsDst.Cells(outRow, 1).Value = itemName
-    wsDst.Cells(outRow, 2).Value = codeValue
-    wsDst.Cells(outRow, 3).Value = displayName
+    wsDst.Cells(outRow, 1).value = itemName
+    wsDst.Cells(outRow, 2).value = codeValue
+    wsDst.Cells(outRow, 3).value = displayName
     outRow = outRow + 1
 
 End Sub
@@ -656,7 +656,7 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
     Application.EnableEvents = False
 
     Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
-    If Target.Worksheet.Name <> wsEdit.Name Then GoTo ExitHandler
+    If Target.Worksheet.name <> wsEdit.name Then GoTo ExitHandler
 
     lastCol = GetLastUsedCol(wsEdit)
     If lastCol <= 0 Then GoTo ExitHandler
@@ -709,8 +709,8 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
         '--------------------------------------------------------
         If warekiCol > 0 And seirekiCol > 0 Then
             If changedCell.Column = warekiCol Then
-                westernYear = ConvertReiwaToWesternYear(CStr(changedCell.Value))
-                wsEdit.Cells(changedCell.Row, seirekiCol).Value = westernYear
+                westernYear = ConvertReiwaToWesternYear(CStr(changedCell.value))
+                wsEdit.Cells(changedCell.row, seirekiCol).value = westernYear
                 GoTo ContinueCellLoop
             End If
         End If
@@ -723,15 +723,15 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
             idCol = GetHeaderColumnExact(wsEdit, CStr(pairDefs(i)(1)))
             If idCol = 0 Then Exit For ' ID見出しが無ければその項目はスキップ
 
-            inputName = Trim(CStr(changedCell.Value))
+            inputName = Trim(CStr(changedCell.value))
             If Len(inputName) = 0 Then
-                wsEdit.Cells(changedCell.Row, idCol).Value = ""
+                wsEdit.Cells(changedCell.row, idCol).value = ""
             Else
                 codeValue = GetCodeFromCodeMaster(CStr(pairDefs(i)(2)), inputName)
                 If Len(codeValue) > 0 Then
-                    wsEdit.Cells(changedCell.Row, idCol).Value = codeValue
+                    wsEdit.Cells(changedCell.row, idCol).value = codeValue
                 Else
-                    wsEdit.Cells(changedCell.Row, idCol).Value = ""
+                    wsEdit.Cells(changedCell.row, idCol).value = ""
                 End If
             End If
             Exit For
@@ -762,7 +762,7 @@ Private Function GetHeaderColumnExact(ByVal ws As Worksheet, ByVal headerName As
     If lastCol <= 0 Then Exit Function
 
     For c = 1 To lastCol
-        headerValue = Trim(CStr(ws.Cells(1, c).Value))
+        headerValue = Trim(CStr(ws.Cells(1, c).value))
         If StrComp(headerValue, Trim(headerName), vbBinaryCompare) = 0 Then
             GetHeaderColumnExact = c
             Exit Function
@@ -795,12 +795,12 @@ Private Function GetCodeFromCodeMaster(ByVal kubunName As String, ByVal displayN
 
     ' コード管理CSV仕様: A列=項目名 / B列=コード / C列=表示名
     For r = 2 To lastRow
-        kubunValue = Trim(CStr(wsMaster.Cells(r, 1).Value))
-        nameValue = Trim(CStr(wsMaster.Cells(r, 3).Value))
+        kubunValue = Trim(CStr(wsMaster.Cells(r, 1).value))
+        nameValue = Trim(CStr(wsMaster.Cells(r, 3).value))
 
         If StrComp(kubunValue, Trim(kubunName), vbBinaryCompare) = 0 _
            And StrComp(nameValue, Trim(displayName), vbBinaryCompare) = 0 Then
-            GetCodeFromCodeMaster = Trim(CStr(wsMaster.Cells(r, 2).Value))
+            GetCodeFromCodeMaster = Trim(CStr(wsMaster.Cells(r, 2).value))
             Exit For
         End If
     Next r
@@ -878,7 +878,7 @@ Private Function GetLastUsedRow(ByVal ws As Worksheet) As Long
     If lastCell Is Nothing Then
         GetLastUsedRow = 1
     Else
-        GetLastUsedRow = lastCell.Row
+        GetLastUsedRow = lastCell.row
     End If
 
 End Function
@@ -1051,10 +1051,14 @@ Public Sub PutMergeTopLeft(ByVal ws As Worksheet, ByVal r As Long, ByVal c As Lo
 
     With ws.Cells(r, c)
         If .MergeCells Then
-            .MergeArea.Cells(1, 1).Value = v
+            .MergeArea.Cells(1, 1).value = v
         Else
-            .Value = v
+            .value = v
         End If
     End With
 
+End Sub
+
+Public Sub シール入力フォームを開く()
+    frmSeal.Show
 End Sub
