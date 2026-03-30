@@ -55,3 +55,26 @@
 
 ## 補足
 一時ファイル（`~$*.xls*`, `*.tmp`, `Thumbs.db`, `.DS_Store` など）は `.gitignore` で除外しています。
+
+## 新ファイル基準表のID自動補完（Worksheet_Change）設定
+- `新ファイル基準表` で表示名入力時にID列へ自動補完するには、**シートモジュール**に `Worksheet_Change` が必要です。
+- 貼り付け先: `VBAProject > Microsoft Excel Objects > 新ファイル基準表`
+- コードは `新ファイル基準表_SheetModule.bas` を使用してください（標準モジュールでは発火しません）。
+
+```vb
+Private Sub Worksheet_Change(ByVal Target As Range)
+    On Error GoTo ExitHandler
+    Application.EnableEvents = False
+
+    新ファイル基準表_表示名からID自動補完 Target
+
+ExitHandler:
+    Application.EnableEvents = True
+End Sub
+```
+
+### 動かないときの確認
+1. 上記 `Worksheet_Change` が「新ファイル基準表」シートモジュールに存在するか
+2. 標準モジュール `Module1` に `Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target As Range)` が存在するか
+3. 即時ウィンドウで `Application.EnableEvents = True` を実行し、イベント無効化が残っていないか
+4. `コード管理CSV` の構成が `A列=項目名 / B列=コード / C列=表示名` になっているか
