@@ -1003,3 +1003,58 @@ Private Function ResolveWorksheetByCandidates(ByVal wb As Workbook, ByVal candid
     On Error GoTo 0
 
 End Function
+
+'========================================================
+' 個別フォルダシール配置ユーティリティ
+' 既存frmSealのPrivate実装を標準モジュールへ移設
+'========================================================
+Public Sub GroupBase( _
+    ByVal idx As Long, _
+    ByRef baseCol As Long, _
+    ByRef baseRow As Long, _
+    ByRef offSlash As Long, _
+    ByRef offG1 As Long)
+
+    Dim rowMap As Variant
+
+    rowMap = Array(2, 5, 8, 11, 14, 17)
+
+    If idx < 1 Then idx = 1
+    If idx > 12 Then idx = 12
+
+    If idx <= 6 Then
+        baseCol = 1                ' 左ブロック A列起点
+        baseRow = CLng(rowMap(idx - 1))
+    Else
+        baseCol = 12               ' 右ブロック L列起点
+        baseRow = CLng(rowMap(idx - 7))
+    End If
+
+    offSlash = 6
+    offG1 = 7
+
+End Sub
+
+Public Sub ClearMergeTarget(ByVal ws As Worksheet, ByVal r As Long, ByVal c As Long)
+
+    With ws.Cells(r, c)
+        If .MergeCells Then
+            .MergeArea.ClearContents
+        Else
+            .ClearContents
+        End If
+    End With
+
+End Sub
+
+Public Sub PutMergeTopLeft(ByVal ws As Worksheet, ByVal r As Long, ByVal c As Long, ByVal v As Variant)
+
+    With ws.Cells(r, c)
+        If .MergeCells Then
+            .MergeArea.Cells(1, 1).Value = v
+        Else
+            .Value = v
+        End If
+    End With
+
+End Sub
