@@ -364,6 +364,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
     ' 8) キー列は保持したまま非表示（後続処理で利用）
     HideKeyColumnsForStep2 wsDst
 
+    ' 9) タイトルがある行だけ通し番号を再採番
+    ReindexSerial_NewFileStandard wsDst
+
     MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
            "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
 
@@ -375,6 +378,61 @@ SafeExit:
 ErrorHandler:
     MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & Err.Description, vbCritical
     Resume SafeExit
+
+End Sub
+
+Public Sub 通し番号_再採番_新ファイル基準表()
+
+    On Error GoTo ErrorHandler
+
+    ReindexSerial_NewFileStandard ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    MsgBox "新ファイル基準表の通し番号を再採番しました。", vbInformation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "通し番号の再採番中にエラーが発生しました: " & Err.Description, vbExclamation
+
+End Sub
+
+Public Sub ReindexSerial_NewFileStandard(Optional ByVal ws As Worksheet)
+
+    Dim targetWs As Worksheet
+    Dim lastCol As Long
+    Dim lastRow As Long
+    Dim serialCol As Long
+    Dim titleCol As Long
+    Dim rowNo As Long
+    Dim nextSerial As Long
+    Dim titleValue As String
+
+    If ws Is Nothing Then
+        Set targetWs = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    Else
+        Set targetWs = ws
+    End If
+
+    lastCol = GetLastUsedCol(targetWs)
+    If lastCol <= 0 Then Exit Sub
+
+    serialCol = FindHeaderColumn(targetWs, lastCol, Array("通し番号"))
+    titleCol = FindHeaderColumn(targetWs, lastCol, Array("タイトル"))
+
+    If serialCol = 0 Then Err.Raise vbObjectError + 2101, , "通し番号 列が見つかりません。"
+    If titleCol = 0 Then Err.Raise vbObjectError + 2102, , "タイトル 列が見つかりません。"
+
+    lastRow = GetLastUsedRow(targetWs)
+    If lastRow < 2 Then Exit Sub
+
+    nextSerial = 0
+    For rowNo = 2 To lastRow
+        titleValue = Trim(CStr(targetWs.Cells(rowNo, titleCol).Value))
+        If titleValue <> "" Then
+            nextSerial = nextSerial + 1
+            targetWs.Cells(rowNo, serialCol).Value = nextSerial
+        Else
+            targetWs.Cells(rowNo, serialCol).ClearContents
+        End If
+    Next rowNo
 
 End Sub
 
