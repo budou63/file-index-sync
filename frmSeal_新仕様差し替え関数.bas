@@ -1,28 +1,146 @@
 Option Explicit
 
 '========================================================
-' frmSeal 差し替え用（新基準表対応）
+' frmSeal 新仕様差し替えコード（既存構造維持版）
 '--------------------------------------------------------
-' 既存の frmSeal に以下の関数を貼り付けて置き換えてください。
-' - WriteOneSeal
-' - BuildIndexes（必要なら置換）
-' - 補助関数群
+' 目的:
+' - 既存 GroupBase / ClearMergeTarget / PutMergeTopLeft の
+'   引数仕様に合わせてコンパイルエラーを回避
+' - 新基準表見出しで通し番号検索し、12面へ転記
 '
-' 前提:
-' - GroupBase / PutMergeTopLeft / ClearMergeTarget は既存実装を流用
-' - 転記元は「新ファイル基準表」
-' - キーは「通し番号」
+' 既存前提（変更しない）:
+'   GroupBase(slot, baseCol, baseRow, offSlash, offG1)
+'   ClearMergeTarget(ws, row, col)
+'   PutMergeTopLeft(ws, row, col, value)
 '========================================================
 
+Private Const SHEET_NEW_STANDARD As String = "新ファイル基準表"
+Private Const SHEET_SEAL As String = "個別フォルダシール"
+
 '--------------------------------------------------------
-' 必要見出しを候補付きで解決し、通し番号→行番号インデックスを作成
-' ※既存BuildIndexesを置き換える場合に使用
+' frmSeal の btnApply_Click から呼ぶ想定のエントリ
+'--------------------------------------------------------
+Public Sub ApplyBySerial_NewSpec(ByVal startSerialText As String)
+
+    Dim wsSrc As Worksheet, wsSeal As Worksheet
+    Dim serialIndex As Object, headerIndex As Object
+    Dim startNo As Long, slot As Long
+    Dim serialKey As String
+    Dim srcRow As Long
+
+    On Error GoTo ErrorHandler
+
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_NEW_STANDARD)
+    Set wsSeal = ThisWorkbook.Worksheets(SHEET_SEAL)
+
+    BuildIndexes_NewSpec wsSrc, serialIndex, headerIndex
+    If serialIndex Is Nothing Then Exit Sub
+
+    startNo = CLng(Val(Trim$(startSerialText)))
+    If startNo <= 0 Then
+        MsgBox "通し番号（開始番号）を入力してください。", vbExclamation
+        Exit Sub
+    End If
+
+    ' 12面へ順番に反映
+    For slot = 1 To 12
+        serialKey = CStr(startNo + slot - 1)
+
+        If serialIndex.Exists(serialKey) Then
+            srcRow = CLng(serialIndex(serialKey))
+            WriteOneSeal_NewSpec wsSrc, wsSeal, slot, srcRow, headerIndex
+        Else
+            ClearOneSeal_NewSpec wsSeal, slot
+        End If
+    Next slot
+
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "シール反映中にエラーが発生しました: " & Err.Description, vbExclamation
+
+End Sub
+
+'--------------------------------------------------------
+' 新仕様 WriteOneSeal
+' 左上ブロック基準:
+'   A2 = 保存期間（継続なら「継」）
+'   B2 = タイトル
+'   H2 = 分類名2
+'   A3 = 年度（和暦の数値部）
+'   B3 = 分類名3
+'--------------------------------------------------------
+Public Sub WriteOneSeal_NewSpec( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsSeal As Worksheet, _
+    ByVal slot As Long, _
+    ByVal srcRow As Long, _
+    ByVal headerIndex As Object)
+
+    Dim baseCol As Long, baseRow As Long
+    Dim offSlash As Long, offG1 As Long
+    Dim vTitle As String, vClass2 As String, vClass3 As String
+    Dim vWareki As String, vSave As String
+    Dim colTitle As Long, colClass2 As Long, colClass3 As Long
+    Dim colWareki As Long, colSave As Long
+
+    colTitle = DictCol(headerIndex, "タイトル")
+    colClass2 = DictCol(headerIndex, "分類名2")
+    colClass3 = DictCol(headerIndex, "分類名3")
+    colWareki = DictCol(headerIndex, "年度和暦")
+    colSave = DictCol(headerIndex, "保存期間")
+
+    vTitle = GetCellTrim(wsSrc, srcRow, colTitle)
+    vClass2 = GetCellTrim(wsSrc, srcRow, colClass2)
+    vClass3 = GetCellTrim(wsSrc, srcRow, colClass3)
+    vWareki = GetCellTrim(wsSrc, srcRow, colWareki)
+    vSave = GetCellTrim(wsSrc, srcRow, colSave)
+
+    ' 既存関数シグネチャのまま利用（ここがコンパイルエラー対策）
+    GroupBase slot, baseCol, baseRow, offSlash, offG1
+
+    ' クリア（既存関数シグネチャに合わせる）
+    ClearMergeTarget wsSeal, baseRow, baseCol         ' A2
+    ClearMergeTarget wsSeal, baseRow, baseCol + 1     ' B2
+    ClearMergeTarget wsSeal, baseRow, baseCol + 7     ' H2
+    ClearMergeTarget wsSeal, baseRow + 1, baseCol     ' A3
+    ClearMergeTarget wsSeal, baseRow + 1, baseCol + 1 ' B3
+
+    ' 新仕様転記（既存関数シグネチャに合わせる）
+    PutMergeTopLeft wsSeal, baseRow, baseCol, SaveTermToKei(vSave)            ' A2
+    PutMergeTopLeft wsSeal, baseRow, baseCol + 1, vTitle                       ' B2
+    PutMergeTopLeft wsSeal, baseRow, baseCol + 7, vClass2                      ' H2
+    PutMergeTopLeft wsSeal, baseRow + 1, baseCol, ExtractWarekiNumber(vWareki) ' A3
+    PutMergeTopLeft wsSeal, baseRow + 1, baseCol + 1, vClass3                  ' B3
+
+End Sub
+
+'--------------------------------------------------------
+' 対象面を新仕様項目だけクリア
+'--------------------------------------------------------
+Public Sub ClearOneSeal_NewSpec(ByVal wsSeal As Worksheet, ByVal slot As Long)
+
+    Dim baseCol As Long, baseRow As Long
+    Dim offSlash As Long, offG1 As Long
+
+    GroupBase slot, baseCol, baseRow, offSlash, offG1
+
+    ClearMergeTarget wsSeal, baseRow, baseCol
+    ClearMergeTarget wsSeal, baseRow, baseCol + 1
+    ClearMergeTarget wsSeal, baseRow, baseCol + 7
+    ClearMergeTarget wsSeal, baseRow + 1, baseCol
+    ClearMergeTarget wsSeal, baseRow + 1, baseCol + 1
+
+End Sub
+
+'--------------------------------------------------------
+' 通し番号→行番号インデックス作成
 '--------------------------------------------------------
 Public Sub BuildIndexes_NewSpec(ByVal wsSrc As Worksheet, ByRef serialIndex As Object, ByRef headerIndex As Object)
 
     Dim lastCol As Long, lastRow As Long
-    Dim c As Long, r As Long
-    Dim key As String
+    Dim r As Long, key As String
+    Dim colSerial As Long
 
     Set serialIndex = CreateObject("Scripting.Dictionary")
     Set headerIndex = CreateObject("Scripting.Dictionary")
@@ -30,20 +148,21 @@ Public Sub BuildIndexes_NewSpec(ByVal wsSrc As Worksheet, ByRef serialIndex As O
     lastCol = LastUsedCol(wsSrc)
     lastRow = LastUsedRow(wsSrc)
 
-    ' 見出し候補（表記ゆれ吸収）
     headerIndex("通し番号") = FindHeaderByCandidates(wsSrc, lastCol, Array("通し番号"))
     headerIndex("タイトル") = FindHeaderByCandidates(wsSrc, lastCol, Array("タイトル"))
     headerIndex("分類名2") = FindHeaderByCandidates(wsSrc, lastCol, Array("分類名２", "分類名2"))
     headerIndex("分類名3") = FindHeaderByCandidates(wsSrc, lastCol, Array("分類名３", "分類名3"))
     headerIndex("年度和暦") = FindHeaderByCandidates(wsSrc, lastCol, Array("年度（和暦）", "年度(和暦)"))
     headerIndex("保存期間") = FindHeaderByCandidates(wsSrc, lastCol, Array("保存期間"))
-    headerIndex("キャビネット番号") = FindHeaderByCandidates(wsSrc, lastCol, Array("キャビネット番号"))
-    headerIndex("n+1") = FindHeaderByCandidates(wsSrc, lastCol, Array("ｎ＋1", "n+1"))
 
-    If CLng(headerIndex("通し番号")) = 0 Then Exit Sub
+    colSerial = DictCol(headerIndex, "通し番号")
+    If colSerial = 0 Then
+        MsgBox "見出し「通し番号」が見つかりません。", vbExclamation
+        Exit Sub
+    End If
 
     For r = 2 To lastRow
-        key = Trim$(CStr(wsSrc.Cells(r, CLng(headerIndex("通し番号"))).Value))
+        key = Trim$(CStr(wsSrc.Cells(r, colSerial).Value))
         If Len(key) > 0 Then
             If Not serialIndex.Exists(key) Then
                 serialIndex.Add key, r
@@ -54,57 +173,7 @@ Public Sub BuildIndexes_NewSpec(ByVal wsSrc As Worksheet, ByRef serialIndex As O
 End Sub
 
 '--------------------------------------------------------
-' WriteOneSeal（新仕様）
-' 左上ブロック基準:
-'   A2 = 保存期間（継続なら「継」）
-'   B2 = タイトル
-'   H2 = 分類名2
-'   A3 = 年度（和暦の数値部）
-'   B3 = 分類名3
-'--------------------------------------------------------
-Public Sub WriteOneSeal_NewSpec( _
-    ByVal wsSrc As Worksheet, _
-    ByVal srcRow As Long, _
-    ByVal wsSeal As Worksheet, _
-    ByVal slot As Long, _
-    ByVal colTitle As Long, _
-    ByVal colClass2 As Long, _
-    ByVal colClass3 As Long, _
-    ByVal colWareki As Long, _
-    ByVal colSaveTerm As Long)
-
-    Dim baseCol As Long, baseRow As Long
-    Dim vTitle As String, vClass2 As String, vClass3 As String
-    Dim vWareki As String, vSave As String
-
-    ' 既存のGroupBaseを流用（左6面＋右6面レイアウト）
-    GroupBase slot, baseRow, baseCol
-
-    vTitle = GetCellTrim(wsSrc, srcRow, colTitle)
-    vClass2 = GetCellTrim(wsSrc, srcRow, colClass2)
-    vClass3 = GetCellTrim(wsSrc, srcRow, colClass3)
-    vWareki = GetCellTrim(wsSrc, srcRow, colWareki)
-    vSave = GetCellTrim(wsSrc, srcRow, colSaveTerm)
-
-    ' 念のため対象セルをクリア（結合セル対応は既存ヘルパーを流用）
-    ClearMergeTarget wsSeal.Cells(baseRow, baseCol)       ' A2
-    ClearMergeTarget wsSeal.Cells(baseRow, baseCol + 1)   ' B2
-    ClearMergeTarget wsSeal.Cells(baseRow, baseCol + 7)   ' H2
-    ClearMergeTarget wsSeal.Cells(baseRow + 1, baseCol)   ' A3
-    ClearMergeTarget wsSeal.Cells(baseRow + 1, baseCol + 1) ' B3
-
-    ' 新仕様の転記
-    PutMergeTopLeft wsSeal.Cells(baseRow, baseCol), SaveTermToKei(vSave)          ' A2
-    PutMergeTopLeft wsSeal.Cells(baseRow, baseCol + 1), vTitle                     ' B2
-    PutMergeTopLeft wsSeal.Cells(baseRow, baseCol + 7), vClass2                    ' H2
-    PutMergeTopLeft wsSeal.Cells(baseRow + 1, baseCol), ExtractWarekiNumber(vWareki) ' A3
-    PutMergeTopLeft wsSeal.Cells(baseRow + 1, baseCol + 1), vClass3                ' B3
-
-End Sub
-
-'--------------------------------------------------------
-' 年度（和暦）から数値部分のみ抽出
-' 例: 令和7年度 / R7 / r07 / 7 -> "7"
+' 和暦から数値部のみ抽出（令和7年度/R7/7 => 7）
 '--------------------------------------------------------
 Public Function ExtractWarekiNumber(ByVal s As String) As String
 
@@ -122,9 +191,7 @@ Public Function ExtractWarekiNumber(ByVal s As String) As String
     t = Replace(t, "r", "")
     t = Replace(t, " ", "")
     t = Replace(t, "　", "")
-
-    ' 全角数字を半角へ寄せる
-    t = StrConv(t, vbNarrow)
+    t = StrConv(t, vbNarrow) ' 全角数字対策
 
     For i = 1 To Len(t)
         ch = Mid$(t, i, 1)
@@ -140,7 +207,7 @@ Public Function ExtractWarekiNumber(ByVal s As String) As String
 End Function
 
 '--------------------------------------------------------
-' 保存期間が「継続」の時だけ「継」を返す
+' 保存期間が継続の時だけ「継」
 '--------------------------------------------------------
 Public Function SaveTermToKei(ByVal s As String) As String
 
@@ -153,7 +220,7 @@ Public Function SaveTermToKei(ByVal s As String) As String
 End Function
 
 '--------------------------------------------------------
-' ヘッダー候補から列番号取得（完全一致）
+' 見出し候補（完全一致）で列取得
 '--------------------------------------------------------
 Public Function FindHeaderByCandidates(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal candidates As Variant) As Long
 
@@ -172,6 +239,18 @@ Public Function FindHeaderByCandidates(ByVal ws As Worksheet, ByVal lastCol As L
             End If
         Next i
     Next c
+
+End Function
+
+Private Function DictCol(ByVal dict As Object, ByVal key As String) As Long
+
+    If dict Is Nothing Then
+        DictCol = 0
+    ElseIf dict.Exists(key) Then
+        DictCol = CLng(dict(key))
+    Else
+        DictCol = 0
+    End If
 
 End Function
 

@@ -53,6 +53,7 @@
 - README / ドキュメント
 - マクロ関連資産
 - frmSeal差し替え用コード（`frmSeal_新仕様差し替え関数.bas`）
+- frmSealボタンイベント差し替え例（`frmSeal_btnApply_Click_差し替え.bas`）
 
 ## 補足
 一時ファイル（`~$*.xls*`, `*.tmp`, `Thumbs.db`, `.DS_Store` など）は `.gitignore` で除外しています。
