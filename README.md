@@ -52,6 +52,7 @@
 - CSV ファイル
 - README / ドキュメント
 - マクロ関連資産
+- frmSeal差し替え用コード（`frmSeal_新仕様差し替え関数.bas`）
 
 ## 補足
 一時ファイル（`~$*.xls*`, `*.tmp`, `Thumbs.db`, `.DS_Store` など）は `.gitignore` で除外しています。
