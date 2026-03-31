@@ -2,22 +2,55 @@ Option Explicit
 
 '========================================================
 ' frmSeal（新基準表対応）
-' - 開始通し番号は txtSerial 優先、未存在/空欄時は txtStart を参照
-' - 実処理は標準モジュールの ApplyBySerial_NewSpec に委譲
+' - tbID1～tbID12 に入力された通し番号を、同じslot面へ個別反映
+' - 空欄/未該当はそのslotだけクリア
 '========================================================
 Private Sub btnApply_Click()
 
-    Dim startSerial As String
+    Dim wsSrc As Worksheet
+    Dim wsSeal As Worksheet
+    Dim serialIndex As Object
+    Dim headerIndex As Object
+    Dim slot As Long
+    Dim serialKey As String
+    Dim srcRow As Long
 
     On Error GoTo ErrorHandler
 
-    startSerial = GetStartSerialFromForm(Me)
-    If Len(startSerial) = 0 Then
-        MsgBox "通し番号（開始番号）を入力してください。", vbExclamation
-        Exit Sub
+    Set wsSrc = FindSheetByCandidates(ThisWorkbook, Array("新ファイル基準表"))
+    Set wsSeal = FindSheetByCandidates(ThisWorkbook, Array("個別フォルダシール", "個別フォルダーシール", "フォルダシール"))
+
+    If wsSrc Is Nothing Then Err.Raise vbObjectError + 2201, , "転記元シート（新ファイル基準表）が見つかりません。"
+    If wsSeal Is Nothing Then Err.Raise vbObjectError + 2202, , "転記先シート（個別フォルダシール）が見つかりません。"
+
+    BuildIndexes_NewSpec wsSrc, serialIndex, headerIndex
+
+    If serialIndex Is Nothing Or headerIndex Is Nothing Then
+        Err.Raise vbObjectError + 2203, , "見出しインデックスの作成に失敗しました。"
+    End If
+    If CLng(headerIndex("通し番号")) = 0 Then
+        Err.Raise vbObjectError + 2204, , "見出し「通し番号」が見つかりません。"
     End If
 
-    ApplyBySerial_NewSpec startSerial
+    For slot = 1 To 12
+        serialKey = GetSerialBySlot(Me, slot)
+
+        If Len(serialKey) = 0 Then
+            ClearOneSealSlot wsSeal, slot
+        ElseIf serialIndex.Exists(serialKey) Then
+            srcRow = CLng(serialIndex(serialKey))
+            WriteOneSeal_NewSpec _
+                wsSrc, srcRow, wsSeal, slot, _
+                CLng(headerIndex("タイトル")), _
+                CLng(headerIndex("分類名2")), _
+                CLng(headerIndex("分類名3")), _
+                CLng(headerIndex("年度和暦")), _
+                CLng(headerIndex("保存期間"))
+        Else
+            ClearOneSealSlot wsSeal, slot
+        End If
+    Next slot
+
     MsgBox "個別フォルダシールへ反映しました。", vbInformation
     Exit Sub
 
@@ -26,6 +59,69 @@ ErrorHandler:
 
 End Sub
 
+Private Sub btnClear_Click()
+
+    Dim slot As Long
+
+    On Error GoTo ErrorHandler
+
+    For slot = 1 To 12
+        SetTextIfExists Me, "tbID" & CStr(slot), ""
+    Next slot
+    SetTextIfExists Me, "txtSerial", ""
+    SetTextIfExists Me, "txtStart", ""
+
+    ClearAllSeals_NewSpec
+    MsgBox "入力欄とシール面をクリアしました。", vbInformation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "クリア処理でエラーが発生しました: " & Err.Description, vbExclamation
+
+End Sub
+
+Private Function GetSerialBySlot(ByVal frm As Object, ByVal slot As Long) As String
+
+    Dim key As String
+    Dim ctlName As String
+
+    key = ""
+    ctlName = "tbID" & CStr(slot)
+
+    On Error Resume Next
+    key = Trim$(CStr(frm.Controls(ctlName).Value))
+    On Error GoTo 0
+
+    GetSerialBySlot = key
+
+End Function
+
+Private Sub SetTextIfExists(ByVal frm As Object, ByVal ctlName As String, ByVal textValue As String)
+
+    On Error Resume Next
+    frm.Controls(ctlName).Value = textValue
+    On Error GoTo 0
+
+End Sub
+
+Private Function FindSheetByCandidates(ByVal wb As Workbook, ByVal candidates As Variant) As Worksheet
+
+    Dim i As Long
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    For i = LBound(candidates) To UBound(candidates)
+        Set ws = Nothing
+        Set ws = wb.Worksheets(CStr(candidates(i)))
+        If Not ws Is Nothing Then
+            Set FindSheetByCandidates = ws
+            Exit Function
+        End If
+    Next i
+    On Error GoTo 0
+
+End Function
+
 Private Function GetStartSerialFromForm(ByVal frm As Object) As String
 
     Dim v As String
@@ -33,7 +129,10 @@ Private Function GetStartSerialFromForm(ByVal frm As Object) As String
     v = ""
 
     On Error Resume Next
-    v = Trim$(CStr(frm.Controls("txtSerial").Value))
+    v = Trim$(CStr(frm.Controls("tbID1").Value))
+    If Len(v) = 0 Then
+        v = Trim$(CStr(frm.Controls("txtSerial").Value))
+    End If
     If Len(v) = 0 Then
         v = Trim$(CStr(frm.Controls("txtStart").Value))
     End If
