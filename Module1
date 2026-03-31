@@ -1137,7 +1137,7 @@ ErrorHandler:
 
 End Sub
 
-Private Sub ClearOneSealSlot(ByVal wsSeal As Worksheet, ByVal slot As Long)
+Public Sub ClearOneSealSlot(ByVal wsSeal As Worksheet, ByVal slot As Long)
 
     Dim baseCol As Long
     Dim baseRow As Long
@@ -1234,5 +1234,19 @@ Public Sub PutMergeTopLeft(ByVal ws As Worksheet, ByVal r As Long, ByVal c As Lo
 End Sub
 
 Public Sub シール入力フォームを開く()
-    frmSeal.Show
+    frmSeal.Show vbModeless
+End Sub
+
+Public Sub ClearAllSeals_NewSpec()
+
+    Dim wsSeal As Worksheet
+    Dim slot As Long
+
+    Set wsSeal = ResolveWorksheetByCandidates(ThisWorkbook, Array("個別フォルダシール", "個別フォルダーシール", "フォルダシール"))
+    If wsSeal Is Nothing Then Exit Sub
+
+    For slot = 1 To 12
+        ClearOneSealSlot wsSeal, slot
+    Next slot
+
 End Sub
