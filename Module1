@@ -243,42 +243,31 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim wsDst As Worksheet
     Dim srcLastRow As Long
     Dim srcLastCol As Long
-    Dim dstLastCol As Long
-    Dim displayHeaders As Variant
-    Dim userManagedHeaders As Variant
-    Dim srcToDstMap As Object
-    Dim existingDstHeaders As Object
-    Dim srcCol As Long
-    Dim dstCol As Long
-    Dim headerText As String
-    Dim canonical As String
+    Dim targetHeaders As Variant
     Dim i As Long
     Dim targetCol As Long
     Dim foundCol As Long
-    Dim leftFixedCount As Long
-    Dim clearFromRow As Long
-    Dim clearToRow As Long
+    Dim visibleCount As Long
+    Dim targetRange As Range
 
     On Error GoTo ErrorHandler
 
     Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
     Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
-    Set srcToDstMap = CreateObject("Scripting.Dictionary")
-    Set existingDstHeaders = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
 
     srcLastCol = GetLastUsedCol(wsSrc)
     srcLastRow = GetLastUsedRow(wsSrc)
-    dstLastCol = GetLastUsedCol(wsDst)
 
-    If srcLastCol <= 0 Then Err.Raise vbObjectError + 2001, , "目録CSV の見出し行が見つかりません。"
+    wsDst.Cells.Clear
+    wsSrc.Range(wsSrc.Cells(1, 1), wsSrc.Cells(srcLastRow, srcLastCol)).Copy wsDst.Range("A1")
 
-    displayHeaders = Array( _
-        "通し番号", _
-        "キャビネット番号", _
-        "ｎ＋1", _
+    targetHeaders = Array( _
+        "ファイルID", _
+        "ファイル番号", _
+        "バーコード番号", _
         "毎年度利用区分1:毎年作成 2:単年のみ", _
         "原課", _
         "年度（和暦）", _
@@ -288,52 +277,11 @@ Public Sub 手順2_新ファイル基準表を作成する()
         "タイトル", _
         "保存期間", _
         "媒体種別")
-    userManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1")
 
-    ' 1) 既存「新ファイル基準表」の見出しを辞書化（追加列保持のため）
-    BuildHeaderMap wsDst, dstLastCol, existingDstHeaders
-
-    ' 2) ユーザー管理列（CSV由来ではない3列）を確保
-    For i = LBound(userManagedHeaders) To UBound(userManagedHeaders)
-        EnsureColumnByHeader wsDst, existingDstHeaders, CStr(userManagedHeaders(i))
-    Next i
-
-    ' 3) CSV由来列を「見出し名ベース」で同期（不足列は追加、既存追加列は維持）
-    For srcCol = 1 To srcLastCol
-        headerText = Trim(CStr(wsSrc.Cells(1, srcCol).Value))
-        If headerText <> "" Then
-            canonical = CanonicalHeaderName(headerText)
-            dstCol = EnsureColumnByHeader(wsDst, existingDstHeaders, headerText)
-            srcToDstMap(canonical) = dstCol
-        End If
-    Next srcCol
-
-    ' 4) CSV由来列のみ値を更新（2行目以降）。管理列・追加列は壊さない。
-    clearFromRow = srcLastRow + 1
-    clearToRow = GetLastUsedRow(wsDst)
-    For srcCol = 1 To srcLastCol
-        headerText = Trim(CStr(wsSrc.Cells(1, srcCol).Value))
-        If headerText <> "" Then
-            canonical = CanonicalHeaderName(headerText)
-            If srcToDstMap.Exists(canonical) Then
-                dstCol = CLng(srcToDstMap(canonical))
-                wsDst.Cells(1, dstCol).Value = headerText
-                If srcLastRow >= 2 Then
-                    wsDst.Range(wsDst.Cells(2, dstCol), wsDst.Cells(srcLastRow, dstCol)).Value = _
-                        wsSrc.Range(wsSrc.Cells(2, srcCol), wsSrc.Cells(srcLastRow, srcCol)).Value
-                End If
-                If clearToRow >= clearFromRow Then
-                    wsDst.Range(wsDst.Cells(clearFromRow, dstCol), wsDst.Cells(clearToRow, dstCol)).ClearContents
-                End If
-            End If
-        End If
-    Next srcCol
-
-    ' 5) 主要列だけ左側へ並べ直し（それ以外は削除せず後ろに残す）
     targetCol = 1
-    For i = LBound(displayHeaders) To UBound(displayHeaders)
+    For i = LBound(targetHeaders) To UBound(targetHeaders)
         srcLastCol = GetLastUsedCol(wsDst)
-        foundCol = FindHeaderColumn(wsDst, srcLastCol, GetStep2HeaderCandidates(CStr(displayHeaders(i))))
+        foundCol = FindHeaderColumn(wsDst, srcLastCol, GetStep2HeaderCandidates(CStr(targetHeaders(i))))
 
         If foundCol > 0 Then
             If foundCol <> targetCol Then
@@ -344,31 +292,39 @@ Public Sub 手順2_新ファイル基準表を作成する()
             targetCol = targetCol + 1
         End If
     Next i
-    leftFixedCount = targetCol - 1
+    visibleCount = targetCol - 1
 
-    ' 6) 「毎年度利用区分」表示値変換（目録CSVは変更しない）
+    ' 3) 「毎年度利用区分」だけ表示値を変換（目録CSVは変更しない）
     ConvertAnnualUseDivisionValues wsDst, srcLastRow
 
-    ' 7) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
-    If leftFixedCount > 0 Then
-        With wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, leftFixedCount))
+    ' 4) いったん表示列を制御
+    wsDst.Cells.EntireColumn.Hidden = True
+    If visibleCount > 0 Then
+        wsDst.Range(wsDst.Columns(1), wsDst.Columns(visibleCount)).EntireColumn.Hidden = False
+    End If
+
+    If visibleCount > 0 Then
+        With wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, visibleCount))
             .Font.Bold = True
             .Interior.Color = RGB(242, 242, 242)
         End With
-        wsDst.Range(wsDst.Columns(1), wsDst.Columns(leftFixedCount)).EntireColumn.AutoFit
+
+        Set targetRange = wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(srcLastRow, visibleCount))
+        targetRange.Borders.LineStyle = xlContinuous
+        targetRange.Borders.Weight = xlThin
     End If
 
     srcLastCol = GetLastUsedCol(wsDst)
     wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol)).AutoFilter
+    If visibleCount > 0 Then
+        wsDst.Range(wsDst.Columns(1), wsDst.Columns(visibleCount)).EntireColumn.AutoFit
+    End If
 
-    ' 8) キー列は保持したまま非表示（後続処理で利用）
+    ' 5) キー列は列を残したまま非表示にする（後続処理で利用するため）
     HideKeyColumnsForStep2 wsDst
 
-    ' 9) タイトルがある行だけ通し番号を再採番
-    ReindexSerial_NewFileStandard wsDst
-
     MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
-           "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
+           "左側に表示した列数: " & visibleCount & " 列", vbInformation
 
 SafeExit:
     Application.ScreenUpdating = True
@@ -380,134 +336,6 @@ ErrorHandler:
     Resume SafeExit
 
 End Sub
-
-Public Sub 通し番号_再採番_新ファイル基準表()
-
-    On Error GoTo ErrorHandler
-
-    ReindexSerial_NewFileStandard ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
-    MsgBox "新ファイル基準表の通し番号を再採番しました。", vbInformation
-    Exit Sub
-
-ErrorHandler:
-    MsgBox "通し番号の再採番中にエラーが発生しました: " & Err.Description, vbExclamation
-
-End Sub
-
-Public Sub ReindexSerial_NewFileStandard(Optional ByVal ws As Worksheet)
-
-    Dim targetWs As Worksheet
-    Dim lastCol As Long
-    Dim lastRow As Long
-    Dim serialCol As Long
-    Dim titleCol As Long
-    Dim rowNo As Long
-    Dim nextSerial As Long
-    Dim titleValue As String
-    Dim prevEnableEvents As Boolean
-    Dim prevScreenUpdating As Boolean
-
-    On Error GoTo SafeExit
-
-    prevEnableEvents = Application.EnableEvents
-    prevScreenUpdating = Application.ScreenUpdating
-    Application.EnableEvents = False
-    Application.ScreenUpdating = False
-
-    If ws Is Nothing Then
-        Set targetWs = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
-    Else
-        Set targetWs = ws
-    End If
-
-    lastCol = GetLastUsedCol(targetWs)
-    If lastCol <= 0 Then Exit Sub
-
-    serialCol = FindHeaderColumn(targetWs, lastCol, Array("通し番号"))
-    titleCol = FindHeaderColumn(targetWs, lastCol, Array("タイトル"))
-
-    If serialCol = 0 Then Err.Raise vbObjectError + 2101, , "通し番号 列が見つかりません。"
-    If titleCol = 0 Then Err.Raise vbObjectError + 2102, , "タイトル 列が見つかりません。"
-
-    lastRow = GetLastUsedRow(targetWs)
-    If lastRow < 2 Then Exit Sub
-
-    nextSerial = 0
-    For rowNo = 2 To lastRow
-        titleValue = Trim(CStr(targetWs.Cells(rowNo, titleCol).Value))
-        If titleValue <> "" Then
-            nextSerial = nextSerial + 1
-            targetWs.Cells(rowNo, serialCol).Value = nextSerial
-        Else
-            targetWs.Cells(rowNo, serialCol).ClearContents
-        End If
-    Next rowNo
-
-SafeExit:
-    Application.EnableEvents = prevEnableEvents
-    Application.ScreenUpdating = prevScreenUpdating
-
-End Sub
-
-Private Sub BuildHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal headerMap As Object)
-
-    Dim c As Long
-    Dim rawHeader As String
-    Dim canonical As String
-
-    For c = 1 To lastCol
-        rawHeader = Trim(CStr(ws.Cells(1, c).Value))
-        If rawHeader <> "" Then
-            canonical = CanonicalHeaderName(rawHeader)
-            If Not headerMap.Exists(canonical) Then
-                headerMap.Add canonical, c
-            End If
-        End If
-    Next c
-
-End Sub
-
-Private Function EnsureColumnByHeader(ByVal ws As Worksheet, ByVal headerMap As Object, ByVal headerName As String) As Long
-
-    Dim canonical As String
-    Dim addCol As Long
-
-    canonical = CanonicalHeaderName(headerName)
-
-    If headerMap.Exists(canonical) Then
-        EnsureColumnByHeader = CLng(headerMap(canonical))
-    Else
-        addCol = GetLastUsedCol(ws) + 1
-        If addCol < 1 Then addCol = 1
-        ws.Cells(1, addCol).Value = headerName
-        headerMap.Add canonical, addCol
-        EnsureColumnByHeader = addCol
-    End If
-
-End Function
-
-Private Function CanonicalHeaderName(ByVal headerName As String) As String
-
-    Dim normalized As String
-
-    normalized = Trim(CStr(headerName))
-    normalized = Replace(normalized, " ", "")
-    normalized = Replace(normalized, "　", "")
-
-    Select Case normalized
-        Case "分類名1", "分類名１"
-            CanonicalHeaderName = "分類名１"
-        Case "分類名2", "分類名２"
-            CanonicalHeaderName = "分類名２"
-        Case "分類名3", "分類名３"
-            CanonicalHeaderName = "分類名３"
-        Case "n+1", "N+1", "ｎ+1", "Ｎ+1", "n＋1", "N＋1", "Ｎ＋1", "ｎ＋1"
-            CanonicalHeaderName = "ｎ＋1"
-        Case Else
-            CanonicalHeaderName = normalized
-    End Select
-
-End Function
 
 Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal candidates As Variant) As Long
 
@@ -540,8 +368,6 @@ Private Function GetStep2HeaderCandidates(ByVal targetHeader As String) As Varia
             GetStep2HeaderCandidates = Array("分類名２", "分類名2")
         Case "分類名３"
             GetStep2HeaderCandidates = Array("分類名３", "分類名3")
-        Case "ｎ＋1"
-            GetStep2HeaderCandidates = Array("ｎ＋1", "ｎ+1", "Ｎ＋1", "Ｎ+1", "n＋1", "n+1", "N＋1", "N+1")
         Case Else
             GetStep2HeaderCandidates = Array(targetHeader)
     End Select
@@ -720,13 +546,6 @@ ContinuePairLoop:
 
     AddCodeMasterRecord wsDst, dict, outRow, "年度暦年区分", "1", "年度"
     AddCodeMasterRecord wsDst, dict, outRow, "年度暦年区分", "2", "暦年"
-
-    ' 追加: 色ID↔色名（目録CSVに色ID/色名が無い場合の固定マスタ）
-    AddCodeMasterRecord wsDst, dict, outRow, "色", "1", "白"
-    AddCodeMasterRecord wsDst, dict, outRow, "色", "2", "赤"
-    AddCodeMasterRecord wsDst, dict, outRow, "色", "3", "青"
-    AddCodeMasterRecord wsDst, dict, outRow, "色", "4", "黄"
-    AddCodeMasterRecord wsDst, dict, outRow, "色", "5", "緑"
 
     AddCodeMasterRecord wsDst, dict, outRow, "完結区分", "-1", "未完結"
     AddCodeMasterRecord wsDst, dict, outRow, "完結区分", "1", "完結"
@@ -1144,7 +963,7 @@ ErrorHandler:
 
 End Sub
 
-Public Sub ClearOneSealSlot(ByVal wsSeal As Worksheet, ByVal slot As Long)
+Private Sub ClearOneSealSlot(ByVal wsSeal As Worksheet, ByVal slot As Long)
 
     Dim baseCol As Long
     Dim baseRow As Long
@@ -1241,19 +1060,5 @@ Public Sub PutMergeTopLeft(ByVal ws As Worksheet, ByVal r As Long, ByVal c As Lo
 End Sub
 
 Public Sub シール入力フォームを開く()
-    frmSeal.Show vbModeless
-End Sub
-
-Public Sub ClearAllSeals_NewSpec()
-
-    Dim wsSeal As Worksheet
-    Dim slot As Long
-
-    Set wsSeal = ResolveWorksheetByCandidates(ThisWorkbook, Array("個別フォルダシール", "個別フォルダーシール", "フォルダシール"))
-    If wsSeal Is Nothing Then Exit Sub
-
-    For slot = 1 To 12
-        ClearOneSealSlot wsSeal, slot
-    Next slot
-
+    frmSeal.Show
 End Sub
