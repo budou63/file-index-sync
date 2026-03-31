@@ -300,7 +300,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     ' 3) CSV由来列を「見出し名ベース」で同期（不足列は追加、既存追加列は維持）
     For srcCol = 1 To srcLastCol
-        headerText = Trim(CStr(wsSrc.Cells(1, srcCol).Value))
+        headerText = Trim(CStr(wsSrc.Cells(1, srcCol).value))
         If headerText <> "" Then
             canonical = CanonicalHeaderName(headerText)
             dstCol = EnsureColumnByHeader(wsDst, existingDstHeaders, headerText)
@@ -312,15 +312,15 @@ Public Sub 手順2_新ファイル基準表を作成する()
     clearFromRow = srcLastRow + 1
     clearToRow = GetLastUsedRow(wsDst)
     For srcCol = 1 To srcLastCol
-        headerText = Trim(CStr(wsSrc.Cells(1, srcCol).Value))
+        headerText = Trim(CStr(wsSrc.Cells(1, srcCol).value))
         If headerText <> "" Then
             canonical = CanonicalHeaderName(headerText)
             If srcToDstMap.Exists(canonical) Then
                 dstCol = CLng(srcToDstMap(canonical))
-                wsDst.Cells(1, dstCol).Value = headerText
+                wsDst.Cells(1, dstCol).value = headerText
                 If srcLastRow >= 2 Then
-                    wsDst.Range(wsDst.Cells(2, dstCol), wsDst.Cells(srcLastRow, dstCol)).Value = _
-                        wsSrc.Range(wsSrc.Cells(2, srcCol), wsSrc.Cells(srcLastRow, srcCol)).Value
+                    wsDst.Range(wsDst.Cells(2, dstCol), wsDst.Cells(srcLastRow, dstCol)).value = _
+                        wsSrc.Range(wsSrc.Cells(2, srcCol), wsSrc.Cells(srcLastRow, srcCol)).value
                 End If
                 If clearToRow >= clearFromRow Then
                     wsDst.Range(wsDst.Cells(clearFromRow, dstCol), wsDst.Cells(clearToRow, dstCol)).ClearContents
@@ -434,10 +434,10 @@ Public Sub ReindexSerial_NewFileStandard(Optional ByVal ws As Worksheet)
 
     nextSerial = 0
     For rowNo = 2 To lastRow
-        titleValue = Trim(CStr(targetWs.Cells(rowNo, titleCol).Value))
+        titleValue = Trim(CStr(targetWs.Cells(rowNo, titleCol).value))
         If titleValue <> "" Then
             nextSerial = nextSerial + 1
-            targetWs.Cells(rowNo, serialCol).Value = nextSerial
+            targetWs.Cells(rowNo, serialCol).value = nextSerial
         Else
             targetWs.Cells(rowNo, serialCol).ClearContents
         End If
@@ -456,7 +456,7 @@ Private Sub BuildHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal h
     Dim canonical As String
 
     For c = 1 To lastCol
-        rawHeader = Trim(CStr(ws.Cells(1, c).Value))
+        rawHeader = Trim(CStr(ws.Cells(1, c).value))
         If rawHeader <> "" Then
             canonical = CanonicalHeaderName(rawHeader)
             If Not headerMap.Exists(canonical) Then
@@ -479,7 +479,7 @@ Private Function EnsureColumnByHeader(ByVal ws As Worksheet, ByVal headerMap As 
     Else
         addCol = GetLastUsedCol(ws) + 1
         If addCol < 1 Then addCol = 1
-        ws.Cells(1, addCol).Value = headerName
+        ws.Cells(1, addCol).value = headerName
         headerMap.Add canonical, addCol
         EnsureColumnByHeader = addCol
     End If
@@ -721,12 +721,6 @@ ContinuePairLoop:
     AddCodeMasterRecord wsDst, dict, outRow, "年度暦年区分", "1", "年度"
     AddCodeMasterRecord wsDst, dict, outRow, "年度暦年区分", "2", "暦年"
 
-    ' 追加: 色ID↔色名（目録CSVに色ID/色名が無い場合の固定マスタ）
-    AddCodeMasterRecord wsDst, dict, outRow, "色", "1", "白"
-    AddCodeMasterRecord wsDst, dict, outRow, "色", "2", "赤"
-    AddCodeMasterRecord wsDst, dict, outRow, "色", "3", "青"
-    AddCodeMasterRecord wsDst, dict, outRow, "色", "4", "黄"
-    AddCodeMasterRecord wsDst, dict, outRow, "色", "5", "緑"
 
     AddCodeMasterRecord wsDst, dict, outRow, "完結区分", "-1", "未完結"
     AddCodeMasterRecord wsDst, dict, outRow, "完結区分", "1", "完結"
@@ -1257,3 +1251,4 @@ Public Sub ClearAllSeals_NewSpec()
     Next slot
 
 End Sub
+
