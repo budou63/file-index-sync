@@ -258,6 +258,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim leftFixedCount As Long
     Dim clearFromRow As Long
     Dim clearToRow As Long
+    Dim missingHeadersText As String
 
     On Error GoTo ErrorHandler
 
@@ -284,7 +285,10 @@ Public Sub 手順2_新ファイル基準表を作成する()
         "年度（和暦）", _
         "分類名１", _
         "分類名２", _
+        "2色名", _
         "分類名３", _
+        "色名", _
+        "作成年度（和暦）", _
         "タイトル", _
         "保存期間", _
         "媒体種別")
@@ -361,14 +365,21 @@ Public Sub 手順2_新ファイル基準表を作成する()
     srcLastCol = GetLastUsedCol(wsDst)
     wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol)).AutoFilter
 
-    ' 8) キー列は保持したまま非表示（後続処理で利用）
-    HideKeyColumnsForStep2 wsDst
+    ' 8) 指定見出しだけ表示し、それ以外を非表示にする（見出し名ベース）
+    HideKeyColumnsForStep2 wsDst, displayHeaders, missingHeadersText
 
     ' 9) タイトルがある行だけ通し番号を再採番
     ReindexSerial_NewFileStandard wsDst
 
-    MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
-           "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
+    If Len(missingHeadersText) > 0 Then
+        MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
+               "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
+               "以下の見出しが見つからないため、表示/並び替え対象から除外しました:" & vbCrLf & _
+               missingHeadersText, vbExclamation
+    Else
+        MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
+               "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
+    End If
 
 SafeExit:
     Application.ScreenUpdating = True
@@ -540,6 +551,10 @@ Private Function GetStep2HeaderCandidates(ByVal targetHeader As String) As Varia
             GetStep2HeaderCandidates = Array("分類名２", "分類名2")
         Case "分類名３"
             GetStep2HeaderCandidates = Array("分類名３", "分類名3")
+        Case "2色名"
+            GetStep2HeaderCandidates = Array("2色名", "２色名")
+        Case "作成年度（和暦）"
+            GetStep2HeaderCandidates = Array("作成年度（和暦）", "作成年度(和暦)")
         Case "ｎ＋1"
             GetStep2HeaderCandidates = Array("ｎ＋1", "ｎ+1", "Ｎ＋1", "Ｎ+1", "n＋1", "n+1", "N＋1", "N+1")
         Case Else
@@ -548,29 +563,37 @@ Private Function GetStep2HeaderCandidates(ByVal targetHeader As String) As Varia
 
 End Function
 
-Private Sub HideKeyColumnsForStep2(ByVal wsDst As Worksheet)
+Private Sub HideKeyColumnsForStep2( _
+    ByVal wsDst As Worksheet, _
+    ByVal showHeaders As Variant, _
+    ByRef missingHeadersText As String)
 
     Dim lastCol As Long
-    Dim keyHeaders As Variant
-    Dim showHeaders As Variant
     Dim i As Long
+    Dim c As Long
     Dim colNo As Long
+    Dim missing As String
 
     lastCol = GetLastUsedCol(wsDst)
-    keyHeaders = Array("ファイルID", "ファイル番号", "バーコード番号")
-    showHeaders = Array("毎年度利用区分1:毎年作成 2:単年のみ", "原課", "年度（和暦）", "分類名１", "分類名２", "分類名３", "タイトル", "保存期間", "媒体種別")
+    If lastCol <= 0 Then Exit Sub
 
-    ' キー列は非表示にする（列自体は保持）
-    For i = LBound(keyHeaders) To UBound(keyHeaders)
-        colNo = FindHeaderColumn(wsDst, lastCol, Array(CStr(keyHeaders(i))))
-        If colNo > 0 Then wsDst.Columns(colNo).Hidden = True
-    Next i
+    ' 追記: 一旦すべて非表示にし、指定見出しだけ再表示する
+    For c = 1 To lastCol
+        wsDst.Columns(c).Hidden = True
+    Next c
 
-    ' 編集対象列は表示状態に戻す（見出し未存在はスキップ）
+    ' 追記: 表示対象見出しを見出し名ベースで特定して再表示（不足見出しは収集）
     For i = LBound(showHeaders) To UBound(showHeaders)
         colNo = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates(CStr(showHeaders(i))))
-        If colNo > 0 Then wsDst.Columns(colNo).Hidden = False
+        If colNo > 0 Then
+            wsDst.Columns(colNo).Hidden = False
+        Else
+            If Len(missing) > 0 Then missing = missing & vbCrLf
+            missing = missing & "・" & CStr(showHeaders(i))
+        End If
     Next i
+
+    missingHeadersText = missing
 
 End Sub
 
@@ -1149,12 +1172,14 @@ Public Sub ClearOneSealSlot(ByVal wsSeal As Worksheet, ByVal slot As Long)
 
     ClearMergeTarget wsSeal, baseRow, baseCol
     ClearMergeTarget wsSeal, baseRow, baseCol + 1
+    ClearMergeTarget wsSeal, baseRow, baseCol + offSlash ' 追記: G2相当（/）もブロック基準でクリア
     ClearMergeTarget wsSeal, baseRow, baseCol + 7
     ClearMergeTarget wsSeal, baseRow + 1, baseCol
     ClearMergeTarget wsSeal, baseRow + 1, baseCol + 1
 
     PutMergeTopLeft wsSeal, baseRow, baseCol, ""
     PutMergeTopLeft wsSeal, baseRow, baseCol + 1, ""
+    PutMergeTopLeft wsSeal, baseRow, baseCol + offSlash, "" ' 追記: G2相当（/）クリア
     PutMergeTopLeft wsSeal, baseRow, baseCol + 7, ""
     PutMergeTopLeft wsSeal, baseRow + 1, baseCol, ""
     PutMergeTopLeft wsSeal, baseRow + 1, baseCol + 1, ""
@@ -1251,4 +1276,3 @@ Public Sub ClearAllSeals_NewSpec()
     Next slot
 
 End Sub
-

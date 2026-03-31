@@ -213,6 +213,8 @@ Public Sub WriteOneSeal_NewSpec( _
     Dim vClass3 As String
     Dim vWareki As String
     Dim vSave As String
+    Dim vSaveOut As String ' 追記: A2出力用（保存期間=継続のとき「継」、それ以外は既存ロジック）
+    Dim slashOut As String ' 追記: G2出力用（ブロック使用時のみ "/"）
 
     GroupBase slot, baseCol, baseRow, offSlash, offG1
 
@@ -221,15 +223,28 @@ Public Sub WriteOneSeal_NewSpec( _
     vClass3 = GetCellTrim(wsSrc, srcRow, colClass3)
     vWareki = GetCellTrim(wsSrc, srcRow, colWareki)
     vSave = GetCellTrim(wsSrc, srcRow, colSaveTerm)
+    vSaveOut = SaveTermToKei(vSave) ' 追記: 既存ロジックを変えずに出力値を事前算出
+    ' 追記: ブロック内で1つでも転記値があれば "/" を表示（完全空ブロックは非表示）
+    If Len(vSaveOut) > 0 _
+       Or Len(vTitle) > 0 _
+       Or Len(vClass2) > 0 _
+       Or Len(vClass3) > 0 _
+       Or Len(ExtractWarekiNumber(vWareki)) > 0 Then
+        slashOut = "/"
+    Else
+        slashOut = ""
+    End If
 
     ClearMergeTarget wsSeal, baseRow, baseCol
     ClearMergeTarget wsSeal, baseRow, baseCol + 1
+    ClearMergeTarget wsSeal, baseRow, baseCol + offSlash ' 追記: G2相当（/）の位置はブロック基準で指定
     ClearMergeTarget wsSeal, baseRow, baseCol + 7
     ClearMergeTarget wsSeal, baseRow + 1, baseCol
     ClearMergeTarget wsSeal, baseRow + 1, baseCol + 1
 
-    PutMergeTopLeft wsSeal, baseRow, baseCol, SaveTermToKei(vSave)
+    PutMergeTopLeft wsSeal, baseRow, baseCol, vSaveOut ' 追記: A2（保存期間=継続なら「継」）
     PutMergeTopLeft wsSeal, baseRow, baseCol + 1, vTitle
+    PutMergeTopLeft wsSeal, baseRow, baseCol + offSlash, slashOut ' 追記: 使用中ブロックのみ "/" を表示
     PutMergeTopLeft wsSeal, baseRow, baseCol + 7, vClass2
     PutMergeTopLeft wsSeal, baseRow + 1, baseCol, ExtractWarekiNumber(vWareki)
     PutMergeTopLeft wsSeal, baseRow + 1, baseCol + 1, vClass3
