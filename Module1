@@ -721,6 +721,13 @@ ContinuePairLoop:
     AddCodeMasterRecord wsDst, dict, outRow, "年度暦年区分", "1", "年度"
     AddCodeMasterRecord wsDst, dict, outRow, "年度暦年区分", "2", "暦年"
 
+    ' 追加: 色ID↔色名（目録CSVに色ID/色名が無い場合の固定マスタ）
+    AddCodeMasterRecord wsDst, dict, outRow, "色", "1", "白"
+    AddCodeMasterRecord wsDst, dict, outRow, "色", "2", "赤"
+    AddCodeMasterRecord wsDst, dict, outRow, "色", "3", "青"
+    AddCodeMasterRecord wsDst, dict, outRow, "色", "4", "黄"
+    AddCodeMasterRecord wsDst, dict, outRow, "色", "5", "緑"
+
     AddCodeMasterRecord wsDst, dict, outRow, "完結区分", "-1", "未完結"
     AddCodeMasterRecord wsDst, dict, outRow, "完結区分", "1", "完結"
 
