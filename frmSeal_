@@ -2,7 +2,7 @@ Option Explicit
 
 '========================================================
 ' frmSeal（新基準表対応）
-' - 開始通し番号は txtSerial 優先、未存在/空欄時は txtStart を参照
+' - 開始通し番号は tbID1 優先、未存在/空欄時は txtSerial → txtStart を参照
 ' - 実処理は標準モジュールの ApplyBySerial_NewSpec に委譲
 '========================================================
 Private Sub btnApply_Click()
@@ -33,7 +33,10 @@ Private Function GetStartSerialFromForm(ByVal frm As Object) As String
     v = ""
 
     On Error Resume Next
-    v = Trim$(CStr(frm.Controls("txtSerial").Value))
+    v = Trim$(CStr(frm.Controls("tbID1").Value))
+    If Len(v) = 0 Then
+        v = Trim$(CStr(frm.Controls("txtSerial").Value))
+    End If
     If Len(v) = 0 Then
         v = Trim$(CStr(frm.Controls("txtStart").Value))
     End If
