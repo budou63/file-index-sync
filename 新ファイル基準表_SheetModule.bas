@@ -23,6 +23,8 @@ Private Sub Worksheet_Change(ByVal Target As Range)
 
     ' 標準モジュール(Module1)の補完処理を呼び出す
     新ファイル基準表_表示名からID自動補完 Target
+    ' 追記: 色名が変更された行は 2色名 へ同値同期
+    新ファイル基準表_色名から2色名同期 Target, Me
 
     ' 呼び出し先でイベント状態が変わる可能性に備えて再度OFF
     Application.EnableEvents = False

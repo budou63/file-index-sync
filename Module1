@@ -260,7 +260,10 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim clearToRow As Long
     Dim missingHeadersText As String
     Dim validationTemplateMap As Object
+    Dim formatTemplateMap As Object
+    Dim columnWidthMap As Object
     Dim wsValidationTemplate As Worksheet
+    Dim wsFormatTemplate As Worksheet
 
     On Error GoTo ErrorHandler
 
@@ -269,6 +272,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Set srcToDstMap = CreateObject("Scripting.Dictionary")
     Set existingDstHeaders = CreateObject("Scripting.Dictionary")
     Set validationTemplateMap = CreateObject("Scripting.Dictionary")
+    Set formatTemplateMap = CreateObject("Scripting.Dictionary")
+    Set columnWidthMap = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -281,6 +286,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     ' 追記: 並び替え前に既存入力規則のテンプレートを退避（見出し名ベースで復元するため）
     CreateValidationTemplateSheet wsDst, dstLastCol, validationTemplateMap, wsValidationTemplate
+    ' 追記: 並び替え前に既存書式/列幅を退避（条件付き書式・列幅の崩れ防止）
+    CreateFormatAndWidthTemplate wsDst, dstLastCol, formatTemplateMap, columnWidthMap, wsFormatTemplate
 
     displayHeaders = Array( _
         "通し番号", _
@@ -358,6 +365,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     ' 6) 「毎年度利用区分」表示値変換（目録CSVは変更しない）
     ConvertAnnualUseDivisionValues wsDst, srcLastRow
+    ' 追記: 2色名 = 色名 をデータ行全体へ反映（見出し名ベース）
+    SyncSecondColorNameFromColor wsDst, 2, srcLastRow
 
     ' 7) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
     If leftFixedCount > 0 Then
@@ -379,6 +388,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     ' 10) 入力規則を見出し名ベースで再適用（列挿入/並び替え後の列位置へ追従）
     ReapplyValidationFromTemplate wsDst, validationTemplateMap, wsValidationTemplate
+    ' 追記: 条件付き書式/列幅を見出し名ベースで再適用
+    ReapplyFormatAndWidthFromTemplate wsDst, formatTemplateMap, columnWidthMap, wsFormatTemplate
 
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
@@ -397,6 +408,11 @@ SafeExit:
         wsValidationTemplate.Delete
         Application.DisplayAlerts = True
     End If
+    If Not wsFormatTemplate Is Nothing Then
+        Application.DisplayAlerts = False
+        wsFormatTemplate.Delete
+        Application.DisplayAlerts = True
+    End If
     On Error GoTo 0
 
     Application.ScreenUpdating = True
@@ -406,6 +422,40 @@ SafeExit:
 ErrorHandler:
     MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & Err.Description, vbCritical
     Resume SafeExit
+
+End Sub
+
+'========================================================
+' 色名 -> 2色名 同期（生成時/再生成時に利用）
+'========================================================
+Public Sub SyncSecondColorNameFromColor( _
+    ByVal wsDst As Worksheet, _
+    ByVal startRow As Long, _
+    Optional ByVal endRow As Long = 0)
+
+    Dim lastCol As Long
+    Dim colorCol As Long
+    Dim color2Col As Long
+    Dim lastRow As Long
+
+    If wsDst Is Nothing Then Exit Sub
+
+    lastCol = GetLastUsedCol(wsDst)
+    If lastCol <= 0 Then Exit Sub
+
+    colorCol = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates("色名"))
+    color2Col = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates("2色名"))
+    If colorCol = 0 Or color2Col = 0 Then Exit Sub
+
+    If endRow <= 0 Then
+        lastRow = GetLastUsedRow(wsDst)
+    Else
+        lastRow = endRow
+    End If
+    If lastRow < startRow Then Exit Sub
+
+    wsDst.Range(wsDst.Cells(startRow, color2Col), wsDst.Cells(lastRow, color2Col)).Value = _
+        wsDst.Range(wsDst.Cells(startRow, colorCol), wsDst.Cells(lastRow, colorCol)).Value
 
 End Sub
 
@@ -570,6 +620,8 @@ Private Function GetStep2HeaderCandidates(ByVal targetHeader As String) As Varia
             GetStep2HeaderCandidates = Array("分類名３", "分類名3")
         Case "2色名"
             GetStep2HeaderCandidates = Array("2色名", "２色名")
+        Case "色名"
+            GetStep2HeaderCandidates = Array("色名")
         Case "作成年度（和暦）"
             GetStep2HeaderCandidates = Array("作成年度（和暦）", "作成年度(和暦)")
         Case "ｎ＋1"
@@ -579,6 +631,90 @@ Private Function GetStep2HeaderCandidates(ByVal targetHeader As String) As Varia
     End Select
 
 End Function
+
+Private Sub CreateFormatAndWidthTemplate( _
+    ByVal wsDst As Worksheet, _
+    ByVal lastCol As Long, _
+    ByVal formatTemplateMap As Object, _
+    ByVal columnWidthMap As Object, _
+    ByRef wsTemplate As Worksheet)
+
+    Dim c As Long
+    Dim templateCol As Long
+    Dim headerText As String
+    Dim canonical As String
+
+    If lastCol <= 0 Then Exit Sub
+
+    Set wsTemplate = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    wsTemplate.Visible = xlSheetVeryHidden
+    wsTemplate.Name = "__FMTTMP_" & Format(Now, "hhnnss")
+    templateCol = 1
+
+    For c = 1 To lastCol
+        headerText = Trim$(CStr(wsDst.Cells(1, c).Value))
+        If Len(headerText) > 0 Then
+            canonical = CanonicalHeaderName(headerText)
+            If Not columnWidthMap.Exists(canonical) Then
+                columnWidthMap.Add canonical, wsDst.Columns(c).ColumnWidth
+            End If
+
+            wsDst.Cells(2, c).Copy
+            wsTemplate.Cells(1, templateCol).PasteSpecial xlPasteFormats
+            Application.CutCopyMode = False
+            If Not formatTemplateMap.Exists(canonical) Then
+                formatTemplateMap.Add canonical, templateCol
+                templateCol = templateCol + 1
+            End If
+        End If
+    Next c
+
+End Sub
+
+Private Sub ReapplyFormatAndWidthFromTemplate( _
+    ByVal wsDst As Worksheet, _
+    ByVal formatTemplateMap As Object, _
+    ByVal columnWidthMap As Object, _
+    ByVal wsTemplate As Worksheet)
+
+    Dim key As Variant
+    Dim lastCol As Long
+    Dim dstCol As Long
+    Dim templateCol As Long
+    Dim applyLastRow As Long
+
+    If wsDst Is Nothing Then Exit Sub
+
+    lastCol = GetLastUsedCol(wsDst)
+    If lastCol <= 0 Then Exit Sub
+
+    applyLastRow = GetLastUsedRow(wsDst)
+    If applyLastRow < 2 Then applyLastRow = 2
+
+    If Not columnWidthMap Is Nothing Then
+        For Each key In columnWidthMap.Keys
+            dstCol = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates(CStr(key)))
+            If dstCol > 0 Then
+                wsDst.Columns(dstCol).ColumnWidth = CDbl(columnWidthMap(CStr(key)))
+            End If
+        Next key
+    End If
+
+    If formatTemplateMap Is Nothing Then Exit Sub
+    If wsTemplate Is Nothing Then Exit Sub
+    If formatTemplateMap.Count = 0 Then Exit Sub
+
+    For Each key In formatTemplateMap.Keys
+        dstCol = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates(CStr(key)))
+        If dstCol > 0 Then
+            templateCol = CLng(formatTemplateMap(CStr(key)))
+            wsTemplate.Cells(1, templateCol).Copy
+            wsDst.Range(wsDst.Cells(2, dstCol), wsDst.Cells(applyLastRow, dstCol)).PasteSpecial xlPasteFormats
+            Application.CutCopyMode = False
+        End If
+    Next key
+
+End Sub
 
 Private Sub HideKeyColumnsForStep2( _
     ByVal wsDst As Worksheet, _
@@ -1037,6 +1173,36 @@ ContinueCellLoop:
 
 ExitHandler:
     Application.EnableEvents = True
+
+End Sub
+
+'========================================================
+' 新ファイル基準表: 色名変更時に 2色名 へ同値反映
+'========================================================
+Public Sub 新ファイル基準表_色名から2色名同期(ByVal Target As Range, ByVal wsEdit As Worksheet)
+
+    Dim lastCol As Long
+    Dim colorCol As Long
+    Dim color2Col As Long
+    Dim workRange As Range
+    Dim changedCell As Range
+
+    If Target Is Nothing Then Exit Sub
+    If wsEdit Is Nothing Then Exit Sub
+
+    lastCol = GetLastUsedCol(wsEdit)
+    If lastCol <= 0 Then Exit Sub
+
+    colorCol = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("色名"))
+    color2Col = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("2色名"))
+    If colorCol = 0 Or color2Col = 0 Then Exit Sub
+
+    Set workRange = Intersect(Target, wsEdit.Range(wsEdit.Cells(2, colorCol), wsEdit.Cells(wsEdit.Rows.Count, colorCol)))
+    If workRange Is Nothing Then Exit Sub
+
+    For Each changedCell In workRange.Cells
+        wsEdit.Cells(changedCell.row, color2Col).Value = wsEdit.Cells(changedCell.row, colorCol).Value
+    Next changedCell
 
 End Sub
 
