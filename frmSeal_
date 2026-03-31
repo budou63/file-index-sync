@@ -30,15 +30,15 @@ Private Sub btnApply_Click()
     hasBulkEnd = (Len(bulkEndText) > 0)
     hasSingleInput = HasAnySingleInput(Me)
 
-    ' 開始/終了の片側のみ入力はエラー
-    If hasBulkStart Xor hasBulkEnd Then
-        MsgBox "開始番号と終了番号は両方入力してください。", vbExclamation
+    ' 単発入力 + 大量欄のいずれか入力はエラー（同時指定）
+    If hasSingleInput And (hasBulkStart Or hasBulkEnd) Then
+        MsgBox "単発入力または大量出力のいずれか一方を入力してください。", vbExclamation
         Exit Sub
     End If
 
-    ' 単発入力と大量入力が同時指定はエラー
-    If hasSingleInput And hasBulkStart And hasBulkEnd Then
-        MsgBox "単発入力と大量出力の両方が指定されています。どちらか一方のみ入力してください。", vbExclamation
+    ' 大量欄の片側のみ入力はエラー
+    If (Not hasSingleInput) And (hasBulkStart Xor hasBulkEnd) Then
+        MsgBox "開始番号と終了番号は両方入力してください。", vbExclamation
         Exit Sub
     End If
 
@@ -119,6 +119,9 @@ Private Sub btnClear_Click()
     For slot = 1 To 12
         SetTextIfExists Me, "tbID" & CStr(slot), ""
     Next slot
+    ' 追記: 大量出力欄（実体は TextBox1 / TextBox2）もクリア
+    SetTextIfExists Me, "TextBox1", ""
+    SetTextIfExists Me, "TextBox2", ""
     SetTextIfExists Me, "txtSerial", ""
     SetTextIfExists Me, "txtStart", ""
 
@@ -157,7 +160,12 @@ End Function
 Private Function GetBulkStartFromForm(ByVal frm As Object) As String
 
     On Error Resume Next
-    GetBulkStartFromForm = Trim$(CStr(frm.Controls("txtBulkStart").Value))
+    ' 追記: 今回のフォーム実体に合わせて TextBox1 を優先参照
+    GetBulkStartFromForm = Trim$(CStr(frm.Controls("TextBox1").Value))
+    If Len(GetBulkStartFromForm) = 0 Then
+        ' 互換: 旧コントロール名が残っている場合のみフォールバック
+        GetBulkStartFromForm = Trim$(CStr(frm.Controls("txtBulkStart").Value))
+    End If
     On Error GoTo 0
 
 End Function
@@ -165,7 +173,12 @@ End Function
 Private Function GetBulkEndFromForm(ByVal frm As Object) As String
 
     On Error Resume Next
-    GetBulkEndFromForm = Trim$(CStr(frm.Controls("txtBulkEnd").Value))
+    ' 追記: 今回のフォーム実体に合わせて TextBox2 を優先参照
+    GetBulkEndFromForm = Trim$(CStr(frm.Controls("TextBox2").Value))
+    If Len(GetBulkEndFromForm) = 0 Then
+        ' 互換: 旧コントロール名が残っている場合のみフォールバック
+        GetBulkEndFromForm = Trim$(CStr(frm.Controls("txtBulkEnd").Value))
+    End If
     On Error GoTo 0
 
 End Function
@@ -219,12 +232,16 @@ Private Function GetStartSerialFromForm(ByVal frm As Object) As String
     v = ""
 
     On Error Resume Next
-    v = Trim$(CStr(frm.Controls("tbID1").Value))
+    ' 追記: 開始番号は TextBox1 を最優先
+    v = Trim$(CStr(frm.Controls("TextBox1").Value))
     If Len(v) = 0 Then
-        v = Trim$(CStr(frm.Controls("txtSerial").Value))
-    End If
-    If Len(v) = 0 Then
-        v = Trim$(CStr(frm.Controls("txtStart").Value))
+        v = Trim$(CStr(frm.Controls("tbID1").Value))
+        If Len(v) = 0 Then
+            v = Trim$(CStr(frm.Controls("txtSerial").Value))
+        End If
+        If Len(v) = 0 Then
+            v = Trim$(CStr(frm.Controls("txtStart").Value))
+        End If
     End If
     On Error GoTo 0
 
