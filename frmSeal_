@@ -80,6 +80,14 @@ ErrorHandler:
 
 End Sub
 
+' 追記: フォーム上に大量出力ボタンを追加した場合のハンドラ
+' （既存フォームに同名ボタンが無ければ、この手続きは未使用のまま）
+Private Sub btnApplyBulk_Click()
+
+    個別フォルダシール_大量作成
+
+End Sub
+
 Private Function GetSerialBySlot(ByVal frm As Object, ByVal slot As Long) As String
 
     Dim key As String
