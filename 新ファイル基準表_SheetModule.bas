@@ -29,7 +29,7 @@ Private Sub Worksheet_Change(ByVal Target As Range)
 
     ' タイトル/主要編集列の変更時は、通し番号を自動で再採番
     If ShouldReindexSerial(Target, Me) Then
-        ReindexSerial_NewFileStandard Me
+        Module1.ReindexSerial_NewFileStandard Me
     End If
 
 ExitHandler:
@@ -76,6 +76,8 @@ Private Function GetReindexHeaderCandidates(ByVal headerName As String) As Varia
             GetReindexHeaderCandidates = Array("分類名２", "分類名2")
         Case "分類名３"
             GetReindexHeaderCandidates = Array("分類名３", "分類名3")
+        Case "年度（和暦）"
+            GetReindexHeaderCandidates = Array("年度（和暦）", "年度(和暦)")
         Case Else
             GetReindexHeaderCandidates = Array(headerName)
     End Select
