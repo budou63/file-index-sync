@@ -14,8 +14,59 @@ Private Sub btnApply_Click()
     Dim slot As Long
     Dim serialKey As String
     Dim srcRow As Long
+    Dim bulkStartText As String
+    Dim bulkEndText As String
+    Dim hasSingleInput As Boolean
+    Dim hasBulkStart As Boolean
+    Dim hasBulkEnd As Boolean
+    Dim startNo As Long
+    Dim endNo As Long
 
     On Error GoTo ErrorHandler
+
+    bulkStartText = GetBulkStartFromForm(Me)
+    bulkEndText = GetBulkEndFromForm(Me)
+    hasBulkStart = (Len(bulkStartText) > 0)
+    hasBulkEnd = (Len(bulkEndText) > 0)
+    hasSingleInput = HasAnySingleInput(Me)
+
+    ' 単発入力 + 大量欄のいずれか入力はエラー（同時指定）
+    If hasSingleInput And (hasBulkStart Or hasBulkEnd) Then
+        MsgBox "単発入力または大量出力のいずれか一方を入力してください。", vbExclamation
+        Exit Sub
+    End If
+
+    ' 大量欄の片側のみ入力はエラー
+    If (Not hasSingleInput) And (hasBulkStart Xor hasBulkEnd) Then
+        MsgBox "開始番号と終了番号は両方入力してください。", vbExclamation
+        Exit Sub
+    End If
+
+    ' 大量出力モード
+    If (Not hasSingleInput) And hasBulkStart And hasBulkEnd Then
+        If Not IsNumeric(bulkStartText) Or Not IsNumeric(bulkEndText) Then
+            MsgBox "開始番号と終了番号は数値で入力してください。", vbExclamation
+            Exit Sub
+        End If
+
+        startNo = CLng(Val(bulkStartText))
+        endNo = CLng(Val(bulkEndText))
+        If startNo > endNo Then
+            MsgBox "開始番号は終了番号以下にしてください。", vbExclamation
+            Exit Sub
+        End If
+
+        GenerateMultiSealSheets_NewSpec startNo, endNo
+        Exit Sub
+    End If
+
+    ' 単発出力モード
+    If hasSingleInput And (Not hasBulkStart) And (Not hasBulkEnd) Then
+        ' 既存ロジックへ継続
+    Else
+        MsgBox "単発入力または大量出力のいずれか一方を入力してください。", vbExclamation
+        Exit Sub
+    End If
 
     Set wsSrc = FindSheetByCandidates(ThisWorkbook, Array("新ファイル基準表"))
     Set wsSeal = FindSheetByCandidates(ThisWorkbook, Array("個別フォルダシール", "個別フォルダーシール", "フォルダシール"))
@@ -68,6 +119,9 @@ Private Sub btnClear_Click()
     For slot = 1 To 12
         SetTextIfExists Me, "tbID" & CStr(slot), ""
     Next slot
+    ' 追記: 大量出力欄（実体は TextBox1 / TextBox2）もクリア
+    SetTextIfExists Me, "TextBox1", ""
+    SetTextIfExists Me, "TextBox2", ""
     SetTextIfExists Me, "txtSerial", ""
     SetTextIfExists Me, "txtStart", ""
 
@@ -79,6 +133,55 @@ ErrorHandler:
     MsgBox "クリア処理でエラーが発生しました: " & Err.Description, vbExclamation
 
 End Sub
+
+' 追記: フォーム上に大量出力ボタンを追加した場合のハンドラ
+' （既存フォームに同名ボタンが無ければ、この手続きは未使用のまま）
+Private Sub btnApplyBulk_Click()
+
+    btnApply_Click
+
+End Sub
+
+Private Function HasAnySingleInput(ByVal frm As Object) As Boolean
+
+    Dim slot As Long
+
+    For slot = 1 To 12
+        If Len(Trim$(GetSerialBySlot(frm, slot))) > 0 Then
+            HasAnySingleInput = True
+            Exit Function
+        End If
+    Next slot
+
+    HasAnySingleInput = False
+
+End Function
+
+Private Function GetBulkStartFromForm(ByVal frm As Object) As String
+
+    On Error Resume Next
+    ' 追記: 今回のフォーム実体に合わせて TextBox1 を優先参照
+    GetBulkStartFromForm = Trim$(CStr(frm.Controls("TextBox1").Value))
+    If Len(GetBulkStartFromForm) = 0 Then
+        ' 互換: 旧コントロール名が残っている場合のみフォールバック
+        GetBulkStartFromForm = Trim$(CStr(frm.Controls("txtBulkStart").Value))
+    End If
+    On Error GoTo 0
+
+End Function
+
+Private Function GetBulkEndFromForm(ByVal frm As Object) As String
+
+    On Error Resume Next
+    ' 追記: 今回のフォーム実体に合わせて TextBox2 を優先参照
+    GetBulkEndFromForm = Trim$(CStr(frm.Controls("TextBox2").Value))
+    If Len(GetBulkEndFromForm) = 0 Then
+        ' 互換: 旧コントロール名が残っている場合のみフォールバック
+        GetBulkEndFromForm = Trim$(CStr(frm.Controls("txtBulkEnd").Value))
+    End If
+    On Error GoTo 0
+
+End Function
 
 Private Function GetSerialBySlot(ByVal frm As Object, ByVal slot As Long) As String
 
@@ -129,12 +232,16 @@ Private Function GetStartSerialFromForm(ByVal frm As Object) As String
     v = ""
 
     On Error Resume Next
-    v = Trim$(CStr(frm.Controls("tbID1").Value))
+    ' 追記: 開始番号は TextBox1 を最優先
+    v = Trim$(CStr(frm.Controls("TextBox1").Value))
     If Len(v) = 0 Then
-        v = Trim$(CStr(frm.Controls("txtSerial").Value))
-    End If
-    If Len(v) = 0 Then
-        v = Trim$(CStr(frm.Controls("txtStart").Value))
+        v = Trim$(CStr(frm.Controls("tbID1").Value))
+        If Len(v) = 0 Then
+            v = Trim$(CStr(frm.Controls("txtSerial").Value))
+        End If
+        If Len(v) = 0 Then
+            v = Trim$(CStr(frm.Controls("txtStart").Value))
+        End If
     End If
     On Error GoTo 0
 
