@@ -259,6 +259,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim clearFromRow As Long
     Dim clearToRow As Long
     Dim missingHeadersText As String
+    Dim validationTemplateMap As Object
+    Dim wsValidationTemplate As Worksheet
 
     On Error GoTo ErrorHandler
 
@@ -266,6 +268,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     Set srcToDstMap = CreateObject("Scripting.Dictionary")
     Set existingDstHeaders = CreateObject("Scripting.Dictionary")
+    Set validationTemplateMap = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -275,6 +278,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
     dstLastCol = GetLastUsedCol(wsDst)
 
     If srcLastCol <= 0 Then Err.Raise vbObjectError + 2001, , "目録CSV の見出し行が見つかりません。"
+
+    ' 追記: 並び替え前に既存入力規則のテンプレートを退避（見出し名ベースで復元するため）
+    CreateValidationTemplateSheet wsDst, dstLastCol, validationTemplateMap, wsValidationTemplate
 
     displayHeaders = Array( _
         "通し番号", _
@@ -371,6 +377,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
     ' 9) タイトルがある行だけ通し番号を再採番
     ReindexSerial_NewFileStandard wsDst
 
+    ' 10) 入力規則を見出し名ベースで再適用（列挿入/並び替え後の列位置へ追従）
+    ReapplyValidationFromTemplate wsDst, validationTemplateMap, wsValidationTemplate
+
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
@@ -382,6 +391,14 @@ Public Sub 手順2_新ファイル基準表を作成する()
     End If
 
 SafeExit:
+    On Error Resume Next
+    If Not wsValidationTemplate Is Nothing Then
+        Application.DisplayAlerts = False
+        wsValidationTemplate.Delete
+        Application.DisplayAlerts = True
+    End If
+    On Error GoTo 0
+
     Application.ScreenUpdating = True
     Application.EnableEvents = True
     Exit Sub
@@ -596,6 +613,86 @@ Private Sub HideKeyColumnsForStep2( _
     missingHeadersText = missing
 
 End Sub
+
+Private Sub CreateValidationTemplateSheet( _
+    ByVal wsDst As Worksheet, _
+    ByVal lastCol As Long, _
+    ByVal validationTemplateMap As Object, _
+    ByRef wsTemplate As Worksheet)
+
+    Dim c As Long
+    Dim templateCol As Long
+    Dim headerText As String
+    Dim canonical As String
+
+    If lastCol <= 0 Then Exit Sub
+
+    Set wsTemplate = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    wsTemplate.Visible = xlSheetVeryHidden
+    wsTemplate.Name = "__DVTMP_" & Format(Now, "hhnnss")
+    templateCol = 1
+
+    ' 追記: 既存入力規則がある列だけテンプレート退避（ヘッダー名で紐づけ）
+    For c = 1 To lastCol
+        headerText = Trim$(CStr(wsDst.Cells(1, c).Value))
+        If Len(headerText) > 0 Then
+            If HasValidationRule(wsDst.Cells(2, c)) Then
+                wsDst.Cells(2, c).Copy
+                wsTemplate.Cells(1, templateCol).PasteSpecial xlPasteValidation
+                Application.CutCopyMode = False
+                canonical = CanonicalHeaderName(headerText)
+                If Not validationTemplateMap.Exists(canonical) Then
+                    validationTemplateMap.Add canonical, templateCol
+                    templateCol = templateCol + 1
+                End If
+            End If
+        End If
+    Next c
+
+End Sub
+
+Private Sub ReapplyValidationFromTemplate( _
+    ByVal wsDst As Worksheet, _
+    ByVal validationTemplateMap As Object, _
+    ByVal wsTemplate As Worksheet)
+
+    Dim key As Variant
+    Dim lastCol As Long
+    Dim dstCol As Long
+    Dim templateCol As Long
+    Dim applyLastRow As Long
+
+    If validationTemplateMap Is Nothing Then Exit Sub
+    If wsTemplate Is Nothing Then Exit Sub
+    If validationTemplateMap.Count = 0 Then Exit Sub
+
+    lastCol = GetLastUsedCol(wsDst)
+    applyLastRow = GetLastUsedRow(wsDst)
+    If applyLastRow < 2 Then applyLastRow = 2
+
+    ' 追記: 見出し名で現在列を再取得し、退避した入力規則を再適用
+    For Each key In validationTemplateMap.Keys
+        dstCol = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates(CStr(key)))
+        If dstCol > 0 Then
+            templateCol = CLng(validationTemplateMap(CStr(key)))
+            wsTemplate.Cells(1, templateCol).Copy
+            wsDst.Range(wsDst.Cells(2, dstCol), wsDst.Cells(applyLastRow, dstCol)).PasteSpecial xlPasteValidation
+            Application.CutCopyMode = False
+        End If
+    Next key
+
+End Sub
+
+Private Function HasValidationRule(ByVal targetCell As Range) As Boolean
+
+    On Error GoTo NoRule
+    HasValidationRule = (targetCell.Validation.Type <> xlValidateInputOnly)
+    Exit Function
+
+NoRule:
+    HasValidationRule = False
+
+End Function
 
 Private Sub ConvertAnnualUseDivisionValues(ByVal wsDst As Worksheet, ByVal lastRow As Long)
 
