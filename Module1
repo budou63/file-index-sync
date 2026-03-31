@@ -1149,14 +1149,14 @@ Public Sub ClearOneSealSlot(ByVal wsSeal As Worksheet, ByVal slot As Long)
 
     ClearMergeTarget wsSeal, baseRow, baseCol
     ClearMergeTarget wsSeal, baseRow, baseCol + 1
-    ClearMergeTarget wsSeal, baseRow, baseCol + 6 ' 追記: G2（/）もクリア対象に含める
+    ClearMergeTarget wsSeal, baseRow, baseCol + offSlash ' 追記: G2相当（/）もブロック基準でクリア
     ClearMergeTarget wsSeal, baseRow, baseCol + 7
     ClearMergeTarget wsSeal, baseRow + 1, baseCol
     ClearMergeTarget wsSeal, baseRow + 1, baseCol + 1
 
     PutMergeTopLeft wsSeal, baseRow, baseCol, ""
     PutMergeTopLeft wsSeal, baseRow, baseCol + 1, ""
-    PutMergeTopLeft wsSeal, baseRow, baseCol + 6, "" ' 追記: G2（/）クリア
+    PutMergeTopLeft wsSeal, baseRow, baseCol + offSlash, "" ' 追記: G2相当（/）クリア
     PutMergeTopLeft wsSeal, baseRow, baseCol + 7, ""
     PutMergeTopLeft wsSeal, baseRow + 1, baseCol, ""
     PutMergeTopLeft wsSeal, baseRow + 1, baseCol + 1, ""
