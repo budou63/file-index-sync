@@ -29,7 +29,7 @@ Private Sub Worksheet_Change(ByVal Target As Range)
 
     ' タイトル/主要編集列の変更時は、通し番号を自動で再採番
     If ShouldReindexSerial(Target, Me) Then
-        Module1.ReindexSerial_NewFileStandard Me
+        ReindexSerial_NewFileStandard Me
     End If
 
 ExitHandler:

@@ -404,6 +404,15 @@ Public Sub ReindexSerial_NewFileStandard(Optional ByVal ws As Worksheet)
     Dim rowNo As Long
     Dim nextSerial As Long
     Dim titleValue As String
+    Dim prevEnableEvents As Boolean
+    Dim prevScreenUpdating As Boolean
+
+    On Error GoTo SafeExit
+
+    prevEnableEvents = Application.EnableEvents
+    prevScreenUpdating = Application.ScreenUpdating
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
 
     If ws Is Nothing Then
         Set targetWs = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
@@ -433,6 +442,10 @@ Public Sub ReindexSerial_NewFileStandard(Optional ByVal ws As Worksheet)
             targetWs.Cells(rowNo, serialCol).ClearContents
         End If
     Next rowNo
+
+SafeExit:
+    Application.EnableEvents = prevEnableEvents
+    Application.ScreenUpdating = prevScreenUpdating
 
 End Sub
 
