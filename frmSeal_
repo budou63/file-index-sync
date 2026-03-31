@@ -14,8 +14,59 @@ Private Sub btnApply_Click()
     Dim slot As Long
     Dim serialKey As String
     Dim srcRow As Long
+    Dim bulkStartText As String
+    Dim bulkEndText As String
+    Dim hasSingleInput As Boolean
+    Dim hasBulkStart As Boolean
+    Dim hasBulkEnd As Boolean
+    Dim startNo As Long
+    Dim endNo As Long
 
     On Error GoTo ErrorHandler
+
+    bulkStartText = GetBulkStartFromForm(Me)
+    bulkEndText = GetBulkEndFromForm(Me)
+    hasBulkStart = (Len(bulkStartText) > 0)
+    hasBulkEnd = (Len(bulkEndText) > 0)
+    hasSingleInput = HasAnySingleInput(Me)
+
+    ' 開始/終了の片側のみ入力はエラー
+    If hasBulkStart Xor hasBulkEnd Then
+        MsgBox "開始番号と終了番号は両方入力してください。", vbExclamation
+        Exit Sub
+    End If
+
+    ' 単発入力と大量入力が同時指定はエラー
+    If hasSingleInput And hasBulkStart And hasBulkEnd Then
+        MsgBox "単発入力と大量出力の両方が指定されています。どちらか一方のみ入力してください。", vbExclamation
+        Exit Sub
+    End If
+
+    ' 大量出力モード
+    If (Not hasSingleInput) And hasBulkStart And hasBulkEnd Then
+        If Not IsNumeric(bulkStartText) Or Not IsNumeric(bulkEndText) Then
+            MsgBox "開始番号と終了番号は数値で入力してください。", vbExclamation
+            Exit Sub
+        End If
+
+        startNo = CLng(Val(bulkStartText))
+        endNo = CLng(Val(bulkEndText))
+        If startNo > endNo Then
+            MsgBox "開始番号は終了番号以下にしてください。", vbExclamation
+            Exit Sub
+        End If
+
+        GenerateMultiSealSheets_NewSpec startNo, endNo
+        Exit Sub
+    End If
+
+    ' 単発出力モード
+    If hasSingleInput And (Not hasBulkStart) And (Not hasBulkEnd) Then
+        ' 既存ロジックへ継続
+    Else
+        MsgBox "単発入力または大量出力のいずれか一方を入力してください。", vbExclamation
+        Exit Sub
+    End If
 
     Set wsSrc = FindSheetByCandidates(ThisWorkbook, Array("新ファイル基準表"))
     Set wsSeal = FindSheetByCandidates(ThisWorkbook, Array("個別フォルダシール", "個別フォルダーシール", "フォルダシール"))
@@ -84,9 +135,40 @@ End Sub
 ' （既存フォームに同名ボタンが無ければ、この手続きは未使用のまま）
 Private Sub btnApplyBulk_Click()
 
-    個別フォルダシール_大量作成
+    btnApply_Click
 
 End Sub
+
+Private Function HasAnySingleInput(ByVal frm As Object) As Boolean
+
+    Dim slot As Long
+
+    For slot = 1 To 12
+        If Len(Trim$(GetSerialBySlot(frm, slot))) > 0 Then
+            HasAnySingleInput = True
+            Exit Function
+        End If
+    Next slot
+
+    HasAnySingleInput = False
+
+End Function
+
+Private Function GetBulkStartFromForm(ByVal frm As Object) As String
+
+    On Error Resume Next
+    GetBulkStartFromForm = Trim$(CStr(frm.Controls("txtBulkStart").Value))
+    On Error GoTo 0
+
+End Function
+
+Private Function GetBulkEndFromForm(ByVal frm As Object) As String
+
+    On Error Resume Next
+    GetBulkEndFromForm = Trim$(CStr(frm.Controls("txtBulkEnd").Value))
+    On Error GoTo 0
+
+End Function
 
 Private Function GetSerialBySlot(ByVal frm As Object, ByVal slot As Long) As String
 
