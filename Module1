@@ -1575,6 +1575,7 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     Dim pageTopRow As Long
     Dim srcRow As Long
     Dim printLastRow As Long
+    Dim c As Long
 
     On Error GoTo ErrorHandler
 
@@ -1618,6 +1619,13 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     wsMulti.Cells.Clear
     wsMulti.ResetAllPageBreaks
 
+    ' 追記: 列幅はテンプレート（単発用1ページ目）と一致させる
+    For c = 1 To PAGE_LAST_COL
+        wsMulti.Columns(c).ColumnWidth = wsSingle.Columns(c).ColumnWidth
+    Next c
+    ' 追記: 印刷ズレ抑制のためページ設定もテンプレートに合わせる
+    ApplyPageSetupFromTemplate wsSingle, wsMulti
+
     If targetRows.Count = 0 Then
         Err.Raise vbObjectError + 2307, , "該当するデータがありません。"
     End If
@@ -1627,9 +1635,8 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     For pageNo = 1 To pageCount
         pageTopRow = (pageNo - 1) * PAGE_ROWS + 1
 
-        wsSingle.Range(wsSingle.Cells(1, 1), wsSingle.Cells(PAGE_ROWS, PAGE_LAST_COL)).Copy
-        wsMulti.Cells(pageTopRow, 1).PasteSpecial xlPasteAll
-        Application.CutCopyMode = False
+        ' 追記: 12面テンプレート範囲をページ単位で複製（行高・結合・罫線・配置を含む）
+        CopySealTemplatePageLayout wsSingle, wsMulti, pageTopRow, PAGE_ROWS, PAGE_LAST_COL
 
         If pageNo > 1 Then
             wsMulti.HPageBreaks.Add Before:=wsMulti.Cells(pageTopRow, 1)
@@ -1668,6 +1675,52 @@ SafeExit:
 ErrorHandler:
     MsgBox "大量作成でエラーが発生しました: " & Err.Description, vbExclamation
     Resume SafeExit
+
+End Sub
+
+Private Sub ApplyPageSetupFromTemplate(ByVal wsTemplate As Worksheet, ByVal wsDst As Worksheet)
+
+    With wsDst.PageSetup
+        .Orientation = wsTemplate.PageSetup.Orientation
+        .PaperSize = wsTemplate.PageSetup.PaperSize
+        .Zoom = wsTemplate.PageSetup.Zoom
+        .FitToPagesWide = wsTemplate.PageSetup.FitToPagesWide
+        .FitToPagesTall = wsTemplate.PageSetup.FitToPagesTall
+        .TopMargin = wsTemplate.PageSetup.TopMargin
+        .BottomMargin = wsTemplate.PageSetup.BottomMargin
+        .LeftMargin = wsTemplate.PageSetup.LeftMargin
+        .RightMargin = wsTemplate.PageSetup.RightMargin
+        .HeaderMargin = wsTemplate.PageSetup.HeaderMargin
+        .FooterMargin = wsTemplate.PageSetup.FooterMargin
+        .CenterHorizontally = wsTemplate.PageSetup.CenterHorizontally
+        .CenterVertically = wsTemplate.PageSetup.CenterVertically
+    End With
+
+End Sub
+
+Private Sub CopySealTemplatePageLayout( _
+    ByVal wsTemplate As Worksheet, _
+    ByVal wsDst As Worksheet, _
+    ByVal dstTopRow As Long, _
+    ByVal pageRows As Long, _
+    ByVal pageLastCol As Long)
+
+    Dim r As Long
+    Dim c As Long
+
+    wsTemplate.Range(wsTemplate.Cells(1, 1), wsTemplate.Cells(pageRows, pageLastCol)).Copy
+    wsDst.Cells(dstTopRow, 1).PasteSpecial xlPasteAll
+    Application.CutCopyMode = False
+
+    ' 追記: 行高は PasteAll だけでは不一致になり得るため明示コピー
+    For r = 1 To pageRows
+        wsDst.Rows(dstTopRow + r - 1).RowHeight = wsTemplate.Rows(r).RowHeight
+    Next r
+
+    ' 追記: 列幅もテンプレート値を明示的に維持
+    For c = 1 To pageLastCol
+        wsDst.Columns(c).ColumnWidth = wsTemplate.Columns(c).ColumnWidth
+    Next c
 
 End Sub
 
