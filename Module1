@@ -1555,7 +1555,10 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     Const SINGLE_SHEET_NAME2 As String = "個別フォルダーシール"
     Const SINGLE_SHEET_NAME3 As String = "フォルダシール"
     Const PAGE_ROWS As Long = 18
-    Const PAGE_LAST_COL As Long = 19
+    ' NOTE:
+    ' 右側ブロックの結合セル（M:U / S:U）をテンプレート通りに維持するため、
+    ' ページ複製範囲は U 列(21) までを対象にする。
+    Const PAGE_LAST_COL As Long = 21
 
     Dim wsSrc As Worksheet
     Dim wsSingle As Worksheet
