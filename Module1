@@ -1555,7 +1555,10 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     Const SINGLE_SHEET_NAME2 As String = "個別フォルダーシール"
     Const SINGLE_SHEET_NAME3 As String = "フォルダシール"
     Const PAGE_ROWS As Long = 18
-    Const PAGE_LAST_COL As Long = 19
+    ' NOTE:
+    ' 右側ブロックの結合セル（M:U / S:U）をテンプレート通りに維持するため、
+    ' ページ複製範囲は U 列(21) までを対象にする。
+    Const PAGE_LAST_COL As Long = 21
 
     Dim wsSrc As Worksheet
     Dim wsSingle As Worksheet
@@ -1576,6 +1579,10 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     Dim srcRow As Long
     Dim printLastRow As Long
     Dim c As Long
+    Dim requiredBlocks As Long
+    Dim generatedBlocks As Long
+    Dim addPageNo As Long
+    Dim clearPageNo As Long
 
     On Error GoTo ErrorHandler
 
@@ -1616,9 +1623,6 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
         End If
     Next r
 
-    wsMulti.Cells.Clear
-    wsMulti.ResetAllPageBreaks
-
     ' 追記: 列幅はテンプレート（単発用1ページ目）と一致させる
     For c = 1 To PAGE_LAST_COL
         wsMulti.Columns(c).ColumnWidth = wsSingle.Columns(c).ColumnWidth
@@ -1631,16 +1635,23 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     End If
 
     pageCount = (targetRows.Count + 11) \ 12
+    requiredBlocks = pageCount
+    generatedBlocks = GetGeneratedSealBlockCount(wsMulti, PAGE_ROWS)
+
+    ' 既存ブロックを再利用し、不足分のみ12面単位で追加
+    If generatedBlocks < requiredBlocks Then
+        For addPageNo = generatedBlocks + 1 To requiredBlocks
+            pageTopRow = (addPageNo - 1) * PAGE_ROWS + 1
+            CopySealTemplatePageLayout wsSingle, wsMulti, pageTopRow, PAGE_ROWS, PAGE_LAST_COL
+        Next addPageNo
+        generatedBlocks = requiredBlocks
+    End If
+
+    ' 12面ブロックごとに改ページを固定（既存ブロックも含めて再設定）
+    ConfigureSealPageBreaks wsMulti, PAGE_ROWS, generatedBlocks
 
     For pageNo = 1 To pageCount
         pageTopRow = (pageNo - 1) * PAGE_ROWS + 1
-
-        ' 追記: 12面テンプレート範囲をページ単位で複製（行高・結合・罫線・配置を含む）
-        CopySealTemplatePageLayout wsSingle, wsMulti, pageTopRow, PAGE_ROWS, PAGE_LAST_COL
-
-        If pageNo > 1 Then
-            wsMulti.HPageBreaks.Add Before:=wsMulti.Cells(pageTopRow, 1)
-        End If
 
         For slot = 1 To 12
             idx = (pageNo - 1) * 12 + slot
@@ -1659,6 +1670,15 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
         Next slot
     Next pageNo
 
+    ' 今回未使用の既存ブロックは削除せず残し、値だけクリア
+    If generatedBlocks > pageCount Then
+        For clearPageNo = pageCount + 1 To generatedBlocks
+            For slot = 1 To 12
+                ClearOneSealSlot_WithRowOffset wsMulti, slot, (clearPageNo - 1) * PAGE_ROWS
+            Next slot
+        Next clearPageNo
+    End If
+
     printLastRow = pageCount * PAGE_ROWS
     wsMulti.PageSetup.PrintArea = wsMulti.Range(wsMulti.Cells(1, 1), wsMulti.Cells(printLastRow, PAGE_LAST_COL)).Address
 
@@ -1675,6 +1695,49 @@ SafeExit:
 ErrorHandler:
     MsgBox "大量作成でエラーが発生しました: " & Err.Description, vbExclamation
     Resume SafeExit
+
+End Sub
+
+Private Function GetGeneratedSealBlockCount(ByVal ws As Worksheet, ByVal pageRows As Long) As Long
+
+    Dim areaText As String
+    Dim rngPrint As Range
+    Dim rowBottom As Long
+
+    On Error GoTo Fallback
+
+    areaText = Trim$(ws.PageSetup.PrintArea)
+    If Len(areaText) > 0 Then
+        Set rngPrint = ws.Range(areaText)
+        rowBottom = rngPrint.Row + rngPrint.Rows.Count - 1
+        If rowBottom > 0 Then
+            GetGeneratedSealBlockCount = (rowBottom + pageRows - 1) \ pageRows
+            Exit Function
+        End If
+    End If
+
+Fallback:
+    If Application.WorksheetFunction.CountA(ws.Range(ws.Cells(1, 1), ws.Cells(pageRows, 1))) > 0 Then
+        GetGeneratedSealBlockCount = 1
+    Else
+        GetGeneratedSealBlockCount = 0
+    End If
+
+End Function
+
+Private Sub ConfigureSealPageBreaks(ByVal ws As Worksheet, ByVal pageRows As Long, ByVal blockCount As Long)
+
+    Dim pageNo As Long
+    Dim pageTopRow As Long
+
+    ws.ResetAllPageBreaks
+
+    If blockCount <= 1 Then Exit Sub
+
+    For pageNo = 2 To blockCount
+        pageTopRow = (pageNo - 1) * pageRows + 1
+        ws.HPageBreaks.Add Before:=ws.Cells(pageTopRow, 1)
+    Next pageNo
 
 End Sub
 
