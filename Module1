@@ -330,8 +330,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
 
             For i = LBound(compareDefs) To UBound(compareDefs)
                 If compareSrcCols(i) > 0 And compareEditCols(i) > 0 Then
-                    If GetTrimmedCell(wsSrc, srcRow, compareSrcCols(i)) <> _
-                       GetTrimmedCell(wsEdit, r, compareEditCols(i)) Then
+                    If NormalizeForDiffCompare(wsSrc.Cells(srcRow, compareSrcCols(i)).Value) <> _
+                       NormalizeForDiffCompare(wsEdit.Cells(r, compareEditCols(i)).Value) Then
                         isDifferent = True
                         Exit For
                     End If
@@ -373,7 +373,73 @@ End Sub
 
 Private Function BuildHeaderBasedKey(ByVal yearValue As String, ByVal titleValue As String, ByVal category2Value As String) As String
 
-    BuildHeaderBasedKey = Trim$(CStr(yearValue)) & "|" & Trim$(CStr(titleValue)) & "|" & Trim$(CStr(category2Value))
+    ' 差分キーも比較用正規化を通して、表記ゆれによる誤差分を抑制する
+    BuildHeaderBasedKey = NormalizeForDiffCompare(yearValue) & "|" & _
+                          NormalizeForDiffCompare(titleValue) & "|" & _
+                          NormalizeForDiffCompare(category2Value)
+
+End Function
+
+Private Function NormalizeForDiffCompare(ByVal v As Variant) As String
+
+    Dim s As String
+
+    If IsError(v) Or IsNull(v) Or IsEmpty(v) Then
+        NormalizeForDiffCompare = ""
+        Exit Function
+    End If
+
+    s = CStr(v)
+
+    ' 改行/タブ/不可視制御文字を除去
+    s = Replace(s, vbCrLf, " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+    s = Replace(s, vbTab, " ")
+    s = Application.WorksheetFunction.Clean(s)
+
+    ' 全角英数・カナを半角へ寄せる（可能な範囲）
+    On Error Resume Next
+    s = StrConv(s, vbNarrow)
+    On Error GoTo 0
+
+    ' 代表的な記号揺れの統一
+    s = Replace(s, "･", "・")
+    s = Replace(s, "／", "/")
+    s = Replace(s, "（", "(")
+    s = Replace(s, "）", ")")
+    s = Replace(s, "：", ":")
+    s = NormalizeHyphenChars(s)
+
+    ' 全角スペースを半角へ寄せる
+    s = Replace(s, ChrW(&H3000), " ")
+
+    ' 連続スペースを1つに圧縮
+    s = CollapseSpaces(s)
+
+    NormalizeForDiffCompare = Trim$(s)
+
+End Function
+
+Private Function NormalizeHyphenChars(ByVal s As String) As String
+
+    s = Replace(s, "－", "-")
+    s = Replace(s, "―", "-")
+    s = Replace(s, "ｰ", "-")
+    s = Replace(s, "ー", "-")
+    s = Replace(s, "‐", "-")
+    s = Replace(s, "−", "-")
+    NormalizeHyphenChars = s
+
+End Function
+
+Private Function CollapseSpaces(ByVal s As String) As String
+
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+
+    CollapseSpaces = s
 
 End Function
 
