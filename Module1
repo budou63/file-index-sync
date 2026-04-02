@@ -5,6 +5,39 @@ Private Const SHEET_NEW_FILE_STANDARD As String = "新ファイル基準表"
 Private Const SHEET_CODE_MANAGEMENT As String = "コード管理CSV"
 Private Const SHEET_DIFF_IMPORT As String = "差分インポートCSV"
 
+Public Sub 新ファイル基準表生成()
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim oldDisplayAlerts As Boolean
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    oldDisplayAlerts = Application.DisplayAlerts
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+
+    Call CSV取込_シンプル版
+    Call 手順2_新ファイル基準表を作成する
+    Call 手順3_コード管理CSVを作成する
+
+    MsgBox "完了しました"
+    GoTo Cleanup
+
+ErrorHandler:
+    MsgBox "エラーが発生しました: " & Err.Description, vbExclamation
+
+Cleanup:
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Application.DisplayAlerts = oldDisplayAlerts
+
+End Sub
+
 Public Sub CSV取込_シンプル版()
 
     Dim ws As Worksheet
