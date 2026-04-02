@@ -43,6 +43,29 @@ Public Sub CSV取込_シンプル版()
     Dim ws As Worksheet
     Dim filePath As Variant
     Dim wbCSV As Workbook
+    Dim wsCSV As Worksheet
+    Dim dstLastRow As Long
+    Dim dstLastCol As Long
+    Dim srcLastRow As Long
+    Dim srcLastCol As Long
+    Dim appendRow As Long
+    Dim srcRow As Long
+    Dim appendedCount As Long
+    Dim skippedDuplicateCount As Long
+    Dim existingHasHeader As Boolean
+    Dim srcFileIdCol As Long
+    Dim srcFileNoCol As Long
+    Dim srcBarcodeCol As Long
+    Dim dstFileIdCol As Long
+    Dim dstFileNoCol As Long
+    Dim dstBarcodeCol As Long
+    Dim fileIdVal As String
+    Dim fileNoVal As String
+    Dim barcodeVal As String
+    Dim key As String
+    Dim existingKeyMap As Object
+
+    On Error GoTo ErrorHandler
 
     ' ファイル選択
     filePath = Application.GetOpenFilename("CSV Files (*.csv), *.csv")
@@ -51,28 +74,97 @@ Public Sub CSV取込_シンプル版()
     
     ' 目録CSVシート
     Set ws = ThisWorkbook.Worksheets("目録CSV")
+    Set existingKeyMap = CreateObject("Scripting.Dictionary")
     
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
     
-    ' クリア
-    ws.Cells.Clear
-    
-    ' CSVを普通に開く（←これが一番大事）
+    ' CSVを開く
     Set wbCSV = Workbooks.Open(filePath)
-    
-    ' そのままコピー
-    wbCSV.Sheets(1).UsedRange.Copy ws.Range("A1")
+    Set wsCSV = wbCSV.Sheets(1)
 
-    ' 見出し一致を安定させるため、取込直後に1行目の改行コードを除去
-    NormalizeHeaderLineBreaks ws
+    srcLastRow = GetLastUsedRow(wsCSV)
+    srcLastCol = GetLastUsedCol(wsCSV)
+    dstLastRow = GetLastUsedRow(ws)
+    dstLastCol = GetLastUsedCol(ws)
+    existingHasHeader = (dstLastRow >= 1 And dstLastCol > 0 And Len(Trim$(CStr(ws.Cells(1, 1).Value))) > 0)
+
+    If srcLastCol <= 0 Then Err.Raise vbObjectError + 2101, , "選択したCSVの見出し行が見つかりません。"
+
+    If Not existingHasHeader Then
+        ' 初回取込: 見出し含めてA1から配置
+        wsCSV.UsedRange.Copy ws.Range("A1")
+        NormalizeHeaderLineBreaks ws
+        appendedCount = Application.Max(srcLastRow - 1, 0)
+    Else
+        ' 追記取込: 既存見出しを維持し、CSVのデータ部(2行目以降)だけ追記
+        NormalizeHeaderLineBreaks ws
+
+        srcFileIdCol = FindHeaderColumn(wsCSV, srcLastCol, Array("ファイルID"))
+        srcFileNoCol = FindHeaderColumn(wsCSV, srcLastCol, Array("ファイル番号"))
+        srcBarcodeCol = FindHeaderColumn(wsCSV, srcLastCol, Array("バーコード番号"))
+        dstFileIdCol = FindHeaderColumn(ws, dstLastCol, Array("ファイルID"))
+        dstFileNoCol = FindHeaderColumn(ws, dstLastCol, Array("ファイル番号"))
+        dstBarcodeCol = FindHeaderColumn(ws, dstLastCol, Array("バーコード番号"))
+
+        If dstFileIdCol > 0 And dstFileNoCol > 0 And dstBarcodeCol > 0 Then
+            For srcRow = 2 To dstLastRow
+                fileIdVal = GetTrimmedCell(ws, srcRow, dstFileIdCol)
+                fileNoVal = GetTrimmedCell(ws, srcRow, dstFileNoCol)
+                barcodeVal = GetTrimmedCell(ws, srcRow, dstBarcodeCol)
+                If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
+                    key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
+                    If Not existingKeyMap.Exists(key) Then existingKeyMap.Add key, True
+                End If
+            Next srcRow
+        End If
+
+        appendRow = dstLastRow + 1
+        For srcRow = 2 To srcLastRow
+            fileIdVal = GetTrimmedCell(wsCSV, srcRow, srcFileIdCol)
+            fileNoVal = GetTrimmedCell(wsCSV, srcRow, srcFileNoCol)
+            barcodeVal = GetTrimmedCell(wsCSV, srcRow, srcBarcodeCol)
+
+            If fileIdVal = "" And fileNoVal = "" And barcodeVal = "" Then
+                ' 重複判定不能行はそのまま追記
+            Else
+                key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
+                If existingKeyMap.Exists(key) Then
+                    skippedDuplicateCount = skippedDuplicateCount + 1
+                    GoTo ContinueNextCsvRow
+                End If
+            End If
+
+            ws.Range(ws.Cells(appendRow, 1), ws.Cells(appendRow, srcLastCol)).Value = _
+                wsCSV.Range(wsCSV.Cells(srcRow, 1), wsCSV.Cells(srcRow, srcLastCol)).Value
+            appendRow = appendRow + 1
+            appendedCount = appendedCount + 1
+
+            If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
+                If Not existingKeyMap.Exists(key) Then existingKeyMap.Add key, True
+            End If
+
+ContinueNextCsvRow:
+        Next srcRow
+    End If
     
     wbCSV.Close False
     
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
     
-    MsgBox "CSV取込完了"
+    MsgBox "CSV取込完了" & vbCrLf & _
+           "追記件数: " & appendedCount & " 件" & vbCrLf & _
+           "重複スキップ件数: " & skippedDuplicateCount & " 件", vbInformation
+    Exit Sub
+
+ErrorHandler:
+    On Error Resume Next
+    If Not wbCSV Is Nothing Then wbCSV.Close False
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+    MsgBox "CSV取込中にエラーが発生しました: " & Err.Description, vbExclamation
 
 End Sub
 
