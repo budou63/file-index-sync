@@ -5,11 +5,67 @@ Private Const SHEET_NEW_FILE_STANDARD As String = "新ファイル基準表"
 Private Const SHEET_CODE_MANAGEMENT As String = "コード管理CSV"
 Private Const SHEET_DIFF_IMPORT As String = "差分インポートCSV"
 
+Public Sub 新ファイル基準表生成()
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim oldDisplayAlerts As Boolean
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    oldDisplayAlerts = Application.DisplayAlerts
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+
+    Call CSV取込_シンプル版
+    Call 手順2_新ファイル基準表を作成する
+    Call 手順3_コード管理CSVを作成する
+
+    MsgBox "完了しました"
+    GoTo Cleanup
+
+ErrorHandler:
+    MsgBox "エラーが発生しました: " & Err.Description, vbExclamation
+
+Cleanup:
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Application.DisplayAlerts = oldDisplayAlerts
+
+End Sub
+
 Public Sub CSV取込_シンプル版()
 
     Dim ws As Worksheet
     Dim filePath As Variant
     Dim wbCSV As Workbook
+    Dim wsCSV As Worksheet
+    Dim dstLastRow As Long
+    Dim dstLastCol As Long
+    Dim srcLastRow As Long
+    Dim srcLastCol As Long
+    Dim appendRow As Long
+    Dim srcRow As Long
+    Dim appendedCount As Long
+    Dim skippedDuplicateCount As Long
+    Dim existingHasHeader As Boolean
+    Dim srcFileIdCol As Long
+    Dim srcFileNoCol As Long
+    Dim srcBarcodeCol As Long
+    Dim dstFileIdCol As Long
+    Dim dstFileNoCol As Long
+    Dim dstBarcodeCol As Long
+    Dim fileIdVal As String
+    Dim fileNoVal As String
+    Dim barcodeVal As String
+    Dim key As String
+    Dim existingKeyMap As Object
+
+    On Error GoTo ErrorHandler
 
     ' ファイル選択
     filePath = Application.GetOpenFilename("CSV Files (*.csv), *.csv")
@@ -18,28 +74,97 @@ Public Sub CSV取込_シンプル版()
     
     ' 目録CSVシート
     Set ws = ThisWorkbook.Worksheets("目録CSV")
+    Set existingKeyMap = CreateObject("Scripting.Dictionary")
     
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
     
-    ' クリア
-    ws.Cells.Clear
-    
-    ' CSVを普通に開く（←これが一番大事）
+    ' CSVを開く
     Set wbCSV = Workbooks.Open(filePath)
-    
-    ' そのままコピー
-    wbCSV.Sheets(1).UsedRange.Copy ws.Range("A1")
+    Set wsCSV = wbCSV.Sheets(1)
 
-    ' 見出し一致を安定させるため、取込直後に1行目の改行コードを除去
-    NormalizeHeaderLineBreaks ws
+    srcLastRow = GetLastUsedRow(wsCSV)
+    srcLastCol = GetLastUsedCol(wsCSV)
+    dstLastRow = GetLastUsedRow(ws)
+    dstLastCol = GetLastUsedCol(ws)
+    existingHasHeader = (dstLastRow >= 1 And dstLastCol > 0 And Len(Trim$(CStr(ws.Cells(1, 1).Value))) > 0)
+
+    If srcLastCol <= 0 Then Err.Raise vbObjectError + 2101, , "選択したCSVの見出し行が見つかりません。"
+
+    If Not existingHasHeader Then
+        ' 初回取込: 見出し含めてA1から配置
+        wsCSV.UsedRange.Copy ws.Range("A1")
+        NormalizeHeaderLineBreaks ws
+        appendedCount = Application.Max(srcLastRow - 1, 0)
+    Else
+        ' 追記取込: 既存見出しを維持し、CSVのデータ部(2行目以降)だけ追記
+        NormalizeHeaderLineBreaks ws
+
+        srcFileIdCol = FindHeaderColumn(wsCSV, srcLastCol, Array("ファイルID"))
+        srcFileNoCol = FindHeaderColumn(wsCSV, srcLastCol, Array("ファイル番号"))
+        srcBarcodeCol = FindHeaderColumn(wsCSV, srcLastCol, Array("バーコード番号"))
+        dstFileIdCol = FindHeaderColumn(ws, dstLastCol, Array("ファイルID"))
+        dstFileNoCol = FindHeaderColumn(ws, dstLastCol, Array("ファイル番号"))
+        dstBarcodeCol = FindHeaderColumn(ws, dstLastCol, Array("バーコード番号"))
+
+        If dstFileIdCol > 0 And dstFileNoCol > 0 And dstBarcodeCol > 0 Then
+            For srcRow = 2 To dstLastRow
+                fileIdVal = GetTrimmedCell(ws, srcRow, dstFileIdCol)
+                fileNoVal = GetTrimmedCell(ws, srcRow, dstFileNoCol)
+                barcodeVal = GetTrimmedCell(ws, srcRow, dstBarcodeCol)
+                If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
+                    key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
+                    If Not existingKeyMap.Exists(key) Then existingKeyMap.Add key, True
+                End If
+            Next srcRow
+        End If
+
+        appendRow = dstLastRow + 1
+        For srcRow = 2 To srcLastRow
+            fileIdVal = GetTrimmedCell(wsCSV, srcRow, srcFileIdCol)
+            fileNoVal = GetTrimmedCell(wsCSV, srcRow, srcFileNoCol)
+            barcodeVal = GetTrimmedCell(wsCSV, srcRow, srcBarcodeCol)
+
+            If fileIdVal = "" And fileNoVal = "" And barcodeVal = "" Then
+                ' 重複判定不能行はそのまま追記
+            Else
+                key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
+                If existingKeyMap.Exists(key) Then
+                    skippedDuplicateCount = skippedDuplicateCount + 1
+                    GoTo ContinueNextCsvRow
+                End If
+            End If
+
+            ws.Range(ws.Cells(appendRow, 1), ws.Cells(appendRow, srcLastCol)).Value = _
+                wsCSV.Range(wsCSV.Cells(srcRow, 1), wsCSV.Cells(srcRow, srcLastCol)).Value
+            appendRow = appendRow + 1
+            appendedCount = appendedCount + 1
+
+            If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
+                If Not existingKeyMap.Exists(key) Then existingKeyMap.Add key, True
+            End If
+
+ContinueNextCsvRow:
+        Next srcRow
+    End If
     
     wbCSV.Close False
     
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
     
-    MsgBox "CSV取込完了"
+    MsgBox "CSV取込完了" & vbCrLf & _
+           "追記件数: " & appendedCount & " 件" & vbCrLf & _
+           "重複スキップ件数: " & skippedDuplicateCount & " 件", vbInformation
+    Exit Sub
+
+ErrorHandler:
+    On Error Resume Next
+    If Not wbCSV Is Nothing Then wbCSV.Close False
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+    MsgBox "CSV取込中にエラーが発生しました: " & Err.Description, vbExclamation
 
 End Sub
 
@@ -77,9 +202,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim editLastCol As Long
     Dim r As Long
     Dim outRow As Long
-    Dim keyFileIdSrc As Long, keyFileNoSrc As Long, keyBarcodeSrc As Long
-    Dim keyFileIdEdit As Long, keyFileNoEdit As Long, keyBarcodeEdit As Long
-    Dim titleColEdit As Long
+    Dim keyYearSrc As Long, keyTitleSrc As Long, keyCategory2Src As Long
+    Dim keyYearEdit As Long, keyTitleEdit As Long, keyCategory2Edit As Long
     Dim compareDefs As Variant
     Dim fixedHeaders As Variant
     Dim compareSrcCols() As Long
@@ -91,8 +215,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim key As String
     Dim isDifferent As Boolean
     Dim srcRow As Long
-    Dim fileIdVal As String, fileNoVal As String, barcodeVal As String
-    Dim titleVal As String
+    Dim yearVal As String, titleVal As String, category2Val As String
+    Dim isKeyBlank As Boolean
 
     On Error GoTo ErrorHandler
 
@@ -111,26 +235,32 @@ Public Sub 手順4_差分インポートCSVを作成する()
     editLastRow = GetLastUsedRow(wsEdit)
     editLastCol = GetLastUsedCol(wsEdit)
 
-    keyFileIdSrc = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイルID"))
-    keyFileNoSrc = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイル番号"))
-    keyBarcodeSrc = FindHeaderColumn(wsSrc, srcLastCol, Array("バーコード番号"))
+    keyYearSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    keyTitleSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("タイトル"))
+    keyCategory2Src = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名２"))
 
-    keyFileIdEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイルID"))
-    keyFileNoEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイル番号"))
-    keyBarcodeEdit = FindHeaderColumn(wsEdit, editLastCol, Array("バーコード番号"))
-    titleColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("タイトル"))
+    keyYearEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    keyTitleEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("タイトル"))
+    keyCategory2Edit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名２"))
 
-    compareDefs = Array("分類名１", "分類名２", "分類名３", "タイトル", "保存期間", "媒体種別")
+    If keyYearSrc = 0 Or keyTitleSrc = 0 Or keyCategory2Src = 0 Then
+        Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列（年度（和暦）/タイトル/分類名２）が見つかりません。"
+    End If
+    If keyYearEdit = 0 Or keyTitleEdit = 0 Or keyCategory2Edit = 0 Then
+        Err.Raise vbObjectError + 2302, , "新ファイル基準表 の差分キー列（年度（和暦）/タイトル/分類名２）が見つかりません。"
+    End If
+
+    compareDefs = Array("分類名１", "分類名３", "保存期間", "媒体種別")
     ReDim compareSrcCols(LBound(compareDefs) To UBound(compareDefs))
     ReDim compareEditCols(LBound(compareDefs) To UBound(compareDefs))
 
     For i = LBound(compareDefs) To UBound(compareDefs)
-        compareSrcCols(i) = FindHeaderColumn(wsSrc, srcLastCol, Array(CStr(compareDefs(i))))
-        compareEditCols(i) = FindHeaderColumn(wsEdit, editLastCol, Array(CStr(compareDefs(i))))
+        compareSrcCols(i) = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates(CStr(compareDefs(i))))
+        compareEditCols(i) = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates(CStr(compareDefs(i))))
     Next i
 
     fixedHeaders = Array( _
-        "年度", "所管所属", "所管所属名称", "タイトル", "サブタイトル", "保存期間", "保存期間満了時の措置", "保管期間", "保管期間完了予定年", _
+        "通し番号", "年度", "所管所属", "所管所属名称", "タイトル", "サブタイトル", "保存期間", "保存期間満了時の措置", "保管期間", "保管期間完了予定年", _
         "分類コード１", "分類名１", "分類コード２", "分類名２", "分類コード３", "分類名３", "分類コード４", "分類名４", "分類コード５", "分類名５", _
         "毎年度利用区分", "年度暦年区分", "色", "保管媒体区分", "保存場所・箱コード１", "保存場所・箱名１", "箱サイン１", "保存場所・箱コード２", "保存場所・箱名２", "箱サイン２", _
         "保存場所・箱コード３", "保存場所・箱名３", "箱サイン３", "保存場所・箱コード４", "保存場所・箱名４", "箱サイン４", "保存場所・箱コード５", "保存場所・箱名５", "箱サイン５", _
@@ -152,22 +282,22 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Next i
 
     ' 出力見出し -> 取得元見出し のマッピング定義
+    outputSourceMap.Add "通し番号", "通し番号"
     ' 固定見出し「所管所属」は新ファイル基準表の「原課ID」から取得する
     outputSourceMap.Add "所管所属", "原課ID"
     ' 固定見出し「毎年度利用区分」は新ファイル基準表の正式見出しから取得する
     outputSourceMap.Add "毎年度利用区分", "毎年度利用区分1:毎年作成 2:単年のみ"
 
-    ' ① 目録CSVをキーで辞書化
+    ' ① 目録CSVをキー（年度（和暦）+タイトル+分類名２）で辞書化
     For r = 2 To srcLastRow
-        fileIdVal = GetTrimmedCell(wsSrc, r, keyFileIdSrc)
-        fileNoVal = GetTrimmedCell(wsSrc, r, keyFileNoSrc)
-        barcodeVal = GetTrimmedCell(wsSrc, r, keyBarcodeSrc)
-        key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
+        yearVal = GetTrimmedCell(wsSrc, r, keyYearSrc)
+        titleVal = GetTrimmedCell(wsSrc, r, keyTitleSrc)
+        category2Val = GetTrimmedCell(wsSrc, r, keyCategory2Src)
+        key = BuildHeaderBasedKey(yearVal, titleVal, category2Val)
 
-        If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
-            If Not srcDict.Exists(key) Then
-                srcDict.Add key, r
-            End If
+        isKeyBlank = (yearVal = "" And titleVal = "" And category2Val = "")
+        If Not isKeyBlank And titleVal <> "" Then
+            If Not srcDict.Exists(key) Then srcDict.Add key, r
         End If
     Next r
 
@@ -180,18 +310,15 @@ Public Sub 手順4_差分インポートCSVを作成する()
 
     ' ② 新ファイル基準表を1行ずつ処理
     For r = 2 To editLastRow
-        fileIdVal = GetTrimmedCell(wsEdit, r, keyFileIdEdit)
-        fileNoVal = GetTrimmedCell(wsEdit, r, keyFileNoEdit)
-        barcodeVal = GetTrimmedCell(wsEdit, r, keyBarcodeEdit)
-        titleVal = GetTrimmedCell(wsEdit, r, titleColEdit)
-        key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
+        yearVal = GetTrimmedCell(wsEdit, r, keyYearEdit)
+        titleVal = GetTrimmedCell(wsEdit, r, keyTitleEdit)
+        category2Val = GetTrimmedCell(wsEdit, r, keyCategory2Edit)
+        key = BuildHeaderBasedKey(yearVal, titleVal, category2Val)
+        isKeyBlank = (yearVal = "" And titleVal = "" And category2Val = "")
 
-        ' A. キー3項目がすべて空白 -> 新規追加候補
-        If fileIdVal = "" And fileNoVal = "" And barcodeVal = "" Then
-            If titleVal <> "" Then
-                WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
-                outRow = outRow + 1
-            End If
+        ' A. キー3項目がすべて空白 または タイトル空白 -> 無視
+        If isKeyBlank Or titleVal = "" Then
+            ' 何もしない
 
         ' B. キー一致する行が存在 -> 比較列に差異があれば更新行として出力
         ElseIf srcDict.Exists(key) Then
@@ -212,8 +339,12 @@ Public Sub 手順4_差分インポートCSVを作成する()
                 WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
                 outRow = outRow + 1
             End If
+
+        ' C. キー一致なし -> 新規行として出力
+        Else
+            WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
+            outRow = outRow + 1
         End If
-        ' C. キー一致しないがキー空白でない場合は無視
     Next r
 
     With wsOut.Range(wsOut.Cells(1, 1), wsOut.Cells(1, UBound(fixedHeaders) - LBound(fixedHeaders) + 1))
@@ -237,6 +368,12 @@ ErrorHandler:
 
 End Sub
 
+Private Function BuildHeaderBasedKey(ByVal yearValue As String, ByVal titleValue As String, ByVal category2Value As String) As String
+
+    BuildHeaderBasedKey = Trim$(CStr(yearValue)) & "|" & Trim$(CStr(titleValue)) & "|" & Trim$(CStr(category2Value))
+
+End Function
+
 Public Sub 手順2_新ファイル基準表を作成する()
 
     Dim wsSrc As Worksheet
@@ -256,14 +393,29 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim targetCol As Long
     Dim foundCol As Long
     Dim leftFixedCount As Long
-    Dim clearFromRow As Long
-    Dim clearToRow As Long
     Dim missingHeadersText As String
     Dim validationTemplateMap As Object
     Dim formatTemplateMap As Object
     Dim columnWidthMap As Object
     Dim wsValidationTemplate As Worksheet
     Dim wsFormatTemplate As Worksheet
+    Dim existingLastRow As Long
+    Dim appendStartRow As Long
+    Dim appendEndRow As Long
+    Dim srcRow As Long
+    Dim appendedCount As Long
+    Dim skippedDuplicateCount As Long
+    Dim existingKeyMap As Object
+    Dim fileIdSrcCol As Long
+    Dim fileNoSrcCol As Long
+    Dim barcodeSrcCol As Long
+    Dim fileIdDstCol As Long
+    Dim fileNoDstCol As Long
+    Dim barcodeDstCol As Long
+    Dim fileIdVal As String
+    Dim fileNoVal As String
+    Dim barcodeVal As String
+    Dim key As String
 
     On Error GoTo ErrorHandler
 
@@ -274,6 +426,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Set validationTemplateMap = CreateObject("Scripting.Dictionary")
     Set formatTemplateMap = CreateObject("Scripting.Dictionary")
     Set columnWidthMap = CreateObject("Scripting.Dictionary")
+    Set existingKeyMap = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -325,26 +478,70 @@ Public Sub 手順2_新ファイル基準表を作成する()
         End If
     Next srcCol
 
-    ' 4) CSV由来列のみ値を更新（2行目以降）。管理列・追加列は壊さない。
-    clearFromRow = srcLastRow + 1
-    clearToRow = GetLastUsedRow(wsDst)
-    For srcCol = 1 To srcLastCol
-        headerText = Trim(CStr(wsSrc.Cells(1, srcCol).value))
-        If headerText <> "" Then
-            canonical = CanonicalHeaderName(headerText)
-            If srcToDstMap.Exists(canonical) Then
-                dstCol = CLng(srcToDstMap(canonical))
-                wsDst.Cells(1, dstCol).value = headerText
-                If srcLastRow >= 2 Then
-                    wsDst.Range(wsDst.Cells(2, dstCol), wsDst.Cells(srcLastRow, dstCol)).value = _
-                        wsSrc.Range(wsSrc.Cells(2, srcCol), wsSrc.Cells(srcLastRow, srcCol)).value
-                End If
-                If clearToRow >= clearFromRow Then
-                    wsDst.Range(wsDst.Cells(clearFromRow, dstCol), wsDst.Cells(clearToRow, dstCol)).ClearContents
+    ' 4) 既存行は保持し、目録CSV(2行目以降)を新ファイル基準表の末尾に追記する
+    existingLastRow = GetLastUsedRow(wsDst)
+    If existingLastRow < 1 Then existingLastRow = 1
+    appendStartRow = existingLastRow + 1
+    appendEndRow = appendStartRow - 1
+
+    fileIdSrcCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイルID"))
+    fileNoSrcCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイル番号"))
+    barcodeSrcCol = FindHeaderColumn(wsSrc, srcLastCol, Array("バーコード番号"))
+    fileIdDstCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("ファイルID"))
+    fileNoDstCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("ファイル番号"))
+    barcodeDstCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("バーコード番号"))
+
+    ' 既存行の重複判定キーを辞書化
+    If fileIdDstCol > 0 And fileNoDstCol > 0 And barcodeDstCol > 0 Then
+        For i = 2 To existingLastRow
+            fileIdVal = GetTrimmedCell(wsDst, i, fileIdDstCol)
+            fileNoVal = GetTrimmedCell(wsDst, i, fileNoDstCol)
+            barcodeVal = GetTrimmedCell(wsDst, i, barcodeDstCol)
+            If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
+                key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
+                If Not existingKeyMap.Exists(key) Then
+                    existingKeyMap.Add key, True
                 End If
             End If
-        End If
-    Next srcCol
+        Next i
+    End If
+
+    If srcLastRow >= 2 Then
+        For srcRow = 2 To srcLastRow
+            fileIdVal = GetTrimmedCell(wsSrc, srcRow, fileIdSrcCol)
+            fileNoVal = GetTrimmedCell(wsSrc, srcRow, fileNoSrcCol)
+            barcodeVal = GetTrimmedCell(wsSrc, srcRow, barcodeSrcCol)
+
+            If fileIdVal = "" And fileNoVal = "" And barcodeVal = "" Then
+                ' 3項目すべて空欄は重複判定不能のため追記
+            Else
+                key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
+                If existingKeyMap.Exists(key) Then
+                    skippedDuplicateCount = skippedDuplicateCount + 1
+                    GoTo ContinueNextSrcRow
+                End If
+            End If
+
+            appendEndRow = appendEndRow + 1
+            For srcCol = 1 To srcLastCol
+                headerText = Trim(CStr(wsSrc.Cells(1, srcCol).value))
+                If headerText <> "" Then
+                    canonical = CanonicalHeaderName(headerText)
+                    If srcToDstMap.Exists(canonical) Then
+                        dstCol = CLng(srcToDstMap(canonical))
+                        wsDst.Cells(appendEndRow, dstCol).value = wsSrc.Cells(srcRow, srcCol).value
+                    End If
+                End If
+            Next srcCol
+
+            appendedCount = appendedCount + 1
+            If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
+                If Not existingKeyMap.Exists(key) Then existingKeyMap.Add key, True
+            End If
+
+ContinueNextSrcRow:
+        Next srcRow
+    End If
 
     ' 5) 主要列だけ左側へ並べ直し（それ以外は削除せず後ろに残す）
     targetCol = 1
@@ -363,10 +560,12 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Next i
     leftFixedCount = targetCol - 1
 
-    ' 6) 「毎年度利用区分」表示値変換（目録CSVは変更しない）
-    ConvertAnnualUseDivisionValues wsDst, srcLastRow
-    ' 追記: 2色名 = 色名 をデータ行全体へ反映（見出し名ベース）
-    SyncSecondColorNameFromColor wsDst, 2, srcLastRow
+    ' 6) 「毎年度利用区分」表示値変換（新規追記行のみ）
+    If appendEndRow >= appendStartRow Then
+        ConvertAnnualUseDivisionValues wsDst, appendEndRow, appendStartRow
+        ' 追記: 2色名 = 色名 を新規追記行へ反映（見出し名ベース）
+        SyncSecondColorNameFromColor wsDst, appendStartRow, appendEndRow
+    End If
 
     ' 7) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
     If leftFixedCount > 0 Then
@@ -393,11 +592,15 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
+               "追記件数: " & appendedCount & " 件" & vbCrLf & _
+               "重複スキップ件数: " & skippedDuplicateCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
                "以下の見出しが見つからないため、表示/並び替え対象から除外しました:" & vbCrLf & _
                missingHeadersText, vbExclamation
     Else
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
+               "追記件数: " & appendedCount & " 件" & vbCrLf & _
+               "重複スキップ件数: " & skippedDuplicateCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
     End If
 
@@ -830,7 +1033,7 @@ NoRule:
 
 End Function
 
-Private Sub ConvertAnnualUseDivisionValues(ByVal wsDst As Worksheet, ByVal lastRow As Long)
+Private Sub ConvertAnnualUseDivisionValues(ByVal wsDst As Worksheet, ByVal lastRow As Long, Optional ByVal startRow As Long = 2)
 
     Dim lastCol As Long
     Dim targetCol As Long
@@ -841,7 +1044,9 @@ Private Sub ConvertAnnualUseDivisionValues(ByVal wsDst As Worksheet, ByVal lastR
     targetCol = FindHeaderColumn(wsDst, lastCol, Array("毎年度利用区分1:毎年作成 2:単年のみ"))
     If targetCol = 0 Then Exit Sub
 
-    For r = 2 To lastRow
+    If startRow < 2 Then startRow = 2
+
+    For r = startRow To lastRow
         cellValue = Trim(CStr(wsDst.Cells(r, targetCol).value))
         Select Case cellValue
             Case "1"
