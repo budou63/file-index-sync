@@ -202,9 +202,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim editLastCol As Long
     Dim r As Long
     Dim outRow As Long
-    Dim keyFileIdSrc As Long, keyFileNoSrc As Long, keyBarcodeSrc As Long
-    Dim keyFileIdEdit As Long, keyFileNoEdit As Long, keyBarcodeEdit As Long
-    Dim titleColEdit As Long
+    Dim keyYearSrc As Long, keyTitleSrc As Long, keyCategory2Src As Long
+    Dim keyYearEdit As Long, keyTitleEdit As Long, keyCategory2Edit As Long
     Dim compareDefs As Variant
     Dim fixedHeaders As Variant
     Dim compareSrcCols() As Long
@@ -216,8 +215,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim key As String
     Dim isDifferent As Boolean
     Dim srcRow As Long
-    Dim fileIdVal As String, fileNoVal As String, barcodeVal As String
-    Dim titleVal As String
+    Dim yearVal As String, titleVal As String, category2Val As String
+    Dim isKeyBlank As Boolean
 
     On Error GoTo ErrorHandler
 
@@ -236,22 +235,28 @@ Public Sub 手順4_差分インポートCSVを作成する()
     editLastRow = GetLastUsedRow(wsEdit)
     editLastCol = GetLastUsedCol(wsEdit)
 
-    keyFileIdSrc = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイルID"))
-    keyFileNoSrc = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイル番号"))
-    keyBarcodeSrc = FindHeaderColumn(wsSrc, srcLastCol, Array("バーコード番号"))
+    keyYearSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    keyTitleSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("タイトル"))
+    keyCategory2Src = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名２"))
 
-    keyFileIdEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイルID"))
-    keyFileNoEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイル番号"))
-    keyBarcodeEdit = FindHeaderColumn(wsEdit, editLastCol, Array("バーコード番号"))
-    titleColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("タイトル"))
+    keyYearEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    keyTitleEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("タイトル"))
+    keyCategory2Edit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名２"))
 
-    compareDefs = Array("分類名１", "分類名２", "分類名３", "タイトル", "保存期間", "媒体種別")
+    If keyYearSrc = 0 Or keyTitleSrc = 0 Or keyCategory2Src = 0 Then
+        Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列（年度（和暦）/タイトル/分類名２）が見つかりません。"
+    End If
+    If keyYearEdit = 0 Or keyTitleEdit = 0 Or keyCategory2Edit = 0 Then
+        Err.Raise vbObjectError + 2302, , "新ファイル基準表 の差分キー列（年度（和暦）/タイトル/分類名２）が見つかりません。"
+    End If
+
+    compareDefs = Array("分類名１", "分類名３", "保存期間", "媒体種別")
     ReDim compareSrcCols(LBound(compareDefs) To UBound(compareDefs))
     ReDim compareEditCols(LBound(compareDefs) To UBound(compareDefs))
 
     For i = LBound(compareDefs) To UBound(compareDefs)
-        compareSrcCols(i) = FindHeaderColumn(wsSrc, srcLastCol, Array(CStr(compareDefs(i))))
-        compareEditCols(i) = FindHeaderColumn(wsEdit, editLastCol, Array(CStr(compareDefs(i))))
+        compareSrcCols(i) = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates(CStr(compareDefs(i))))
+        compareEditCols(i) = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates(CStr(compareDefs(i))))
     Next i
 
     fixedHeaders = Array( _
@@ -282,17 +287,16 @@ Public Sub 手順4_差分インポートCSVを作成する()
     ' 固定見出し「毎年度利用区分」は新ファイル基準表の正式見出しから取得する
     outputSourceMap.Add "毎年度利用区分", "毎年度利用区分1:毎年作成 2:単年のみ"
 
-    ' ① 目録CSVをキーで辞書化
+    ' ① 目録CSVをキー（年度（和暦）+タイトル+分類名２）で辞書化
     For r = 2 To srcLastRow
-        fileIdVal = GetTrimmedCell(wsSrc, r, keyFileIdSrc)
-        fileNoVal = GetTrimmedCell(wsSrc, r, keyFileNoSrc)
-        barcodeVal = GetTrimmedCell(wsSrc, r, keyBarcodeSrc)
-        key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
+        yearVal = GetTrimmedCell(wsSrc, r, keyYearSrc)
+        titleVal = GetTrimmedCell(wsSrc, r, keyTitleSrc)
+        category2Val = GetTrimmedCell(wsSrc, r, keyCategory2Src)
+        key = BuildHeaderBasedKey(yearVal, titleVal, category2Val)
 
-        If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
-            If Not srcDict.Exists(key) Then
-                srcDict.Add key, r
-            End If
+        isKeyBlank = (yearVal = "" And titleVal = "" And category2Val = "")
+        If Not isKeyBlank And titleVal <> "" Then
+            If Not srcDict.Exists(key) Then srcDict.Add key, r
         End If
     Next r
 
@@ -305,18 +309,15 @@ Public Sub 手順4_差分インポートCSVを作成する()
 
     ' ② 新ファイル基準表を1行ずつ処理
     For r = 2 To editLastRow
-        fileIdVal = GetTrimmedCell(wsEdit, r, keyFileIdEdit)
-        fileNoVal = GetTrimmedCell(wsEdit, r, keyFileNoEdit)
-        barcodeVal = GetTrimmedCell(wsEdit, r, keyBarcodeEdit)
-        titleVal = GetTrimmedCell(wsEdit, r, titleColEdit)
-        key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
+        yearVal = GetTrimmedCell(wsEdit, r, keyYearEdit)
+        titleVal = GetTrimmedCell(wsEdit, r, keyTitleEdit)
+        category2Val = GetTrimmedCell(wsEdit, r, keyCategory2Edit)
+        key = BuildHeaderBasedKey(yearVal, titleVal, category2Val)
+        isKeyBlank = (yearVal = "" And titleVal = "" And category2Val = "")
 
-        ' A. キー3項目がすべて空白 -> 新規追加候補
-        If fileIdVal = "" And fileNoVal = "" And barcodeVal = "" Then
-            If titleVal <> "" Then
-                WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
-                outRow = outRow + 1
-            End If
+        ' A. キー3項目がすべて空白 または タイトル空白 -> 無視
+        If isKeyBlank Or titleVal = "" Then
+            ' 何もしない
 
         ' B. キー一致する行が存在 -> 比較列に差異があれば更新行として出力
         ElseIf srcDict.Exists(key) Then
@@ -337,8 +338,12 @@ Public Sub 手順4_差分インポートCSVを作成する()
                 WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
                 outRow = outRow + 1
             End If
+
+        ' C. キー一致なし -> 新規行として出力
+        Else
+            WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
+            outRow = outRow + 1
         End If
-        ' C. キー一致しないがキー空白でない場合は無視
     Next r
 
     With wsOut.Range(wsOut.Cells(1, 1), wsOut.Cells(1, UBound(fixedHeaders) - LBound(fixedHeaders) + 1))
@@ -361,6 +366,12 @@ ErrorHandler:
     Resume SafeExit
 
 End Sub
+
+Private Function BuildHeaderBasedKey(ByVal yearValue As String, ByVal titleValue As String, ByVal category2Value As String) As String
+
+    BuildHeaderBasedKey = Trim$(CStr(yearValue)) & "|" & Trim$(CStr(titleValue)) & "|" & Trim$(CStr(category2Value))
+
+End Function
 
 Public Sub 手順2_新ファイル基準表を作成する()
 
