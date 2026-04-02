@@ -289,6 +289,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     outputSourceMap.Add "毎年度利用区分", "毎年度利用区分1:毎年作成 2:単年のみ"
 
     ' ① 目録CSVをキー（年度（和暦）+タイトル+分類名２）で辞書化
+    '    年度またぎ比較を防ぐため、年度（和暦）を必ずキーに含める。
+    '    年度空欄行は比較対象外とする。
     For r = 2 To srcLastRow
         yearVal = GetTrimmedCell(wsSrc, r, keyYearSrc)
         titleVal = GetTrimmedCell(wsSrc, r, keyTitleSrc)
@@ -296,7 +298,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
         key = BuildHeaderBasedKey(yearVal, titleVal, category2Val)
 
         isKeyBlank = (yearVal = "" And titleVal = "" And category2Val = "")
-        If Not isKeyBlank And titleVal <> "" Then
+        If Not isKeyBlank And yearVal <> "" And titleVal <> "" Then
             If Not srcDict.Exists(key) Then srcDict.Add key, r
         End If
     Next r
@@ -316,8 +318,9 @@ Public Sub 手順4_差分インポートCSVを作成する()
         key = BuildHeaderBasedKey(yearVal, titleVal, category2Val)
         isKeyBlank = (yearVal = "" And titleVal = "" And category2Val = "")
 
-        ' A. キー3項目がすべて空白 または タイトル空白 -> 無視
-        If isKeyBlank Or titleVal = "" Then
+        ' A. キー3項目がすべて空白 / 年度空欄 / タイトル空欄 -> 無視
+        '    同一年度内比較を徹底するため、年度空欄は比較対象外にする。
+        If isKeyBlank Or yearVal = "" Or titleVal = "" Then
             ' 何もしない
 
         ' B. キー一致する行が存在 -> 比較列に差異があれば更新行として出力
