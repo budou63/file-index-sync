@@ -339,7 +339,14 @@ Public Sub 手順4_差分インポートCSVを作成する()
         ElseIf srcDict.Exists(key) Then
             ' 同一キーの複数行に対応するため、1キー1行ではなく候補行一覧を保持する
             ' 誤突合を防ぐため、候補の中から比較列の一致数が最大の行を採用する
-            srcRow = GetBestMatchedSourceRow(wsSrc, wsEdit, srcDict(key), usedSrcRows, compareSrcCols, compareEditCols, r)
+            srcRow = GetBestMatchedSourceRow( _
+                wsSrc, _
+                wsEdit, _
+                srcDict(key), _
+                usedSrcRows, _
+                compareSrcCols, _
+                compareEditCols, _
+                r)
 
             If srcRow > 0 Then
                 ' 採用済み候補行は再利用しない
@@ -406,64 +413,62 @@ Private Sub AddRowToKeyBucket(ByVal bucketDict As Object, ByVal key As String, B
 
 End Sub
 
-Private Function GetBestMatchedSourceRow(ByVal wsSrc As Worksheet, ByVal wsEdit As Worksheet, ByVal candidateRows As Collection, ByVal usedRowDict As Object, ByVal compareSrcCols() As Long, ByVal compareEditCols() As Long, ByVal editRow As Long) As Long
+Private Function GetBestMatchedSourceRow( _
+    wsSrc As Worksheet, _
+    wsEdit As Worksheet, _
+    candidates As Collection, _
+    usedRows As Object, _
+    compareSrcCols() As Long, _
+    compareEditCols() As Long, _
+    editRow As Long) As Long
 
-    Dim candidate As Variant
-    Dim rowNumber As Long
-    Dim score As Long
-    Dim bestScore As Long
     Dim bestRow As Long
+    Dim bestScore As Long
+    Dim r As Variant
+    Dim score As Long
+    Dim i As Long
 
-    bestScore = -1
     bestRow = 0
+    bestScore = -1
 
-    For Each candidate In candidateRows
-        rowNumber = CLng(candidate)
-        If Not IsSourceRowAlreadyUsed(usedRowDict, rowNumber) Then
-            score = CountMatchedFields(wsSrc, wsEdit, rowNumber, editRow, compareSrcCols, compareEditCols)
-            If score > bestScore Then
-                bestScore = score
-                bestRow = rowNumber
+    For Each r In candidates
+
+        ' すでに使用済みの行はスキップ
+        If usedRows.Exists(CStr(r)) Then GoTo ContinueLoop
+
+        score = 0
+
+        ' 一致数カウント
+        For i = LBound(compareSrcCols) To UBound(compareSrcCols)
+
+            If compareSrcCols(i) > 0 And compareEditCols(i) > 0 Then
+
+                If NormalizeForDiffCompare(wsSrc.Cells(CLng(r), compareSrcCols(i)).Value) = _
+                   NormalizeForDiffCompare(wsEdit.Cells(editRow, compareEditCols(i)).Value) Then
+
+                    score = score + 1
+
+                End If
+
             End If
+
+        Next i
+
+        ' ベスト候補更新
+        If score > bestScore Then
+            bestScore = score
+            bestRow = CLng(r)
         End If
-    Next candidate
+
+ContinueLoop:
+    Next r
 
     GetBestMatchedSourceRow = bestRow
 
 End Function
 
-Private Function CountMatchedFields(ByVal wsSrc As Worksheet, ByVal wsEdit As Worksheet, ByVal srcRow As Long, ByVal editRow As Long, ByVal compareSrcCols() As Long, ByVal compareEditCols() As Long) As Long
-
-    Dim i As Long
-    Dim matchedCount As Long
-
-    matchedCount = 0
-
-    For i = LBound(compareSrcCols) To UBound(compareSrcCols)
-        If compareSrcCols(i) > 0 And compareEditCols(i) > 0 Then
-            If NormalizeForDiffCompare(wsSrc.Cells(srcRow, compareSrcCols(i)).Value) = _
-               NormalizeForDiffCompare(wsEdit.Cells(editRow, compareEditCols(i)).Value) Then
-                matchedCount = matchedCount + 1
-            End If
-        End If
-    Next i
-
-    CountMatchedFields = matchedCount
-
-End Function
-
-Private Function IsSourceRowAlreadyUsed(ByVal usedRowDict As Object, ByVal srcRow As Long) As Boolean
-
-    IsSourceRowAlreadyUsed = usedRowDict.Exists(CStr(srcRow))
-
-End Function
-
-Private Sub MarkSourceRowAsUsed(ByVal usedRowDict As Object, ByVal srcRow As Long)
-
-    If Not usedRowDict.Exists(CStr(srcRow)) Then
-        usedRowDict.Add CStr(srcRow), True
-    End If
-
+Private Sub MarkSourceRowAsUsed(usedRows As Object, rowNum As Long)
+    usedRows(CStr(rowNum)) = True
 End Sub
 
 Private Function BuildHeaderBasedKey(ByVal yearValue As String, ByVal titleValue As String, ByVal category2Value As String, ByVal mediaValue As String, ByVal periodValue As String) As String
