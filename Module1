@@ -2002,6 +2002,322 @@ Public Sub PutMergeTopLeft(ByVal ws As Worksheet, ByVal r As Long, ByVal c As Lo
 
 End Sub
 
+'========================================================
+' キャビネット別第1ガイド抽出（新ファイル基準表対応）
+'========================================================
+Public Sub キャビネット別第1ガイド抽出_新ファイル基準表()
+    キャビネット別第1ガイド抽出_続きルール適用_NewSpec
+End Sub
+
+' 互換用エントリ: 既存名称に近い公開マクロ
+Public Sub キャビネット別第1ガイド抽出_続きルール適用()
+    キャビネット別第1ガイド抽出_続きルール適用_NewSpec
+End Sub
+
+Private Sub キャビネット別第1ガイド抽出_続きルール適用_NewSpec()
+
+    Const SRC_SHEET As String = "新ファイル基準表"
+    Const DST_SHEET As String = "キャビネット別第1ガイド"
+    Const HEADER_ROW As Long = 1
+    Const DATA_START As Long = 2
+
+    Dim wsSrc As Worksheet
+    Dim wsDst As Worksheet
+    Dim lastRow As Long
+    Dim cabCol As Long
+    Dim guideCol As Long
+    Dim r As Long
+    Dim rowSeq As Long
+
+    Dim mapCabinets As Object            ' cabKey -> cabDisplay
+    Dim mapCabGuides As Object           ' cabKey -> (guideKey -> Array(guideDisplay, count, firstSeq))
+    Dim mapGuideMinCab As Object         ' guideKey -> minCabKey
+    Dim mapGuideDisplay As Object        ' guideKey -> firstDisplay
+
+    Dim cabVal As String
+    Dim guideVal As String
+    Dim cabKey As String
+    Dim guideKey As String
+    Dim minCabKey As String
+
+    Dim cabKeys() As String
+    Dim guideKeys() As String
+    Dim outRow As Long
+    Dim i As Long
+    Dim j As Long
+    Dim item As Variant
+    Dim oneCabGuides As Object
+    Dim outGuide As String
+
+    On Error GoTo ErrorHandler
+
+    Set wsSrc = ThisWorkbook.Worksheets(SRC_SHEET)
+    Set wsDst = GetOrCreateWorksheet(DST_SHEET)
+
+    cabCol = FindHeaderCol(wsSrc, HEADER_ROW, Array("キャビネット番号"))
+    guideCol = FindHeaderCol(wsSrc, HEADER_ROW, Array("分類名２", "分類名2", "第1ガイド", "第１ガイド"))
+
+    If cabCol = 0 Then
+        Err.Raise vbObjectError + 3101, , "見出し「キャビネット番号」が見つかりません。"
+    End If
+    If guideCol = 0 Then
+        Err.Raise vbObjectError + 3102, , "見出し「分類名２（または分類名2）」が見つかりません。"
+    End If
+
+    lastRow = GetLastUsedRow(wsSrc)
+
+    Set mapCabinets = CreateObject("Scripting.Dictionary")
+    Set mapCabGuides = CreateObject("Scripting.Dictionary")
+    Set mapGuideMinCab = CreateObject("Scripting.Dictionary")
+    Set mapGuideDisplay = CreateObject("Scripting.Dictionary")
+
+    rowSeq = 0
+    For r = DATA_START To lastRow
+        cabVal = Trim$(CStr(wsSrc.Cells(r, cabCol).Value))
+        guideVal = Trim$(CStr(wsSrc.Cells(r, guideCol).Value))
+        If Len(cabVal) = 0 Or Len(guideVal) = 0 Then GoTo ContinueRow
+
+        cabKey = BuildCabinetKey(cabVal)
+        guideKey = NormalizeText(guideVal)
+
+        rowSeq = rowSeq + 1
+
+        If Not mapCabinets.Exists(cabKey) Then mapCabinets.Add cabKey, cabVal
+        If Not mapGuideDisplay.Exists(guideKey) Then mapGuideDisplay.Add guideKey, guideVal
+
+        If mapGuideMinCab.Exists(guideKey) Then
+            minCabKey = CStr(mapGuideMinCab(guideKey))
+            If CompareKey(cabKey, minCabKey) < 0 Then mapGuideMinCab(guideKey) = cabKey
+        Else
+            mapGuideMinCab.Add guideKey, cabKey
+        End If
+
+        If Not mapCabGuides.Exists(cabKey) Then
+            mapCabGuides.Add cabKey, CreateObject("Scripting.Dictionary")
+        End If
+
+        Set oneCabGuides = mapCabGuides(cabKey)
+        If oneCabGuides.Exists(guideKey) Then
+            item = oneCabGuides(guideKey)
+            item(1) = CLng(item(1)) + 1
+            oneCabGuides(guideKey) = item
+        Else
+            oneCabGuides.Add guideKey, Array(guideVal, 1, rowSeq)
+        End If
+
+ContinueRow:
+    Next r
+
+    wsDst.Cells.Clear
+    wsDst.Cells(1, 1).Value = "キャビネット番号"
+    wsDst.Cells(1, 2).Value = "第1ガイド（続き適用／出現順）"
+    wsDst.Cells(1, 3).Value = "件数"
+
+    outRow = 2
+    If mapCabinets.Count > 0 Then
+        cabKeys = DictionaryKeysToStringArray(mapCabinets)
+        QuickSortVariant cabKeys, LBound(cabKeys), UBound(cabKeys)
+
+        For i = LBound(cabKeys) To UBound(cabKeys)
+            cabKey = cabKeys(i)
+            Set oneCabGuides = mapCabGuides(cabKey)
+            guideKeys = DictionaryKeysToStringArray(oneCabGuides)
+            SortGuideKeysByFirstOrder guideKeys, oneCabGuides
+
+            For j = LBound(guideKeys) To UBound(guideKeys)
+                guideKey = guideKeys(j)
+                item = oneCabGuides(guideKey)
+
+                outGuide = CStr(item(0))
+                If CompareKey(cabKey, CStr(mapGuideMinCab(guideKey))) <> 0 Then
+                    outGuide = "（続）" & outGuide
+                End If
+
+                wsDst.Cells(outRow, 1).Value = mapCabinets(cabKey)
+                wsDst.Cells(outRow, 2).Value = outGuide
+                wsDst.Cells(outRow, 3).Value = CLng(item(1))
+                outRow = outRow + 1
+            Next j
+        Next i
+    End If
+
+    With wsDst.UsedRange
+        .Columns.AutoFit
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+    ApplyCabinetBanding wsDst, 2, 1
+
+    MsgBox "「" & DST_SHEET & "」を作成しました。", vbInformation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "キャビネット別第1ガイド抽出でエラーが発生しました: " & Err.Description, vbExclamation
+
+End Sub
+
+Private Function GetOrCreateWorksheet(ByVal sheetName As String) As Worksheet
+
+    On Error Resume Next
+    Set GetOrCreateWorksheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If GetOrCreateWorksheet Is Nothing Then
+        Set GetOrCreateWorksheet = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        GetOrCreateWorksheet.Name = sheetName
+    End If
+
+End Function
+
+Private Function FindHeaderCol(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal candidates As Variant) As Long
+
+    Dim lastCol As Long
+    Dim c As Long
+    Dim i As Long
+    Dim head As String
+
+    FindHeaderCol = 0
+    If ws Is Nothing Then Exit Function
+
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        head = NormalizeText(CStr(ws.Cells(headerRow, c).Value))
+        For i = LBound(candidates) To UBound(candidates)
+            If head = NormalizeText(CStr(candidates(i))) Then
+                FindHeaderCol = c
+                Exit Function
+            End If
+        Next i
+    Next c
+
+End Function
+
+Private Function NormalizeText(ByVal v As String) As String
+    NormalizeText = Replace(Replace(Trim$(v), " ", ""), "　", "")
+End Function
+
+Private Function BuildCabinetKey(ByVal cabinetNo As String) As String
+    If IsNumeric(cabinetNo) Then
+        BuildCabinetKey = "N|" & Right$("0000000000" & CStr(CLng(Val(cabinetNo))), 10)
+    Else
+        BuildCabinetKey = "T|" & NormalizeText(cabinetNo)
+    End If
+End Function
+
+Private Function CompareKey(ByVal keyA As String, ByVal keyB As String) As Long
+    If keyA = keyB Then
+        CompareKey = 0
+    ElseIf keyA < keyB Then
+        CompareKey = -1
+    Else
+        CompareKey = 1
+    End If
+End Function
+
+Private Sub QuickSortVariant(ByRef arr() As String, ByVal first As Long, ByVal last As Long)
+
+    Dim i As Long
+    Dim j As Long
+    Dim pivot As String
+    Dim tmp As String
+
+    i = first
+    j = last
+    pivot = arr((first + last) \ 2)
+
+    Do While i <= j
+        Do While CompareKey(arr(i), pivot) < 0
+            i = i + 1
+        Loop
+        Do While CompareKey(arr(j), pivot) > 0
+            j = j - 1
+        Loop
+        If i <= j Then
+            tmp = arr(i)
+            arr(i) = arr(j)
+            arr(j) = tmp
+            i = i + 1
+            j = j - 1
+        End If
+    Loop
+
+    If first < j Then QuickSortVariant arr, first, j
+    If i < last Then QuickSortVariant arr, i, last
+
+End Sub
+
+Private Function DictionaryKeysToStringArray(ByVal dict As Object) As String()
+
+    Dim result() As String
+    Dim i As Long
+    Dim k As Variant
+
+    ReDim result(0 To dict.Count - 1)
+    i = 0
+    For Each k In dict.Keys
+        result(i) = CStr(k)
+        i = i + 1
+    Next k
+
+    DictionaryKeysToStringArray = result
+
+End Function
+
+Private Sub SortGuideKeysByFirstOrder(ByRef guideKeys() As String, ByVal guideDict As Object)
+
+    Dim i As Long
+    Dim j As Long
+    Dim tmp As String
+    Dim vi As Variant
+    Dim vj As Variant
+
+    For i = LBound(guideKeys) To UBound(guideKeys) - 1
+        For j = i + 1 To UBound(guideKeys)
+            vi = guideDict(guideKeys(i))
+            vj = guideDict(guideKeys(j))
+            If CLng(vi(2)) > CLng(vj(2)) Then
+                tmp = guideKeys(i)
+                guideKeys(i) = guideKeys(j)
+                guideKeys(j) = tmp
+            End If
+        Next j
+    Next i
+
+End Sub
+
+Private Sub ApplyCabinetBanding(ByVal ws As Worksheet, ByVal startRow As Long, ByVal cabinetCol As Long)
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim prevCab As String
+    Dim currCab As String
+    Dim bandIndex As Long
+    Dim fillColor As Long
+
+    lastRow = GetLastUsedRow(ws)
+    If lastRow < startRow Then Exit Sub
+
+    bandIndex = 0
+    prevCab = ""
+
+    For r = startRow To lastRow
+        currCab = CStr(ws.Cells(r, cabinetCol).Value)
+        If currCab <> prevCab Then
+            bandIndex = bandIndex + 1
+            prevCab = currCab
+        End If
+
+        If bandIndex Mod 2 = 1 Then
+            fillColor = RGB(242, 242, 242)
+        Else
+            fillColor = RGB(221, 235, 247)
+        End If
+
+        ws.Range(ws.Cells(r, 1), ws.Cells(r, 3)).Interior.Color = fillColor
+    Next r
+
+End Sub
+
 Public Sub シール入力フォームを開く()
     frmSeal.Show vbModeless
 End Sub
