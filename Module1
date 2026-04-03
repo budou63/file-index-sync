@@ -201,6 +201,11 @@ Public Sub 手順5_差分インポートCSVを外部出力する()
     Dim finalPath As String
     Dim defaultFileName As String
     Dim oldDisplayAlerts As Boolean
+    Dim srcCol As Long
+    Dim dstCol As Long
+    Dim absCol As Long
+    Dim headerName As String
+    Dim lastRow As Long
 
     On Error GoTo ErrorHandler
 
@@ -234,7 +239,24 @@ Public Sub 手順5_差分インポートCSVを外部出力する()
     Set wsExport = wbExport.Worksheets(1)
     Set usedRng = wsOut.UsedRange
 
-    wsExport.Range("A1").Resize(usedRng.Rows.Count, usedRng.Columns.Count).Value = usedRng.Value
+    lastRow = usedRng.Rows.Count
+    dstCol = 1
+
+    ' ヘッダー名ベースで「通し番号」列を除外してCSV出力する（シート上の列は保持）
+    For srcCol = 1 To usedRng.Columns.Count
+        absCol = usedRng.Column + srcCol - 1
+        headerName = Trim$(CStr(wsOut.Cells(1, absCol).Value))
+
+        If headerName <> "通し番号" Then
+            wsExport.Cells(1, dstCol).Resize(lastRow, 1).Value = _
+                wsOut.Cells(usedRng.Row, absCol).Resize(lastRow, 1).Value
+            dstCol = dstCol + 1
+        End If
+    Next srcCol
+
+    If dstCol = 1 Then
+        Err.Raise vbObjectError + 2401, , "出力対象列がありません（すべて「通し番号」列の可能性があります）。"
+    End If
 
     oldDisplayAlerts = Application.DisplayAlerts
     Application.DisplayAlerts = False
