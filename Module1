@@ -202,8 +202,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim editLastCol As Long
     Dim r As Long
     Dim outRow As Long
-    Dim keyYearSrc As Long, keyTitleSrc As Long, keyCategory2Src As Long
-    Dim keyYearEdit As Long, keyTitleEdit As Long, keyCategory2Edit As Long
+    Dim keyYearSrc As Long, keyTitleSrc As Long, keyCategory2Src As Long, keyMediaSrc As Long, keyPeriodSrc As Long
+    Dim keyYearEdit As Long, keyTitleEdit As Long, keyCategory2Edit As Long, keyMediaEdit As Long, keyPeriodEdit As Long
     Dim compareDefs As Variant
     Dim fixedHeaders As Variant
     Dim compareSrcCols() As Long
@@ -215,7 +215,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim key As String
     Dim isDifferent As Boolean
     Dim srcRow As Long
-    Dim yearVal As String, titleVal As String, category2Val As String
+    Dim yearVal As String, titleVal As String, category2Val As String, mediaVal As String, periodVal As String
     Dim isKeyBlank As Boolean
 
     On Error GoTo ErrorHandler
@@ -238,16 +238,20 @@ Public Sub 手順4_差分インポートCSVを作成する()
     keyYearSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("年度（和暦）"))
     keyTitleSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("タイトル"))
     keyCategory2Src = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名２"))
+    keyMediaSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("媒体種別"))
+    keyPeriodSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("保存期間"))
 
     keyYearEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("年度（和暦）"))
     keyTitleEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("タイトル"))
     keyCategory2Edit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名２"))
+    keyMediaEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("媒体種別"))
+    keyPeriodEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("保存期間"))
 
-    If keyYearSrc = 0 Or keyTitleSrc = 0 Or keyCategory2Src = 0 Then
-        Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列（年度（和暦）/タイトル/分類名２）が見つかりません。"
+    If keyYearSrc = 0 Or keyTitleSrc = 0 Or keyCategory2Src = 0 Or keyMediaSrc = 0 Or keyPeriodSrc = 0 Then
+        Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列（年度（和暦）/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
     End If
-    If keyYearEdit = 0 Or keyTitleEdit = 0 Or keyCategory2Edit = 0 Then
-        Err.Raise vbObjectError + 2302, , "新ファイル基準表 の差分キー列（年度（和暦）/タイトル/分類名２）が見つかりません。"
+    If keyYearEdit = 0 Or keyTitleEdit = 0 Or keyCategory2Edit = 0 Or keyMediaEdit = 0 Or keyPeriodEdit = 0 Then
+        Err.Raise vbObjectError + 2302, , "新ファイル基準表 の差分キー列（年度（和暦）/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
     End If
 
     compareDefs = Array("分類名１", "分類名３", "保存期間", "媒体種別")
@@ -288,14 +292,17 @@ Public Sub 手順4_差分インポートCSVを作成する()
     ' 固定見出し「毎年度利用区分」は新ファイル基準表の正式見出しから取得する
     outputSourceMap.Add "毎年度利用区分", "毎年度利用区分1:毎年作成 2:単年のみ"
 
-    ' ① 目録CSVをキー（年度（和暦）+タイトル+分類名２）で辞書化
+    ' ① 目録CSVをキー（年度（和暦）+タイトル+分類名２+媒体種別+保存期間）で辞書化
     '    年度またぎ比較を防ぐため、年度（和暦）を必ずキーに含める。
     '    年度空欄行は比較対象外とする。
     For r = 2 To srcLastRow
         yearVal = GetTrimmedCell(wsSrc, r, keyYearSrc)
         titleVal = GetTrimmedCell(wsSrc, r, keyTitleSrc)
         category2Val = GetTrimmedCell(wsSrc, r, keyCategory2Src)
-        key = BuildHeaderBasedKey(yearVal, titleVal, category2Val)
+        mediaVal = GetTrimmedCell(wsSrc, r, keyMediaSrc)
+        periodVal = GetTrimmedCell(wsSrc, r, keyPeriodSrc)
+        ' キー一意性を高めるため媒体種別・保存期間も含める
+        key = BuildHeaderBasedKey(yearVal, titleVal, category2Val, mediaVal, periodVal)
 
         isKeyBlank = (yearVal = "" And titleVal = "" And category2Val = "")
         If Not isKeyBlank And yearVal <> "" And titleVal <> "" Then
@@ -315,7 +322,10 @@ Public Sub 手順4_差分インポートCSVを作成する()
         yearVal = GetTrimmedCell(wsEdit, r, keyYearEdit)
         titleVal = GetTrimmedCell(wsEdit, r, keyTitleEdit)
         category2Val = GetTrimmedCell(wsEdit, r, keyCategory2Edit)
-        key = BuildHeaderBasedKey(yearVal, titleVal, category2Val)
+        mediaVal = GetTrimmedCell(wsEdit, r, keyMediaEdit)
+        periodVal = GetTrimmedCell(wsEdit, r, keyPeriodEdit)
+        ' キー一意性を高めるため媒体種別・保存期間も含める
+        key = BuildHeaderBasedKey(yearVal, titleVal, category2Val, mediaVal, periodVal)
         isKeyBlank = (yearVal = "" And titleVal = "" And category2Val = "")
 
         ' A. キー3項目がすべて空白 / 年度空欄 / タイトル空欄 -> 無視
@@ -371,12 +381,14 @@ ErrorHandler:
 
 End Sub
 
-Private Function BuildHeaderBasedKey(ByVal yearValue As String, ByVal titleValue As String, ByVal category2Value As String) As String
+Private Function BuildHeaderBasedKey(ByVal yearValue As String, ByVal titleValue As String, ByVal category2Value As String, ByVal mediaValue As String, ByVal periodValue As String) As String
 
     ' 差分キーも比較用正規化を通して、表記ゆれによる誤差分を抑制する
     BuildHeaderBasedKey = NormalizeForDiffCompare(yearValue) & "|" & _
                           NormalizeForDiffCompare(titleValue) & "|" & _
-                          NormalizeForDiffCompare(category2Value)
+                          NormalizeForDiffCompare(category2Value) & "|" & _
+                          NormalizeForDiffCompare(mediaValue) & "|" & _
+                          NormalizeForDiffCompare(periodValue)
 
 End Function
 
