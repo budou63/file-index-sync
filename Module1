@@ -191,6 +191,88 @@ SafeExit:
 
 End Sub
 
+Public Sub 手順5_差分インポートCSVを外部出力する()
+
+    Dim wsOut As Worksheet
+    Dim wbExport As Workbook
+    Dim wsExport As Worksheet
+    Dim usedRng As Range
+    Dim savePath As Variant
+    Dim finalPath As String
+    Dim defaultFileName As String
+    Dim oldDisplayAlerts As Boolean
+
+    On Error GoTo ErrorHandler
+
+    On Error Resume Next
+    Set wsOut = ThisWorkbook.Worksheets(SHEET_DIFF_IMPORT)
+    On Error GoTo ErrorHandler
+
+    If wsOut Is Nothing Then
+        MsgBox "「差分インポートCSV」シートが見つかりません。", vbExclamation
+        Exit Sub
+    End If
+
+    If Application.WorksheetFunction.CountA(wsOut.UsedRange) = 0 Then
+        MsgBox "「差分インポートCSV」シートに出力対象データがありません。", vbInformation
+        Exit Sub
+    End If
+
+    defaultFileName = "差分インポートCSV_" & Format(Now, "yyyymmdd_hhnnss") & ".csv"
+    savePath = Application.GetSaveAsFilename( _
+        InitialFileName:=defaultFileName, _
+        FileFilter:="CSV UTF-8 (*.csv),*.csv,CSV (Comma delimited) (*.csv),*.csv", _
+        Title:="差分インポートCSV の保存先を選択してください")
+
+    If VarType(savePath) = vbBoolean Then
+        If savePath = False Then Exit Sub
+    End If
+
+    finalPath = EnsureCsvExtension(CStr(savePath))
+
+    Set wbExport = Workbooks.Add(xlWBATWorksheet)
+    Set wsExport = wbExport.Worksheets(1)
+    Set usedRng = wsOut.UsedRange
+
+    wsExport.Range("A1").Resize(usedRng.Rows.Count, usedRng.Columns.Count).Value = usedRng.Value
+
+    oldDisplayAlerts = Application.DisplayAlerts
+    Application.DisplayAlerts = False
+
+    On Error Resume Next
+    wbExport.SaveAs Filename:=finalPath, FileFormat:=62, Local:=True ' xlCSVUTF8
+    If Err.Number <> 0 Then
+        Err.Clear
+        wbExport.SaveAs Filename:=finalPath, FileFormat:=xlCSV, Local:=True
+    End If
+    On Error GoTo ErrorHandler
+
+    wbExport.Close SaveChanges:=False
+    Application.DisplayAlerts = oldDisplayAlerts
+
+    MsgBox "差分インポートCSV を外部出力しました。" & vbCrLf & _
+           finalPath, vbInformation
+    Exit Sub
+
+ErrorHandler:
+    On Error Resume Next
+    If Not wbExport Is Nothing Then wbExport.Close SaveChanges:=False
+    Application.DisplayAlerts = oldDisplayAlerts
+    On Error GoTo 0
+    MsgBox "差分インポートCSV の外部出力中にエラーが発生しました: " & Err.Description, vbExclamation
+
+End Sub
+
+Private Function EnsureCsvExtension(ByVal path As String) As String
+
+    If LCase$(Right$(Trim$(path), 4)) <> ".csv" Then
+        EnsureCsvExtension = Trim$(path) & ".csv"
+    Else
+        EnsureCsvExtension = Trim$(path)
+    End If
+
+End Function
+
 Public Sub 手順4_差分インポートCSVを作成する()
 
     Dim wsSrc As Worksheet
