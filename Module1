@@ -210,6 +210,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim compareEditCols() As Long
     Dim i As Long
     Dim srcDict As Object
+    Dim usedSrcRows As Object
     Dim editHeaderMap As Object
     Dim outputSourceMap As Object
     Dim key As String
@@ -224,6 +225,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     Set wsOut = ThisWorkbook.Worksheets(SHEET_DIFF_IMPORT)
     Set srcDict = CreateObject("Scripting.Dictionary")
+    Set usedSrcRows = CreateObject("Scripting.Dictionary")
     Set editHeaderMap = CreateObject("Scripting.Dictionary")
     Set outputSourceMap = CreateObject("Scripting.Dictionary")
 
@@ -306,7 +308,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
 
         isKeyBlank = (yearVal = "" And titleVal = "" And category2Val = "")
         If Not isKeyBlank And yearVal <> "" And titleVal <> "" Then
-            If Not srcDict.Exists(key) Then srcDict.Add key, r
+            AddRowToKeyBucket srcDict, key, r
         End If
     Next r
 
@@ -335,18 +337,27 @@ Public Sub 手順4_差分インポートCSVを作成する()
 
         ' B. キー一致する行が存在 -> 比較列に差異があれば更新行として出力
         ElseIf srcDict.Exists(key) Then
-            srcRow = CLng(srcDict(key))
-            isDifferent = False
+            ' 同一キーの複数行に対応するため、1キー1行ではなく候補行一覧を保持する
+            ' 誤突合を防ぐため、候補の中から比較列の一致数が最大の行を採用する
+            srcRow = GetBestMatchedSourceRow(wsSrc, wsEdit, srcDict(key), usedSrcRows, compareSrcCols, compareEditCols, r)
 
-            For i = LBound(compareDefs) To UBound(compareDefs)
-                If compareSrcCols(i) > 0 And compareEditCols(i) > 0 Then
-                    If NormalizeForDiffCompare(wsSrc.Cells(srcRow, compareSrcCols(i)).Value) <> _
-                       NormalizeForDiffCompare(wsEdit.Cells(r, compareEditCols(i)).Value) Then
-                        isDifferent = True
-                        Exit For
+            If srcRow > 0 Then
+                ' 採用済み候補行は再利用しない
+                MarkSourceRowAsUsed usedSrcRows, srcRow
+
+                isDifferent = False
+                For i = LBound(compareDefs) To UBound(compareDefs)
+                    If compareSrcCols(i) > 0 And compareEditCols(i) > 0 Then
+                        If NormalizeForDiffCompare(wsSrc.Cells(srcRow, compareSrcCols(i)).Value) <> _
+                           NormalizeForDiffCompare(wsEdit.Cells(r, compareEditCols(i)).Value) Then
+                            isDifferent = True
+                            Exit For
+                        End If
                     End If
-                End If
-            Next i
+                Next i
+            Else
+                isDifferent = True
+            End If
 
             If isDifferent Then
                 WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
@@ -378,6 +389,80 @@ SafeExit:
 ErrorHandler:
     MsgBox "差分インポートCSV の作成中にエラーが発生しました: " & Err.Description, vbExclamation
     Resume SafeExit
+
+End Sub
+
+Private Sub AddRowToKeyBucket(ByVal bucketDict As Object, ByVal key As String, ByVal rowNumber As Long)
+
+    Dim rows As Collection
+
+    If Not bucketDict.Exists(key) Then
+        Set rows = New Collection
+        bucketDict.Add key, rows
+    End If
+
+    Set rows = bucketDict(key)
+    rows.Add rowNumber
+
+End Sub
+
+Private Function GetBestMatchedSourceRow(ByVal wsSrc As Worksheet, ByVal wsEdit As Worksheet, ByVal candidateRows As Collection, ByVal usedRowDict As Object, ByVal compareSrcCols() As Long, ByVal compareEditCols() As Long, ByVal editRow As Long) As Long
+
+    Dim candidate As Variant
+    Dim rowNumber As Long
+    Dim score As Long
+    Dim bestScore As Long
+    Dim bestRow As Long
+
+    bestScore = -1
+    bestRow = 0
+
+    For Each candidate In candidateRows
+        rowNumber = CLng(candidate)
+        If Not IsSourceRowAlreadyUsed(usedRowDict, rowNumber) Then
+            score = CountMatchedFields(wsSrc, wsEdit, rowNumber, editRow, compareSrcCols, compareEditCols)
+            If score > bestScore Then
+                bestScore = score
+                bestRow = rowNumber
+            End If
+        End If
+    Next candidate
+
+    GetBestMatchedSourceRow = bestRow
+
+End Function
+
+Private Function CountMatchedFields(ByVal wsSrc As Worksheet, ByVal wsEdit As Worksheet, ByVal srcRow As Long, ByVal editRow As Long, ByVal compareSrcCols() As Long, ByVal compareEditCols() As Long) As Long
+
+    Dim i As Long
+    Dim matchedCount As Long
+
+    matchedCount = 0
+
+    For i = LBound(compareSrcCols) To UBound(compareSrcCols)
+        If compareSrcCols(i) > 0 And compareEditCols(i) > 0 Then
+            If NormalizeForDiffCompare(wsSrc.Cells(srcRow, compareSrcCols(i)).Value) = _
+               NormalizeForDiffCompare(wsEdit.Cells(editRow, compareEditCols(i)).Value) Then
+                matchedCount = matchedCount + 1
+            End If
+        End If
+    Next i
+
+    CountMatchedFields = matchedCount
+
+End Function
+
+Private Function IsSourceRowAlreadyUsed(ByVal usedRowDict As Object, ByVal srcRow As Long) As Boolean
+
+    IsSourceRowAlreadyUsed = usedRowDict.Exists(CStr(srcRow))
+
+End Function
+
+Private Sub MarkSourceRowAsUsed(ByVal usedRowDict As Object, ByVal srcRow As Long)
+
+    If Not usedRowDict.Exists(CStr(srcRow)) Then
+        usedRowDict.Add CStr(srcRow), True
+    End If
 
 End Sub
 
