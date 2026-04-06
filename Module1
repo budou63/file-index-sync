@@ -1359,17 +1359,23 @@ Private Sub WriteRowByFixedLayout( _
 
     For i = LBound(fixedHeaders) To UBound(fixedHeaders)
         headerName = CStr(fixedHeaders(i))
-        sourceHeaderName = headerName
 
-        If outputSourceMap.Exists(headerName) Then
-            sourceHeaderName = CStr(outputSourceMap(headerName))
-        End If
-
-        If editHeaderMap.Exists(sourceHeaderName) Then
-            editCol = CLng(editHeaderMap(sourceHeaderName))
-            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = wsEdit.Cells(srcRow, editCol).value
+        ' 年度暦年区分は固定で「暦年」を出力（新ファイル基準表の列有無に依存させない）
+        If headerName = "年度暦年区分" Then
+            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = "暦年"
         Else
-            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = ""
+            sourceHeaderName = headerName
+
+            If outputSourceMap.Exists(headerName) Then
+                sourceHeaderName = CStr(outputSourceMap(headerName))
+            End If
+
+            If editHeaderMap.Exists(sourceHeaderName) Then
+                editCol = CLng(editHeaderMap(sourceHeaderName))
+                wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = wsEdit.Cells(srcRow, editCol).value
+            Else
+                wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = ""
+            End If
         End If
     Next i
 
