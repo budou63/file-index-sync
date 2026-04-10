@@ -51,19 +51,13 @@ Public Sub CSV取込_シンプル版()
     Dim appendRow As Long
     Dim srcRow As Long
     Dim appendedCount As Long
-    Dim skippedDuplicateCount As Long
+    Dim deletedCount As Long
+    Dim skippedBlankYearCount As Long
     Dim existingHasHeader As Boolean
-    Dim srcFileIdCol As Long
-    Dim srcFileNoCol As Long
-    Dim srcBarcodeCol As Long
-    Dim dstFileIdCol As Long
-    Dim dstFileNoCol As Long
-    Dim dstBarcodeCol As Long
-    Dim fileIdVal As String
-    Dim fileNoVal As String
-    Dim barcodeVal As String
-    Dim key As String
-    Dim existingKeyMap As Object
+    Dim srcWarekiCol As Long
+    Dim dstWarekiCol As Long
+    Dim targetFiscalYear As String
+    Dim rowYear As String
 
     On Error GoTo ErrorHandler
 
@@ -74,7 +68,6 @@ Public Sub CSV取込_シンプル版()
     
     ' 目録CSVシート
     Set ws = ThisWorkbook.Worksheets("目録CSV")
-    Set existingKeyMap = CreateObject("Scripting.Dictionary")
     
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
@@ -91,62 +84,76 @@ Public Sub CSV取込_シンプル版()
 
     If srcLastCol <= 0 Then Err.Raise vbObjectError + 2101, , "選択したCSVの見出し行が見つかりません。"
 
+    ' 取込CSV側の「年度（和暦）」列を特定
+    srcWarekiCol = FindHeaderColumn(wsCSV, srcLastCol, Array("年度（和暦）", "年度(和暦)"))
+    If srcWarekiCol <= 0 Then
+        Err.Raise vbObjectError + 2102, , "取込CSVに「年度（和暦）」列が見つかりません。"
+    End If
+
+    ' 2行目以降の最初の非空欄値を「今回取込対象年度」とする
+    For srcRow = 2 To srcLastRow
+        rowYear = GetTrimmedCell(wsCSV, srcRow, srcWarekiCol)
+        If rowYear <> "" Then
+            targetFiscalYear = rowYear
+            Exit For
+        End If
+    Next srcRow
+    If targetFiscalYear = "" Then
+        Err.Raise vbObjectError + 2103, , "取込CSVの「年度（和暦）」列から対象年度を取得できません。"
+    End If
+
+    ' 単年CSV前提のため、対象年度以外が混在していないか事前検証
+    For srcRow = 2 To srcLastRow
+        rowYear = GetTrimmedCell(wsCSV, srcRow, srcWarekiCol)
+        If rowYear <> "" And rowYear <> targetFiscalYear Then
+            Err.Raise vbObjectError + 2104, , _
+                "取込CSVに複数年度が混在しています。行" & srcRow & _
+                " の年度（和暦）=""" & rowYear & """（対象年度: " & targetFiscalYear & "）"
+        End If
+    Next srcRow
+
     If Not existingHasHeader Then
-        ' 初回取込: 見出し含めてA1から配置
-        wsCSV.UsedRange.Copy ws.Range("A1")
+        ' 初回取込: 見出しはそのまま取り込む
+        ws.Range(ws.Cells(1, 1), ws.Cells(1, srcLastCol)).Value = _
+            wsCSV.Range(wsCSV.Cells(1, 1), wsCSV.Cells(1, srcLastCol)).Value
         NormalizeHeaderLineBreaks ws
-        appendedCount = Application.Max(srcLastRow - 1, 0)
+        appendRow = 2
     Else
-        ' 追記取込: 既存見出しを維持し、CSVのデータ部(2行目以降)だけ追記
+        ' 追記取込: 既存見出しを維持
         NormalizeHeaderLineBreaks ws
 
-        srcFileIdCol = FindHeaderColumn(wsCSV, srcLastCol, Array("ファイルID"))
-        srcFileNoCol = FindHeaderColumn(wsCSV, srcLastCol, Array("ファイル番号"))
-        srcBarcodeCol = FindHeaderColumn(wsCSV, srcLastCol, Array("バーコード番号"))
-        dstFileIdCol = FindHeaderColumn(ws, dstLastCol, Array("ファイルID"))
-        dstFileNoCol = FindHeaderColumn(ws, dstLastCol, Array("ファイル番号"))
-        dstBarcodeCol = FindHeaderColumn(ws, dstLastCol, Array("バーコード番号"))
-
-        If dstFileIdCol > 0 And dstFileNoCol > 0 And dstBarcodeCol > 0 Then
-            For srcRow = 2 To dstLastRow
-                fileIdVal = GetTrimmedCell(ws, srcRow, dstFileIdCol)
-                fileNoVal = GetTrimmedCell(ws, srcRow, dstFileNoCol)
-                barcodeVal = GetTrimmedCell(ws, srcRow, dstBarcodeCol)
-                If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
-                    key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
-                    If Not existingKeyMap.Exists(key) Then existingKeyMap.Add key, True
-                End If
-            Next srcRow
+        ' 目録CSVシート側の「年度（和暦）」列を特定
+        dstWarekiCol = FindHeaderColumn(ws, dstLastCol, Array("年度（和暦）", "年度(和暦)"))
+        If dstWarekiCol <= 0 Then
+            Err.Raise vbObjectError + 2105, , "目録CSVシートに「年度（和暦）」列が見つかりません。"
         End If
 
-        appendRow = dstLastRow + 1
-        For srcRow = 2 To srcLastRow
-            fileIdVal = GetTrimmedCell(wsCSV, srcRow, srcFileIdCol)
-            fileNoVal = GetTrimmedCell(wsCSV, srcRow, srcFileNoCol)
-            barcodeVal = GetTrimmedCell(wsCSV, srcRow, srcBarcodeCol)
-
-            If fileIdVal = "" And fileNoVal = "" And barcodeVal = "" Then
-                ' 重複判定不能行はそのまま追記
-            Else
-                key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
-                If existingKeyMap.Exists(key) Then
-                    skippedDuplicateCount = skippedDuplicateCount + 1
-                    GoTo ContinueNextCsvRow
-                End If
+        ' 対象年度と一致する既存行のみ下から削除（他年度は残す）
+        For srcRow = dstLastRow To 2 Step -1
+            rowYear = GetTrimmedCell(ws, srcRow, dstWarekiCol)
+            If rowYear = targetFiscalYear Then
+                ws.Rows(srcRow).Delete
+                deletedCount = deletedCount + 1
             End If
+        Next srcRow
 
+        dstLastRow = GetLastUsedRow(ws)
+        appendRow = dstLastRow + 1
+    End If
+
+    ' データ部（2行目以降）を重複判定なしで追記
+    For srcRow = 2 To srcLastRow
+        rowYear = GetTrimmedCell(wsCSV, srcRow, srcWarekiCol)
+
+        If rowYear = "" Then
+            skippedBlankYearCount = skippedBlankYearCount + 1
+        Else
             ws.Range(ws.Cells(appendRow, 1), ws.Cells(appendRow, srcLastCol)).Value = _
                 wsCSV.Range(wsCSV.Cells(srcRow, 1), wsCSV.Cells(srcRow, srcLastCol)).Value
             appendRow = appendRow + 1
             appendedCount = appendedCount + 1
-
-            If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
-                If Not existingKeyMap.Exists(key) Then existingKeyMap.Add key, True
-            End If
-
-ContinueNextCsvRow:
-        Next srcRow
-    End If
+        End If
+    Next srcRow
     
     wbCSV.Close False
     
@@ -154,8 +161,10 @@ ContinueNextCsvRow:
     Application.DisplayAlerts = True
     
     MsgBox "CSV取込完了" & vbCrLf & _
-           "追記件数: " & appendedCount & " 件" & vbCrLf & _
-           "重複スキップ件数: " & skippedDuplicateCount & " 件", vbInformation
+           "対象年度: " & targetFiscalYear & vbCrLf & _
+           "削除件数: " & deletedCount & " 件" & vbCrLf & _
+           "取込件数: " & appendedCount & " 件" & vbCrLf & _
+           "年度空欄スキップ件数: " & skippedBlankYearCount & " 件", vbInformation
     Exit Sub
 
 ErrorHandler:
