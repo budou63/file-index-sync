@@ -666,9 +666,12 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim srcLastCol As Long
     Dim dstLastCol As Long
     Dim displayHeaders As Variant
-    Dim userManagedHeaders As Variant
+    Dim baselineUserManagedHeaders As Variant
+    Dim additionalLeftDisplayHeaders As Variant
     Dim srcToDstMap As Object
+    Dim srcHeaderMap As Object
     Dim existingDstHeaders As Object
+    Dim existingRowMap As Object
     Dim srcCol As Long
     Dim dstCol As Long
     Dim headerText As String
@@ -683,34 +686,29 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim columnWidthMap As Object
     Dim wsValidationTemplate As Worksheet
     Dim wsFormatTemplate As Worksheet
-    Dim existingLastRow As Long
-    Dim appendStartRow As Long
-    Dim appendEndRow As Long
+    Dim dstLastRow As Long
     Dim srcRow As Long
-    Dim appendedCount As Long
-    Dim skippedDuplicateCount As Long
-    Dim existingKeyMap As Object
-    Dim fileIdSrcCol As Long
-    Dim fileNoSrcCol As Long
-    Dim barcodeSrcCol As Long
-    Dim fileIdDstCol As Long
-    Dim fileNoDstCol As Long
-    Dim barcodeDstCol As Long
-    Dim fileIdVal As String
-    Dim fileNoVal As String
-    Dim barcodeVal As String
+    Dim targetRow As Long
+    Dim appendRow As Long
     Dim key As String
+    Dim appendedCount As Long
+    Dim updatedCount As Long
+    Dim skippedNoKeyCount As Long
+    Dim updateStartRow As Long
+    Dim updateEndRow As Long
+    Dim didUpdateRows As Boolean
 
     On Error GoTo ErrorHandler
 
     Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
     Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     Set srcToDstMap = CreateObject("Scripting.Dictionary")
+    Set srcHeaderMap = CreateObject("Scripting.Dictionary")
     Set existingDstHeaders = CreateObject("Scripting.Dictionary")
+    Set existingRowMap = CreateObject("Scripting.Dictionary")
     Set validationTemplateMap = CreateObject("Scripting.Dictionary")
     Set formatTemplateMap = CreateObject("Scripting.Dictionary")
     Set columnWidthMap = CreateObject("Scripting.Dictionary")
-    Set existingKeyMap = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -721,11 +719,12 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     If srcLastCol <= 0 Then Err.Raise vbObjectError + 2001, , "目録CSV の見出し行が見つかりません。"
 
-    ' 追記: 並び替え前に既存入力規則のテンプレートを退避（見出し名ベースで復元するため）
+    ' 並び替え前に既存入力規則のテンプレートを退避（見出し名ベースで復元するため）
     CreateValidationTemplateSheet wsDst, dstLastCol, validationTemplateMap, wsValidationTemplate
-    ' 追記: 並び替え前に既存書式/列幅を退避（条件付き書式・列幅の崩れ防止）
+    ' 並び替え前に既存書式/列幅を退避（条件付き書式・列幅の崩れ防止）
     CreateFormatAndWidthTemplate wsDst, dstLastCol, formatTemplateMap, columnWidthMap, wsFormatTemplate
 
+    ' 主要表示列（左側に寄せる列）
     displayHeaders = Array( _
         "通し番号", _
         "キャビネット番号", _
@@ -742,88 +741,74 @@ Public Sub 手順2_新ファイル基準表を作成する()
         "タイトル", _
         "保存期間", _
         "媒体種別")
-    userManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1")
+
+    ' ユーザー管理列（CSV上書き対象外）
+    baselineUserManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1", "保存番号", "廃棄年月日")
+
+    ' 左側に追加したい独自列（必要時にここへ追記）
+    additionalLeftDisplayHeaders = Array("保存番号", "廃棄年月日")
 
     ' 1) 既存「新ファイル基準表」の見出しを辞書化（追加列保持のため）
     BuildHeaderMap wsDst, dstLastCol, existingDstHeaders
 
-    ' 2) ユーザー管理列（CSV由来ではない3列）を確保
-    For i = LBound(userManagedHeaders) To UBound(userManagedHeaders)
-        EnsureColumnByHeader wsDst, existingDstHeaders, CStr(userManagedHeaders(i))
+    ' 2) ユーザー管理列を確保
+    For i = LBound(baselineUserManagedHeaders) To UBound(baselineUserManagedHeaders)
+        EnsureColumnByHeader wsDst, existingDstHeaders, CStr(baselineUserManagedHeaders(i))
     Next i
 
-    ' 3) CSV由来列を「見出し名ベース」で同期（不足列は追加、既存追加列は維持）
+    ' 3) 目録CSVの見出し辞書を作成し、CSV由来列の転記マップを組み立てる
+    BuildSourceHeaderMap wsSrc, srcLastCol, srcHeaderMap
     For srcCol = 1 To srcLastCol
-        headerText = Trim(CStr(wsSrc.Cells(1, srcCol).value))
+        headerText = Trim$(CStr(wsSrc.Cells(1, srcCol).Value))
         If headerText <> "" Then
             canonical = CanonicalHeaderName(headerText)
             dstCol = EnsureColumnByHeader(wsDst, existingDstHeaders, headerText)
-            srcToDstMap(canonical) = dstCol
+
+            ' 目録CSVにある列は基本的に更新対象だが、ユーザー管理列は除外する
+            If Not IsUserManagedHeader(canonical, srcHeaderMap, baselineUserManagedHeaders) Then
+                srcToDstMap(canonical) = dstCol
+            End If
         End If
     Next srcCol
 
-    ' 4) 既存行は保持し、目録CSV(2行目以降)を新ファイル基準表の末尾に追記する
-    existingLastRow = GetLastUsedRow(wsDst)
-    If existingLastRow < 1 Then existingLastRow = 1
-    appendStartRow = existingLastRow + 1
-    appendEndRow = appendStartRow - 1
+    ' 4) 既存行マップを作成し、「更新＋新規追加」で反映する
+    dstLastRow = GetLastUsedRow(wsDst)
+    If dstLastRow < 1 Then dstLastRow = 1
+    appendRow = dstLastRow + 1
 
-    fileIdSrcCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイルID"))
-    fileNoSrcCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイル番号"))
-    barcodeSrcCol = FindHeaderColumn(wsSrc, srcLastCol, Array("バーコード番号"))
-    fileIdDstCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("ファイルID"))
-    fileNoDstCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("ファイル番号"))
-    barcodeDstCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("バーコード番号"))
-
-    ' 既存行の重複判定キーを辞書化
-    If fileIdDstCol > 0 And fileNoDstCol > 0 And barcodeDstCol > 0 Then
-        For i = 2 To existingLastRow
-            fileIdVal = GetTrimmedCell(wsDst, i, fileIdDstCol)
-            fileNoVal = GetTrimmedCell(wsDst, i, fileNoDstCol)
-            barcodeVal = GetTrimmedCell(wsDst, i, barcodeDstCol)
-            If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
-                key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
-                If Not existingKeyMap.Exists(key) Then
-                    existingKeyMap.Add key, True
-                End If
-            End If
-        Next i
-    End If
+    BuildExistingRowMap wsDst, dstLastRow, existingRowMap
 
     If srcLastRow >= 2 Then
         For srcRow = 2 To srcLastRow
-            fileIdVal = GetTrimmedCell(wsSrc, srcRow, fileIdSrcCol)
-            fileNoVal = GetTrimmedCell(wsSrc, srcRow, fileNoSrcCol)
-            barcodeVal = GetTrimmedCell(wsSrc, srcRow, barcodeSrcCol)
+            key = BuildFileKeyFromSheetRow(wsSrc, srcRow, srcHeaderMap)
 
-            If fileIdVal = "" And fileNoVal = "" And barcodeVal = "" Then
-                ' 3項目すべて空欄は重複判定不能のため追記
+            If key = "" Then
+                ' キー（ファイルID/ファイル番号/バーコード番号）不足行は更新不可のためスキップ
+                skippedNoKeyCount = skippedNoKeyCount + 1
+                GoTo ContinueNextSourceRow
+            End If
+
+            If existingRowMap.Exists(key) Then
+                targetRow = CLng(existingRowMap(key))
+                UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap
+                updatedCount = updatedCount + 1
+
+                If Not didUpdateRows Then
+                    updateStartRow = targetRow
+                    updateEndRow = targetRow
+                    didUpdateRows = True
+                Else
+                    If targetRow < updateStartRow Then updateStartRow = targetRow
+                    If targetRow > updateEndRow Then updateEndRow = targetRow
+                End If
             Else
-                key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
-                If existingKeyMap.Exists(key) Then
-                    skippedDuplicateCount = skippedDuplicateCount + 1
-                    GoTo ContinueNextSrcRow
-                End If
+                AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
+                existingRowMap.Add key, appendRow
+                appendedCount = appendedCount + 1
+                appendRow = appendRow + 1
             End If
 
-            appendEndRow = appendEndRow + 1
-            For srcCol = 1 To srcLastCol
-                headerText = Trim(CStr(wsSrc.Cells(1, srcCol).value))
-                If headerText <> "" Then
-                    canonical = CanonicalHeaderName(headerText)
-                    If srcToDstMap.Exists(canonical) Then
-                        dstCol = CLng(srcToDstMap(canonical))
-                        wsDst.Cells(appendEndRow, dstCol).value = wsSrc.Cells(srcRow, srcCol).value
-                    End If
-                End If
-            Next srcCol
-
-            appendedCount = appendedCount + 1
-            If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
-                If Not existingKeyMap.Exists(key) Then existingKeyMap.Add key, True
-            End If
-
-ContinueNextSrcRow:
+ContinueNextSourceRow:
         Next srcRow
     End If
 
@@ -842,13 +827,33 @@ ContinueNextSrcRow:
             targetCol = targetCol + 1
         End If
     Next i
+
+    ' 拡張独自列を左側表示に追加しやすくする（見つかった列だけ移動）
+    For i = LBound(additionalLeftDisplayHeaders) To UBound(additionalLeftDisplayHeaders)
+        srcLastCol = GetLastUsedCol(wsDst)
+        foundCol = FindHeaderColumn(wsDst, srcLastCol, GetStep2HeaderCandidates(CStr(additionalLeftDisplayHeaders(i))))
+
+        If foundCol > 0 Then
+            If foundCol <> targetCol Then
+                wsDst.Columns(foundCol).Cut
+                wsDst.Columns(targetCol).Insert Shift:=xlToRight
+                Application.CutCopyMode = False
+            End If
+            targetCol = targetCol + 1
+        End If
+    Next i
+
     leftFixedCount = targetCol - 1
 
-    ' 6) 「毎年度利用区分」表示値変換（新規追記行のみ）
-    If appendEndRow >= appendStartRow Then
-        ConvertAnnualUseDivisionValues wsDst, appendEndRow, appendStartRow
-        ' 追記: 2色名 = 色名 を新規追記行へ反映（見出し名ベース）
-        SyncSecondColorNameFromColor wsDst, appendStartRow, appendEndRow
+    ' 6) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
+    If didUpdateRows Then
+        ConvertAnnualUseDivisionValues wsDst, updateEndRow, updateStartRow
+        SyncSecondColorNameFromColor wsDst, updateStartRow, updateEndRow
+    End If
+
+    If appendRow > dstLastRow + 1 Then
+        ConvertAnnualUseDivisionValues wsDst, appendRow - 1, dstLastRow + 1
+        SyncSecondColorNameFromColor wsDst, dstLastRow + 1, appendRow - 1
     End If
 
     ' 7) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
@@ -871,20 +876,22 @@ ContinueNextSrcRow:
 
     ' 10) 入力規則を見出し名ベースで再適用（列挿入/並び替え後の列位置へ追従）
     ReapplyValidationFromTemplate wsDst, validationTemplateMap, wsValidationTemplate
-    ' 追記: 条件付き書式/列幅を見出し名ベースで再適用
+    ' 条件付き書式/列幅を見出し名ベースで再適用
     ReapplyFormatAndWidthFromTemplate wsDst, formatTemplateMap, columnWidthMap, wsFormatTemplate
 
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
-               "追記件数: " & appendedCount & " 件" & vbCrLf & _
-               "重複スキップ件数: " & skippedDuplicateCount & " 件" & vbCrLf & _
+               "更新件数: " & updatedCount & " 件" & vbCrLf & _
+               "追加件数: " & appendedCount & " 件" & vbCrLf & _
+               "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
                "以下の見出しが見つからないため、左側固定対象から除外しました:" & vbCrLf & _
                missingHeadersText, vbExclamation
     Else
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
-               "追記件数: " & appendedCount & " 件" & vbCrLf & _
-               "重複スキップ件数: " & skippedDuplicateCount & " 件" & vbCrLf & _
+               "更新件数: " & updatedCount & " 件" & vbCrLf & _
+               "追加件数: " & appendedCount & " 件" & vbCrLf & _
+               "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
     End If
 
@@ -1031,6 +1038,144 @@ Private Sub BuildHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal h
     Next c
 
 End Sub
+
+Private Sub BuildSourceHeaderMap(ByVal wsSrc As Worksheet, ByVal srcLastCol As Long, ByVal srcHeaderMap As Object)
+
+    Dim srcCol As Long
+    Dim headerText As String
+    Dim canonical As String
+
+    srcHeaderMap.RemoveAll
+
+    For srcCol = 1 To srcLastCol
+        headerText = Trim$(CStr(wsSrc.Cells(1, srcCol).Value))
+        If headerText <> "" Then
+            canonical = CanonicalHeaderName(headerText)
+            If Not srcHeaderMap.Exists(canonical) Then
+                srcHeaderMap.Add canonical, srcCol
+            End If
+        End If
+    Next srcCol
+
+End Sub
+
+Private Function IsUserManagedHeader( _
+    ByVal canonicalHeader As String, _
+    ByVal srcHeaderMap As Object, _
+    ByVal baselineUserManagedHeaders As Variant) As Boolean
+
+    Dim i As Long
+    Dim baseCanonical As String
+
+    ' 指定された固定ユーザー管理列は常にユーザー管理とみなす
+    For i = LBound(baselineUserManagedHeaders) To UBound(baselineUserManagedHeaders)
+        baseCanonical = CanonicalHeaderName(CStr(baselineUserManagedHeaders(i)))
+        If StrComp(canonicalHeader, baseCanonical, vbTextCompare) = 0 Then
+            IsUserManagedHeader = True
+            Exit Function
+        End If
+    Next i
+
+    ' それ以外はCSVに存在する列をCSV管理列として扱う
+    ' （新ファイル基準表だけに存在する列は転記マップに乗らないため、結果として保護される）
+    IsUserManagedHeader = Not srcHeaderMap.Exists(canonicalHeader)
+
+End Function
+
+Private Sub BuildExistingRowMap(ByVal wsDst As Worksheet, ByVal dstLastRow As Long, ByVal existingRowMap As Object)
+
+    Dim headerMap As Object
+    Dim rowNo As Long
+    Dim key As String
+
+    existingRowMap.RemoveAll
+    Set headerMap = CreateObject("Scripting.Dictionary")
+
+    BuildSourceHeaderMap wsDst, GetLastUsedCol(wsDst), headerMap
+    If Not headerMap.Exists(CanonicalHeaderName("ファイルID")) _
+       Or Not headerMap.Exists(CanonicalHeaderName("ファイル番号")) _
+       Or Not headerMap.Exists(CanonicalHeaderName("バーコード番号")) Then
+        Err.Raise vbObjectError + 2201, , "新ファイル基準表にキー列（ファイルID/ファイル番号/バーコード番号）が見つかりません。"
+    End If
+
+    For rowNo = 2 To dstLastRow
+        key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
+        If key <> "" Then
+            If Not existingRowMap.Exists(key) Then
+                existingRowMap.Add key, rowNo
+            End If
+        End If
+    Next rowNo
+
+End Sub
+
+Private Sub UpdateRowFromSourceByHeader( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsDst As Worksheet, _
+    ByVal srcRow As Long, _
+    ByVal dstRow As Long, _
+    ByVal srcHeaderMap As Object, _
+    ByVal srcToDstMap As Object)
+
+    Dim key As Variant
+    Dim srcCol As Long
+    Dim dstCol As Long
+
+    ' CSV由来列だけを上書きし、ユーザー管理列は触らない
+    For Each key In srcToDstMap.Keys
+        If srcHeaderMap.Exists(CStr(key)) Then
+            srcCol = CLng(srcHeaderMap(CStr(key)))
+            dstCol = CLng(srcToDstMap(CStr(key)))
+            wsDst.Cells(dstRow, dstCol).Value = wsSrc.Cells(srcRow, srcCol).Value
+        End If
+    Next key
+
+End Sub
+
+Private Sub AppendRowFromSourceByHeader( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsDst As Worksheet, _
+    ByVal srcRow As Long, _
+    ByVal dstRow As Long, _
+    ByVal srcHeaderMap As Object, _
+    ByVal srcToDstMap As Object)
+
+    ' 追加時もCSV由来列だけを書き込み、ユーザー管理列は空欄のまま確保する
+    UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, dstRow, srcHeaderMap, srcToDstMap
+
+End Sub
+
+Private Function BuildFileKeyFromSheetRow(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal headerMap As Object) As String
+
+    Dim fileId As String
+    Dim fileNo As String
+    Dim barcodeNo As String
+    Dim keyFileId As String
+    Dim keyFileNo As String
+    Dim keyBarcode As String
+
+    keyFileId = CanonicalHeaderName("ファイルID")
+    keyFileNo = CanonicalHeaderName("ファイル番号")
+    keyBarcode = CanonicalHeaderName("バーコード番号")
+
+    If Not headerMap.Exists(keyFileId) _
+       Or Not headerMap.Exists(keyFileNo) _
+       Or Not headerMap.Exists(keyBarcode) Then
+        BuildFileKeyFromSheetRow = ""
+        Exit Function
+    End If
+
+    fileId = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyFileId)))
+    fileNo = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyFileNo)))
+    barcodeNo = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyBarcode)))
+
+    If fileId = "" And fileNo = "" And barcodeNo = "" Then
+        BuildFileKeyFromSheetRow = ""
+    Else
+        BuildFileKeyFromSheetRow = BuildFileKey(fileId, fileNo, barcodeNo)
+    End If
+
+End Function
 
 Private Function EnsureColumnByHeader(ByVal ws As Worksheet, ByVal headerMap As Object, ByVal headerName As String) As Long
 
