@@ -1901,6 +1901,7 @@ End Sub
 ' 返却条件:
 ' - 年度（和暦）/保存期間のいずれか空欄: 空文字
 ' - 保存期間が継続/永年: 空文字
+' - 保存期間が随時: 年度末（翌年 3/31）
 ' - 変換不能: 空文字
 '--------------------------------------------------------
 Private Function CalculateHaikiDateText(ByVal warekiText As String, ByVal saveTermText As String) As String
@@ -1910,6 +1911,7 @@ Private Function CalculateHaikiDateText(ByVal warekiText As String, ByVal saveTe
     Dim startWesternYear As Long
     Dim saveYears As Long
     Dim isPermanent As Boolean
+    Dim isZuiji As Boolean
     Dim haikiWesternYear As Long
     Dim haikiWarekiLabel As String
 
@@ -1918,11 +1920,22 @@ Private Function CalculateHaikiDateText(ByVal warekiText As String, ByVal saveTe
     If Len(NormalizeBasicText(warekiText)) = 0 Then Exit Function
     If Len(NormalizeBasicText(saveTermText)) = 0 Then Exit Function
 
-    saveYears = GetSaveTermYears(saveTermText, isPermanent)
-    If isPermanent Then Exit Function
-    If saveYears <= 0 Then Exit Function
-
     If Not ParseWarekiYear(warekiText, eraName, eraYear, startWesternYear) Then Exit Function
+    saveYears = GetSaveTermYears(saveTermText, isPermanent, isZuiji)
+
+    ' 継続/永年 は空欄
+    If isPermanent Then Exit Function
+
+    ' 随時 は当該年度末（翌年 3/31）
+    If isZuiji Then
+        haikiWesternYear = startWesternYear + 1
+        haikiWarekiLabel = WesternYearToWarekiLabel(haikiWesternYear)
+        If Len(haikiWarekiLabel) = 0 Then Exit Function
+        CalculateHaikiDateText = haikiWarekiLabel & ".3.31"
+        Exit Function
+    End If
+
+    If saveYears <= 0 Then Exit Function
 
     ' ルール: 廃棄年度 = 元年度 + 保存期間年数 + 1（次年度初日 4/1）
     haikiWesternYear = startWesternYear + saveYears + 1
@@ -2019,15 +2032,20 @@ End Function
 ' 戻り値:
 ' - 1/3/5/10 -> 年数
 ' - 継続/永年 -> 0（isPermanent=True）
+' - 随時 -> 0（isZuiji=True）
 ' - 変換不能 -> -1
 '--------------------------------------------------------
-Private Function GetSaveTermYears(ByVal saveTermText As String, ByRef isPermanent As Boolean) As Long
+Private Function GetSaveTermYears( _
+    ByVal saveTermText As String, _
+    ByRef isPermanent As Boolean, _
+    ByRef isZuiji As Boolean) As Long
 
     Dim s As String
     Dim digits As String
     Dim yearsValue As Long
 
     isPermanent = False
+    isZuiji = False
     GetSaveTermYears = -1
 
     s = NormalizeBasicText(saveTermText)
@@ -2038,6 +2056,12 @@ Private Function GetSaveTermYears(ByVal saveTermText As String, ByRef isPermanen
 
     If InStr(1, s, "継続", vbTextCompare) > 0 Or InStr(1, s, "永年", vbTextCompare) > 0 Then
         isPermanent = True
+        GetSaveTermYears = 0
+        Exit Function
+    End If
+
+    If InStr(1, s, "随時", vbTextCompare) > 0 Then
+        isZuiji = True
         GetSaveTermYears = 0
         Exit Function
     End If
