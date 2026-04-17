@@ -1821,6 +1821,10 @@ ContinuePair:
 ContinueCellLoop:
     Next changedCell
 
+    ' 同じ変更イベント内で、年度（和暦）/保存期間に応じた廃棄年月日を自動更新する。
+    ' （Worksheet_Change 側の呼び出し漏れがあっても、この主処理経由で必ず反映されるようにする）
+    Call 新ファイル基準表_廃棄年月日自動計算(Target)
+
 ExitHandler:
     Application.EnableEvents = True
 
