@@ -666,9 +666,13 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim srcLastCol As Long
     Dim dstLastCol As Long
     Dim displayHeaders As Variant
-    Dim userManagedHeaders As Variant
+    Dim baselineUserManagedHeaders As Variant
+    Dim additionalLeftDisplayHeaders As Variant
     Dim srcToDstMap As Object
+    Dim srcHeaderMap As Object
     Dim existingDstHeaders As Object
+    Dim existingRowMap As Object
+    Dim sourceKeyMap As Object
     Dim srcCol As Long
     Dim dstCol As Long
     Dim headerText As String
@@ -683,34 +687,30 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim columnWidthMap As Object
     Dim wsValidationTemplate As Worksheet
     Dim wsFormatTemplate As Worksheet
-    Dim existingLastRow As Long
-    Dim appendStartRow As Long
-    Dim appendEndRow As Long
+    Dim dstLastRow As Long
     Dim srcRow As Long
-    Dim appendedCount As Long
-    Dim skippedDuplicateCount As Long
-    Dim existingKeyMap As Object
-    Dim fileIdSrcCol As Long
-    Dim fileNoSrcCol As Long
-    Dim barcodeSrcCol As Long
-    Dim fileIdDstCol As Long
-    Dim fileNoDstCol As Long
-    Dim barcodeDstCol As Long
-    Dim fileIdVal As String
-    Dim fileNoVal As String
-    Dim barcodeVal As String
+    Dim targetRow As Long
+    Dim appendRow As Long
     Dim key As String
+    Dim appendedCount As Long
+    Dim updatedCount As Long
+    Dim skippedNoKeyCount As Long
+    Dim updateStartRow As Long
+    Dim updateEndRow As Long
+    Dim didUpdateRows As Boolean
 
     On Error GoTo ErrorHandler
 
     Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
     Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     Set srcToDstMap = CreateObject("Scripting.Dictionary")
+    Set srcHeaderMap = CreateObject("Scripting.Dictionary")
     Set existingDstHeaders = CreateObject("Scripting.Dictionary")
+    Set existingRowMap = CreateObject("Scripting.Dictionary")
+    Set sourceKeyMap = CreateObject("Scripting.Dictionary")
     Set validationTemplateMap = CreateObject("Scripting.Dictionary")
     Set formatTemplateMap = CreateObject("Scripting.Dictionary")
     Set columnWidthMap = CreateObject("Scripting.Dictionary")
-    Set existingKeyMap = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -721,11 +721,12 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     If srcLastCol <= 0 Then Err.Raise vbObjectError + 2001, , "目録CSV の見出し行が見つかりません。"
 
-    ' 追記: 並び替え前に既存入力規則のテンプレートを退避（見出し名ベースで復元するため）
+    ' 並び替え前に既存入力規則のテンプレートを退避（見出し名ベースで復元するため）
     CreateValidationTemplateSheet wsDst, dstLastCol, validationTemplateMap, wsValidationTemplate
-    ' 追記: 並び替え前に既存書式/列幅を退避（条件付き書式・列幅の崩れ防止）
+    ' 並び替え前に既存書式/列幅を退避（条件付き書式・列幅の崩れ防止）
     CreateFormatAndWidthTemplate wsDst, dstLastCol, formatTemplateMap, columnWidthMap, wsFormatTemplate
 
+    ' 主要表示列（左側に寄せる列）
     displayHeaders = Array( _
         "通し番号", _
         "キャビネット番号", _
@@ -741,89 +742,84 @@ Public Sub 手順2_新ファイル基準表を作成する()
         "作成年度（和暦）", _
         "タイトル", _
         "保存期間", _
-        "媒体種別")
-    userManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1")
+        "媒体種別", _
+        "保存番号", _
+        "廃棄年月日", _
+        "同期状態", _
+        "ファイルID")
+
+    ' ユーザー管理列（CSV上書き対象外）
+    baselineUserManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1", "保存番号", "廃棄年月日", "同期状態")
+
+    ' 左側に追加したい独自列（必要時にここへ追記）
+    additionalLeftDisplayHeaders = Array()
 
     ' 1) 既存「新ファイル基準表」の見出しを辞書化（追加列保持のため）
     BuildHeaderMap wsDst, dstLastCol, existingDstHeaders
 
-    ' 2) ユーザー管理列（CSV由来ではない3列）を確保
-    For i = LBound(userManagedHeaders) To UBound(userManagedHeaders)
-        EnsureColumnByHeader wsDst, existingDstHeaders, CStr(userManagedHeaders(i))
+    ' 2) ユーザー管理列を確保
+    For i = LBound(baselineUserManagedHeaders) To UBound(baselineUserManagedHeaders)
+        EnsureColumnByHeader wsDst, existingDstHeaders, CStr(baselineUserManagedHeaders(i))
     Next i
 
-    ' 3) CSV由来列を「見出し名ベース」で同期（不足列は追加、既存追加列は維持）
+    ' 3) 目録CSVの見出し辞書を作成し、CSV由来列の転記マップを組み立てる
+    BuildSourceHeaderMap wsSrc, srcLastCol, srcHeaderMap
     For srcCol = 1 To srcLastCol
-        headerText = Trim(CStr(wsSrc.Cells(1, srcCol).value))
+        headerText = Trim$(CStr(wsSrc.Cells(1, srcCol).Value))
         If headerText <> "" Then
             canonical = CanonicalHeaderName(headerText)
             dstCol = EnsureColumnByHeader(wsDst, existingDstHeaders, headerText)
-            srcToDstMap(canonical) = dstCol
+
+            ' 目録CSVにある列は基本的に更新対象だが、ユーザー管理列は除外する
+            If Not IsUserManagedHeader(canonical, srcHeaderMap, baselineUserManagedHeaders) Then
+                srcToDstMap(canonical) = dstCol
+            End If
         End If
     Next srcCol
 
-    ' 4) 既存行は保持し、目録CSV(2行目以降)を新ファイル基準表の末尾に追記する
-    existingLastRow = GetLastUsedRow(wsDst)
-    If existingLastRow < 1 Then existingLastRow = 1
-    appendStartRow = existingLastRow + 1
-    appendEndRow = appendStartRow - 1
+    ' 4) 既存行マップを作成し、「更新＋新規追加」で反映する
+    dstLastRow = GetLastUsedRow(wsDst)
+    If dstLastRow < 1 Then dstLastRow = 1
+    appendRow = dstLastRow + 1
 
-    fileIdSrcCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイルID"))
-    fileNoSrcCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイル番号"))
-    barcodeSrcCol = FindHeaderColumn(wsSrc, srcLastCol, Array("バーコード番号"))
-    fileIdDstCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("ファイルID"))
-    fileNoDstCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("ファイル番号"))
-    barcodeDstCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("バーコード番号"))
-
-    ' 既存行の重複判定キーを辞書化
-    If fileIdDstCol > 0 And fileNoDstCol > 0 And barcodeDstCol > 0 Then
-        For i = 2 To existingLastRow
-            fileIdVal = GetTrimmedCell(wsDst, i, fileIdDstCol)
-            fileNoVal = GetTrimmedCell(wsDst, i, fileNoDstCol)
-            barcodeVal = GetTrimmedCell(wsDst, i, barcodeDstCol)
-            If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
-                key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
-                If Not existingKeyMap.Exists(key) Then
-                    existingKeyMap.Add key, True
-                End If
-            End If
-        Next i
-    End If
+    BuildExistingRowMap wsDst, dstLastRow, existingRowMap
 
     If srcLastRow >= 2 Then
         For srcRow = 2 To srcLastRow
-            fileIdVal = GetTrimmedCell(wsSrc, srcRow, fileIdSrcCol)
-            fileNoVal = GetTrimmedCell(wsSrc, srcRow, fileNoSrcCol)
-            barcodeVal = GetTrimmedCell(wsSrc, srcRow, barcodeSrcCol)
+            key = BuildFileKeyFromSheetRow(wsSrc, srcRow, srcHeaderMap)
 
-            If fileIdVal = "" And fileNoVal = "" And barcodeVal = "" Then
-                ' 3項目すべて空欄は重複判定不能のため追記
+            If key = "" Then
+                ' キー（ファイルID/ファイル番号/バーコード番号）不足行は更新不可のためスキップ
+                skippedNoKeyCount = skippedNoKeyCount + 1
+                GoTo ContinueNextSourceRow
+            End If
+
+            ' 今回の目録CSVに存在するキーとして記録（同期状態判定で利用）
+            If Not sourceKeyMap.Exists(key) Then
+                sourceKeyMap.Add key, True
+            End If
+
+            If existingRowMap.Exists(key) Then
+                targetRow = CLng(existingRowMap(key))
+                UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap
+                updatedCount = updatedCount + 1
+
+                If Not didUpdateRows Then
+                    updateStartRow = targetRow
+                    updateEndRow = targetRow
+                    didUpdateRows = True
+                Else
+                    If targetRow < updateStartRow Then updateStartRow = targetRow
+                    If targetRow > updateEndRow Then updateEndRow = targetRow
+                End If
             Else
-                key = BuildFileKey(fileIdVal, fileNoVal, barcodeVal)
-                If existingKeyMap.Exists(key) Then
-                    skippedDuplicateCount = skippedDuplicateCount + 1
-                    GoTo ContinueNextSrcRow
-                End If
+                AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
+                existingRowMap.Add key, appendRow
+                appendedCount = appendedCount + 1
+                appendRow = appendRow + 1
             End If
 
-            appendEndRow = appendEndRow + 1
-            For srcCol = 1 To srcLastCol
-                headerText = Trim(CStr(wsSrc.Cells(1, srcCol).value))
-                If headerText <> "" Then
-                    canonical = CanonicalHeaderName(headerText)
-                    If srcToDstMap.Exists(canonical) Then
-                        dstCol = CLng(srcToDstMap(canonical))
-                        wsDst.Cells(appendEndRow, dstCol).value = wsSrc.Cells(srcRow, srcCol).value
-                    End If
-                End If
-            Next srcCol
-
-            appendedCount = appendedCount + 1
-            If Not (fileIdVal = "" And fileNoVal = "" And barcodeVal = "") Then
-                If Not existingKeyMap.Exists(key) Then existingKeyMap.Add key, True
-            End If
-
-ContinueNextSrcRow:
+ContinueNextSourceRow:
         Next srcRow
     End If
 
@@ -842,16 +838,41 @@ ContinueNextSrcRow:
             targetCol = targetCol + 1
         End If
     Next i
-    leftFixedCount = targetCol - 1
 
-    ' 6) 「毎年度利用区分」表示値変換（新規追記行のみ）
-    If appendEndRow >= appendStartRow Then
-        ConvertAnnualUseDivisionValues wsDst, appendEndRow, appendStartRow
-        ' 追記: 2色名 = 色名 を新規追記行へ反映（見出し名ベース）
-        SyncSecondColorNameFromColor wsDst, appendStartRow, appendEndRow
+    ' 拡張独自列を左側表示に追加しやすくする（見つかった列だけ移動）
+    If HasArrayElements(additionalLeftDisplayHeaders) Then
+        For i = LBound(additionalLeftDisplayHeaders) To UBound(additionalLeftDisplayHeaders)
+            srcLastCol = GetLastUsedCol(wsDst)
+            foundCol = FindHeaderColumn(wsDst, srcLastCol, GetStep2HeaderCandidates(CStr(additionalLeftDisplayHeaders(i))))
+
+            If foundCol > 0 Then
+                If foundCol <> targetCol Then
+                    wsDst.Columns(foundCol).Cut
+                    wsDst.Columns(targetCol).Insert Shift:=xlToRight
+                    Application.CutCopyMode = False
+                End If
+                targetCol = targetCol + 1
+            End If
+        Next i
     End If
 
-    ' 7) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
+    leftFixedCount = targetCol - 1
+
+    ' 6) 同期状態列を更新（現行 / 削除候補 / 未登録）
+    UpdateSyncStatusColumn wsDst, sourceKeyMap
+
+    ' 7) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
+    If didUpdateRows Then
+        ConvertAnnualUseDivisionValues wsDst, updateEndRow, updateStartRow
+        SyncSecondColorNameFromColor wsDst, updateStartRow, updateEndRow
+    End If
+
+    If appendRow > dstLastRow + 1 Then
+        ConvertAnnualUseDivisionValues wsDst, appendRow - 1, dstLastRow + 1
+        SyncSecondColorNameFromColor wsDst, dstLastRow + 1, appendRow - 1
+    End If
+
+    ' 8) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
     If leftFixedCount > 0 Then
         With wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, leftFixedCount))
             .Font.Bold = True
@@ -863,28 +884,30 @@ ContinueNextSrcRow:
     srcLastCol = GetLastUsedCol(wsDst)
     wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol)).AutoFilter
 
-    ' 8) 左側固定対象の不足見出しを通知用に収集（列の表示状態は変更しない）
+    ' 9) 左側固定対象の不足見出しを通知用に収集（列の表示状態は変更しない）
     HideKeyColumnsForStep2 wsDst, displayHeaders, missingHeadersText
 
-    ' 9) タイトルがある行だけ通し番号を再採番
+    ' 10) タイトルがある行だけ通し番号を再採番
     ReindexSerial_NewFileStandard wsDst
 
-    ' 10) 入力規則を見出し名ベースで再適用（列挿入/並び替え後の列位置へ追従）
+    ' 11) 入力規則を見出し名ベースで再適用（列挿入/並び替え後の列位置へ追従）
     ReapplyValidationFromTemplate wsDst, validationTemplateMap, wsValidationTemplate
-    ' 追記: 条件付き書式/列幅を見出し名ベースで再適用
+    ' 条件付き書式/列幅を見出し名ベースで再適用
     ReapplyFormatAndWidthFromTemplate wsDst, formatTemplateMap, columnWidthMap, wsFormatTemplate
 
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
-               "追記件数: " & appendedCount & " 件" & vbCrLf & _
-               "重複スキップ件数: " & skippedDuplicateCount & " 件" & vbCrLf & _
+               "更新件数: " & updatedCount & " 件" & vbCrLf & _
+               "追加件数: " & appendedCount & " 件" & vbCrLf & _
+               "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
                "以下の見出しが見つからないため、左側固定対象から除外しました:" & vbCrLf & _
                missingHeadersText, vbExclamation
     Else
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
-               "追記件数: " & appendedCount & " 件" & vbCrLf & _
-               "重複スキップ件数: " & skippedDuplicateCount & " 件" & vbCrLf & _
+               "更新件数: " & updatedCount & " 件" & vbCrLf & _
+               "追加件数: " & appendedCount & " 件" & vbCrLf & _
+               "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
     End If
 
@@ -1032,6 +1055,226 @@ Private Sub BuildHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal h
 
 End Sub
 
+Private Sub BuildSourceHeaderMap(ByVal wsSrc As Worksheet, ByVal srcLastCol As Long, ByVal srcHeaderMap As Object)
+
+    Dim srcCol As Long
+    Dim headerText As String
+    Dim canonical As String
+
+    srcHeaderMap.RemoveAll
+
+    For srcCol = 1 To srcLastCol
+        headerText = Trim$(CStr(wsSrc.Cells(1, srcCol).Value))
+        If headerText <> "" Then
+            canonical = CanonicalHeaderName(headerText)
+            If Not srcHeaderMap.Exists(canonical) Then
+                srcHeaderMap.Add canonical, srcCol
+            End If
+        End If
+    Next srcCol
+
+End Sub
+
+Private Function IsUserManagedHeader( _
+    ByVal canonicalHeader As String, _
+    ByVal srcHeaderMap As Object, _
+    ByVal baselineUserManagedHeaders As Variant) As Boolean
+
+    Dim i As Long
+    Dim baseCanonical As String
+
+    ' 指定された固定ユーザー管理列は常にユーザー管理とみなす
+    For i = LBound(baselineUserManagedHeaders) To UBound(baselineUserManagedHeaders)
+        baseCanonical = CanonicalHeaderName(CStr(baselineUserManagedHeaders(i)))
+        If StrComp(canonicalHeader, baseCanonical, vbTextCompare) = 0 Then
+            IsUserManagedHeader = True
+            Exit Function
+        End If
+    Next i
+
+    ' それ以外はCSVに存在する列をCSV管理列として扱う
+    ' （新ファイル基準表だけに存在する列は転記マップに乗らないため、結果として保護される）
+    IsUserManagedHeader = Not srcHeaderMap.Exists(canonicalHeader)
+
+End Function
+
+Private Sub BuildExistingRowMap(ByVal wsDst As Worksheet, ByVal dstLastRow As Long, ByVal existingRowMap As Object)
+
+    Dim headerMap As Object
+    Dim rowNo As Long
+    Dim key As String
+
+    existingRowMap.RemoveAll
+    Set headerMap = CreateObject("Scripting.Dictionary")
+
+    BuildSourceHeaderMap wsDst, GetLastUsedCol(wsDst), headerMap
+    If Not headerMap.Exists(CanonicalHeaderName("ファイルID")) _
+       Or Not headerMap.Exists(CanonicalHeaderName("ファイル番号")) _
+       Or Not headerMap.Exists(CanonicalHeaderName("バーコード番号")) Then
+        Err.Raise vbObjectError + 2201, , "新ファイル基準表にキー列（ファイルID/ファイル番号/バーコード番号）が見つかりません。"
+    End If
+
+    For rowNo = 2 To dstLastRow
+        key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
+        If key <> "" Then
+            If Not existingRowMap.Exists(key) Then
+                existingRowMap.Add key, rowNo
+            End If
+        End If
+    Next rowNo
+
+End Sub
+
+Private Sub UpdateRowFromSourceByHeader( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsDst As Worksheet, _
+    ByVal srcRow As Long, _
+    ByVal dstRow As Long, _
+    ByVal srcHeaderMap As Object, _
+    ByVal srcToDstMap As Object)
+
+    Dim key As Variant
+    Dim srcCol As Long
+    Dim dstCol As Long
+
+    ' CSV由来列だけを上書きし、ユーザー管理列は触らない
+    For Each key In srcToDstMap.Keys
+        If srcHeaderMap.Exists(CStr(key)) Then
+            srcCol = CLng(srcHeaderMap(CStr(key)))
+            dstCol = CLng(srcToDstMap(CStr(key)))
+            wsDst.Cells(dstRow, dstCol).Value = wsSrc.Cells(srcRow, srcCol).Value
+        End If
+    Next key
+
+End Sub
+
+Private Sub AppendRowFromSourceByHeader( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsDst As Worksheet, _
+    ByVal srcRow As Long, _
+    ByVal dstRow As Long, _
+    ByVal srcHeaderMap As Object, _
+    ByVal srcToDstMap As Object)
+
+    ' 追加時もCSV由来列だけを書き込み、ユーザー管理列は空欄のまま確保する
+    UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, dstRow, srcHeaderMap, srcToDstMap
+
+End Sub
+
+Private Function BuildFileKeyFromSheetRow(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal headerMap As Object) As String
+
+    Dim fileId As String
+    Dim fileNo As String
+    Dim barcodeNo As String
+    Dim keyFileId As String
+    Dim keyFileNo As String
+    Dim keyBarcode As String
+
+    keyFileId = CanonicalHeaderName("ファイルID")
+    keyFileNo = CanonicalHeaderName("ファイル番号")
+    keyBarcode = CanonicalHeaderName("バーコード番号")
+
+    If Not headerMap.Exists(keyFileId) _
+       Or Not headerMap.Exists(keyFileNo) _
+       Or Not headerMap.Exists(keyBarcode) Then
+        BuildFileKeyFromSheetRow = ""
+        Exit Function
+    End If
+
+    fileId = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyFileId)))
+    fileNo = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyFileNo)))
+    barcodeNo = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyBarcode)))
+
+    If fileId = "" And fileNo = "" And barcodeNo = "" Then
+        BuildFileKeyFromSheetRow = ""
+    Else
+        BuildFileKeyFromSheetRow = BuildFileKey(fileId, fileNo, barcodeNo)
+    End If
+
+End Function
+
+'--------------------------------------------------------
+' 新ファイル基準表の「同期状態」列を更新する
+' 判定:
+' - 現行: 今回の目録CSVキー一覧に存在
+' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
+' - 未登録: ID系すべて空欄
+'--------------------------------------------------------
+Private Sub UpdateSyncStatusColumn(ByVal wsDst As Worksheet, ByVal sourceKeyMap As Object)
+
+    Dim headerMap As Object
+    Dim lastRow As Long
+    Dim rowNo As Long
+    Dim syncCol As Long
+    Dim key As String
+
+    If wsDst Is Nothing Then Exit Sub
+    If sourceKeyMap Is Nothing Then Exit Sub
+
+    Set headerMap = CreateObject("Scripting.Dictionary")
+    BuildHeaderMap wsDst, GetLastUsedCol(wsDst), headerMap
+
+    ' 「同期状態」列は必須列として確保
+    syncCol = EnsureColumnByHeader(wsDst, headerMap, "同期状態")
+
+    lastRow = GetLastUsedRow(wsDst)
+    If lastRow < 2 Then Exit Sub
+
+    For rowNo = 2 To lastRow
+        key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
+
+        If key <> "" And sourceKeyMap.Exists(key) Then
+            wsDst.Cells(rowNo, syncCol).Value = "現行"
+        ElseIf HasAnyFileIdentity(wsDst, rowNo, headerMap) Then
+            wsDst.Cells(rowNo, syncCol).Value = "削除候補"
+        Else
+            wsDst.Cells(rowNo, syncCol).Value = "未登録"
+        End If
+    Next rowNo
+
+End Sub
+
+'--------------------------------------------------------
+' ファイルID / ファイル番号 / バーコード番号 のいずれかが入っているか
+'--------------------------------------------------------
+Private Function HasAnyFileIdentity(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal headerMap As Object) As Boolean
+
+    HasAnyFileIdentity = Not IsFileIdentityBlank(ws, rowNo, headerMap)
+
+End Function
+
+'--------------------------------------------------------
+' ファイルID / ファイル番号 / バーコード番号 がすべて空欄か
+'--------------------------------------------------------
+Private Function IsFileIdentityBlank(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal headerMap As Object) As Boolean
+
+    Dim keyFileId As String
+    Dim keyFileNo As String
+    Dim keyBarcode As String
+    Dim fileId As String
+    Dim fileNo As String
+    Dim barcodeNo As String
+
+    keyFileId = CanonicalHeaderName("ファイルID")
+    keyFileNo = CanonicalHeaderName("ファイル番号")
+    keyBarcode = CanonicalHeaderName("バーコード番号")
+
+    If Not headerMap.Exists(keyFileId) _
+       Or Not headerMap.Exists(keyFileNo) _
+       Or Not headerMap.Exists(keyBarcode) Then
+        ' キー列不足時は誤判定防止のため「空欄扱い」に倒す
+        IsFileIdentityBlank = True
+        Exit Function
+    End If
+
+    fileId = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyFileId)))
+    fileNo = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyFileNo)))
+    barcodeNo = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyBarcode)))
+
+    IsFileIdentityBlank = (fileId = "" And fileNo = "" And barcodeNo = "")
+
+End Function
+
 Private Function EnsureColumnByHeader(ByVal ws As Worksheet, ByVal headerMap As Object, ByVal headerName As String) As Long
 
     Dim canonical As String
@@ -1116,6 +1359,19 @@ Private Function GetStep2HeaderCandidates(ByVal targetHeader As String) As Varia
         Case Else
             GetStep2HeaderCandidates = Array(targetHeader)
     End Select
+
+End Function
+
+Private Function HasArrayElements(ByVal values As Variant) As Boolean
+
+    On Error GoTo SafeExit
+    If IsArray(values) Then
+        HasArrayElements = (LBound(values) <= UBound(values))
+    End If
+    Exit Function
+
+SafeExit:
+    HasArrayElements = False
 
 End Function
 
@@ -1658,10 +1914,351 @@ ContinuePair:
 ContinueCellLoop:
     Next changedCell
 
+    ' 同じ変更イベント内で、年度（和暦）/保存期間に応じた廃棄年月日を自動更新する。
+    ' （Worksheet_Change 側の呼び出し漏れがあっても、この主処理経由で必ず反映されるようにする）
+    Call 新ファイル基準表_廃棄年月日自動計算(Target)
+
 ExitHandler:
     Application.EnableEvents = True
 
 End Sub
+
+'========================================================
+' 新ファイル基準表: 年度（和暦）/保存期間 変更時に廃棄年月日を自動計算
+' Worksheet_Change から呼び出す想定
+'========================================================
+Public Sub 新ファイル基準表_廃棄年月日自動計算(ByVal Target As Range)
+
+    Dim wsEdit As Worksheet
+    Dim warekiCol As Long
+    Dim saveTermCol As Long
+    Dim haikiCol As Long
+    Dim monitorRange As Range
+    Dim workRange As Range
+    Dim changedCell As Range
+    Dim rowMap As Object
+    Dim key As Variant
+    Dim rowNo As Long
+    Dim warekiText As String
+    Dim saveTermText As String
+    Dim calcResult As String
+    Dim prevEnableEvents As Boolean
+
+    If Target Is Nothing Then Exit Sub
+
+    On Error GoTo SafeExit
+    prevEnableEvents = Application.EnableEvents
+
+    Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    If wsEdit Is Nothing Then Exit Sub
+    If Target.Worksheet.Name <> wsEdit.Name Then Exit Sub
+
+    warekiCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates("年度（和暦）"))
+    saveTermCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates("保存期間"))
+    haikiCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), Array("廃棄年月日"))
+
+    If warekiCol <= 0 Or saveTermCol <= 0 Or haikiCol <= 0 Then Exit Sub
+
+    ' 監視対象（年度（和暦）列 / 保存期間列）のみを処理
+    Set monitorRange = Union( _
+        wsEdit.Range(wsEdit.Cells(2, warekiCol), wsEdit.Cells(wsEdit.Rows.Count, warekiCol)), _
+        wsEdit.Range(wsEdit.Cells(2, saveTermCol), wsEdit.Cells(wsEdit.Rows.Count, saveTermCol)))
+    Set workRange = Intersect(Target, monitorRange)
+    If workRange Is Nothing Then Exit Sub
+
+    Set rowMap = CreateObject("Scripting.Dictionary")
+    For Each changedCell In workRange.Cells
+        If Not rowMap.Exists(CStr(changedCell.Row)) Then
+            rowMap.Add CStr(changedCell.Row), CLng(changedCell.Row)
+        End If
+    Next changedCell
+
+    Application.EnableEvents = False
+
+    For Each key In rowMap.Keys
+        rowNo = CLng(rowMap(CStr(key)))
+        warekiText = CStr(wsEdit.Cells(rowNo, warekiCol).Value)
+        saveTermText = CStr(wsEdit.Cells(rowNo, saveTermCol).Value)
+
+        calcResult = CalculateHaikiDateText(warekiText, saveTermText)
+        wsEdit.Cells(rowNo, haikiCol).Value = calcResult
+    Next key
+
+SafeExit:
+    Application.EnableEvents = prevEnableEvents
+
+End Sub
+
+'--------------------------------------------------------
+' 廃棄年月日（R8.4.1 のような文字列）を計算して返す
+' 返却条件:
+' - 年度（和暦）/保存期間のいずれか空欄: 空文字
+' - 保存期間が継続/永年: 空文字
+' - 保存期間が随時: 年度末（翌年 3/31）
+' - 変換不能: 空文字
+'--------------------------------------------------------
+Private Function CalculateHaikiDateText(ByVal warekiText As String, ByVal saveTermText As String) As String
+
+    Dim eraName As String
+    Dim eraYear As Long
+    Dim startWesternYear As Long
+    Dim saveYears As Long
+    Dim isPermanent As Boolean
+    Dim isZuiji As Boolean
+    Dim haikiWesternYear As Long
+    Dim haikiWarekiLabel As String
+
+    CalculateHaikiDateText = ""
+
+    If Len(NormalizeBasicText(warekiText)) = 0 Then Exit Function
+    If Len(NormalizeBasicText(saveTermText)) = 0 Then Exit Function
+
+    If Not ParseWarekiYear(warekiText, eraName, eraYear, startWesternYear) Then Exit Function
+    saveYears = GetSaveTermYears(saveTermText, isPermanent, isZuiji)
+
+    ' 継続/永年 は空欄
+    If isPermanent Then Exit Function
+
+    ' 随時 は当該年度末（翌年 3/31）
+    If isZuiji Then
+        haikiWesternYear = startWesternYear + 1
+        haikiWarekiLabel = WesternYearToWarekiLabel(haikiWesternYear)
+        If Len(haikiWarekiLabel) = 0 Then Exit Function
+        CalculateHaikiDateText = haikiWarekiLabel & ".3.31"
+        Exit Function
+    End If
+
+    If saveYears <= 0 Then Exit Function
+
+    ' ルール: 廃棄年度 = 元年度 + 保存期間年数 + 1（次年度初日 4/1）
+    haikiWesternYear = startWesternYear + saveYears + 1
+    haikiWarekiLabel = WesternYearToWarekiLabel(haikiWesternYear)
+    If Len(haikiWarekiLabel) = 0 Then Exit Function
+
+    CalculateHaikiDateText = haikiWarekiLabel & ".4.1"
+
+End Function
+
+'--------------------------------------------------------
+' 年度（和暦）文字列を解析し、元号・年数・西暦開始年を返す
+' 対応入力例:
+' - 6 / 06 / R6 / r6 / R06 / 令和6 / 令和6年度
+' - H27 / h27 / H27年度 / 平成27 / 平成27年度
+' 数字のみは令和として解釈
+'--------------------------------------------------------
+Private Function ParseWarekiYear( _
+    ByVal warekiText As String, _
+    ByRef eraName As String, _
+    ByRef eraYear As Long, _
+    ByRef westernYear As Long) As Boolean
+
+    Dim s As String
+    Dim numberPart As String
+    Dim leading As String
+
+    ParseWarekiYear = False
+    eraName = ""
+    eraYear = 0
+    westernYear = 0
+
+    s = NormalizeBasicText(warekiText)
+    If Len(s) = 0 Then Exit Function
+
+    s = Replace(s, "年度", "")
+
+    If Left$(s, 2) = "令和" Then
+        eraName = "R"
+        numberPart = Mid$(s, 3)
+    ElseIf Left$(s, 2) = "平成" Then
+        eraName = "H"
+        numberPart = Mid$(s, 3)
+    Else
+        leading = UCase$(Left$(s, 1))
+        If leading = "R" Or leading = "H" Then
+            eraName = leading
+            numberPart = Mid$(s, 2)
+        ElseIf IsDigitsOnly(s) Then
+            ' 数字のみ入力は令和として解釈
+            eraName = "R"
+            numberPart = s
+        Else
+            Exit Function
+        End If
+    End If
+
+    numberPart = ExtractDigits(numberPart)
+    If Len(numberPart) = 0 Then Exit Function
+
+    eraYear = CLng(numberPart)
+    If eraYear <= 0 Then Exit Function
+
+    Select Case eraName
+        Case "R"
+            westernYear = 2018 + eraYear
+        Case "H"
+            westernYear = 1988 + eraYear
+        Case Else
+            Exit Function
+    End Select
+
+    ParseWarekiYear = True
+
+End Function
+
+'--------------------------------------------------------
+' 西暦開始年を和暦ラベル（R8 / H27）へ変換する
+'--------------------------------------------------------
+Private Function WesternYearToWarekiLabel(ByVal westernYear As Long) As String
+
+    If westernYear >= 2019 Then
+        WesternYearToWarekiLabel = "R" & CStr(westernYear - 2018)
+    ElseIf westernYear >= 1989 And westernYear <= 2018 Then
+        WesternYearToWarekiLabel = "H" & CStr(westernYear - 1988)
+    Else
+        WesternYearToWarekiLabel = ""
+    End If
+
+End Function
+
+'--------------------------------------------------------
+' 保存期間表記を年数へ変換する
+' 戻り値:
+' - 1/3/5/10 -> 年数
+' - 継続/永年 -> 0（isPermanent=True）
+' - 随時 -> 0（isZuiji=True）
+' - 変換不能 -> -1
+'--------------------------------------------------------
+Private Function GetSaveTermYears( _
+    ByVal saveTermText As String, _
+    ByRef isPermanent As Boolean, _
+    ByRef isZuiji As Boolean) As Long
+
+    Dim s As String
+    Dim digits As String
+    Dim yearsValue As Long
+
+    isPermanent = False
+    isZuiji = False
+    GetSaveTermYears = -1
+
+    s = NormalizeBasicText(saveTermText)
+    If Len(s) = 0 Then
+        GetSaveTermYears = 0
+        Exit Function
+    End If
+
+    If InStr(1, s, "継続", vbTextCompare) > 0 Or InStr(1, s, "永年", vbTextCompare) > 0 Then
+        isPermanent = True
+        GetSaveTermYears = 0
+        Exit Function
+    End If
+
+    If InStr(1, s, "随時", vbTextCompare) > 0 Then
+        isZuiji = True
+        GetSaveTermYears = 0
+        Exit Function
+    End If
+
+    s = Replace(s, "年", "")
+    s = Replace(s, "度", "")
+    digits = ExtractDigits(s)
+    If Len(digits) = 0 Then Exit Function
+
+    yearsValue = CLng(digits)
+    Select Case yearsValue
+        Case 1, 3, 5, 10
+            GetSaveTermYears = yearsValue
+        Case Else
+            GetSaveTermYears = -1
+    End Select
+
+End Function
+
+'--------------------------------------------------------
+' 共通: 前後空白・全角空白を除去し、全角英数字を半角へ正規化
+'--------------------------------------------------------
+Private Function NormalizeBasicText(ByVal textValue As String) As String
+
+    Dim s As String
+
+    s = CStr(textValue)
+    s = Trim$(s)
+    s = Replace(s, " ", "")
+    s = Replace(s, "　", "")
+    s = ToHalfWidthAlphaNumeric(s)
+    NormalizeBasicText = s
+
+End Function
+
+Private Function ToHalfWidthAlphaNumeric(ByVal s As String) As String
+
+    Dim i As Long
+    Dim zenkakuDigits As String
+    Dim hankakuDigits As String
+    Dim zenkakuUpper As String
+    Dim hankakuUpper As String
+    Dim zenkakuLower As String
+    Dim hankakuLower As String
+
+    zenkakuDigits = "０１２３４５６７８９"
+    hankakuDigits = "0123456789"
+    zenkakuUpper = "ＲＨ"
+    hankakuUpper = "RH"
+    zenkakuLower = "ｒｈ"
+    hankakuLower = "rh"
+
+    For i = 1 To Len(zenkakuDigits)
+        s = Replace(s, Mid$(zenkakuDigits, i, 1), Mid$(hankakuDigits, i, 1))
+    Next i
+
+    For i = 1 To Len(zenkakuUpper)
+        s = Replace(s, Mid$(zenkakuUpper, i, 1), Mid$(hankakuUpper, i, 1))
+    Next i
+
+    For i = 1 To Len(zenkakuLower)
+        s = Replace(s, Mid$(zenkakuLower, i, 1), Mid$(hankakuLower, i, 1))
+    Next i
+
+    ToHalfWidthAlphaNumeric = s
+
+End Function
+
+Private Function ExtractDigits(ByVal s As String) As String
+
+    Dim i As Long
+    Dim ch As String
+    Dim resultText As String
+
+    s = ToHalfWidthAlphaNumeric(s)
+
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If ch Like "#" Then resultText = resultText & ch
+    Next i
+
+    ExtractDigits = resultText
+
+End Function
+
+Private Function IsDigitsOnly(ByVal s As String) As Boolean
+
+    Dim i As Long
+    Dim ch As String
+
+    s = ToHalfWidthAlphaNumeric(s)
+    If Len(s) = 0 Then Exit Function
+
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If Not (ch Like "#") Then
+            IsDigitsOnly = False
+            Exit Function
+        End If
+    Next i
+
+    IsDigitsOnly = True
+
+End Function
 
 '========================================================
 ' 新ファイル基準表: 色名変更時に 2色名 へ同値反映
@@ -1759,62 +2356,20 @@ SafeExit:
 End Function
 
 '--------------------------------------------------------
-' 令和表記を西暦へ変換する
-' 対応例: R7 / r7 / R07 / 令和7 / 令和7年度
-' 変換式: 西暦 = 2018 + 令和年
+' 年度（和暦）を西暦へ変換する
+' 対応例: R7 / r7 / 令和7 / H27 / 平成27 / 6（令和6として解釈）
 ' 変換不可・空白時は空文字を返す
 '--------------------------------------------------------
 Private Function ConvertReiwaToWesternYear(ByVal warekiText As String) As String
 
-    Dim s As String
-    Dim numPart As String
-    Dim i As Long
-    Dim ch As String
-    Dim n As Long
+    Dim eraName As String
+    Dim eraYear As Long
+    Dim westernYear As Long
 
     ConvertReiwaToWesternYear = ""
-
-    s = Trim(CStr(warekiText))
-    If Len(s) = 0 Then Exit Function
-
-    ' 全角/半角スペースを除去
-    s = Replace(s, " ", "")
-    s = Replace(s, "　", "")
-
-    ' 接頭辞を除去（R / r / 令和）
-    If LCase$(Left$(s, 1)) = "r" Then
-        numPart = Mid$(s, 2)
-    ElseIf Left$(s, 2) = "令和" Then
-        numPart = Mid$(s, 3)
-    Else
-        Exit Function
+    If ParseWarekiYear(warekiText, eraName, eraYear, westernYear) Then
+        ConvertReiwaToWesternYear = CStr(westernYear)
     End If
-
-    ' 「年度」を除去
-    numPart = Replace(numPart, "年度", "")
-    numPart = Trim$(numPart)
-    If Len(numPart) = 0 Then Exit Function
-
-    ' 数字だけを抽出
-    For i = 1 To Len(numPart)
-        ch = Mid$(numPart, i, 1)
-        If ch Like "#" Then
-            ConvertReiwaToWesternYear = ConvertReiwaToWesternYear & ch
-        End If
-    Next i
-
-    If Len(ConvertReiwaToWesternYear) = 0 Then
-        ConvertReiwaToWesternYear = ""
-        Exit Function
-    End If
-
-    n = CLng(ConvertReiwaToWesternYear)
-    If n <= 0 Then
-        ConvertReiwaToWesternYear = ""
-        Exit Function
-    End If
-
-    ConvertReiwaToWesternYear = CStr(2018 + n)
 
 End Function
 
