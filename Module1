@@ -672,6 +672,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim srcHeaderMap As Object
     Dim existingDstHeaders As Object
     Dim existingRowMap As Object
+    Dim sourceKeyMap As Object
     Dim srcCol As Long
     Dim dstCol As Long
     Dim headerText As String
@@ -706,6 +707,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Set srcHeaderMap = CreateObject("Scripting.Dictionary")
     Set existingDstHeaders = CreateObject("Scripting.Dictionary")
     Set existingRowMap = CreateObject("Scripting.Dictionary")
+    Set sourceKeyMap = CreateObject("Scripting.Dictionary")
     Set validationTemplateMap = CreateObject("Scripting.Dictionary")
     Set formatTemplateMap = CreateObject("Scripting.Dictionary")
     Set columnWidthMap = CreateObject("Scripting.Dictionary")
@@ -743,10 +745,11 @@ Public Sub 手順2_新ファイル基準表を作成する()
         "媒体種別", _
         "保存番号", _
         "廃棄年月日", _
+        "同期状態", _
         "ファイルID")
 
     ' ユーザー管理列（CSV上書き対象外）
-    baselineUserManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1", "保存番号", "廃棄年月日")
+    baselineUserManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1", "保存番号", "廃棄年月日", "同期状態")
 
     ' 左側に追加したい独自列（必要時にここへ追記）
     additionalLeftDisplayHeaders = Array()
@@ -789,6 +792,11 @@ Public Sub 手順2_新ファイル基準表を作成する()
                 ' キー（ファイルID/ファイル番号/バーコード番号）不足行は更新不可のためスキップ
                 skippedNoKeyCount = skippedNoKeyCount + 1
                 GoTo ContinueNextSourceRow
+            End If
+
+            ' 今回の目録CSVに存在するキーとして記録（同期状態判定で利用）
+            If Not sourceKeyMap.Exists(key) Then
+                sourceKeyMap.Add key, True
             End If
 
             If existingRowMap.Exists(key) Then
@@ -850,7 +858,10 @@ ContinueNextSourceRow:
 
     leftFixedCount = targetCol - 1
 
-    ' 6) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
+    ' 6) 同期状態列を更新（現行 / 削除候補 / 未登録）
+    UpdateSyncStatusColumn wsDst, sourceKeyMap
+
+    ' 7) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
     If didUpdateRows Then
         ConvertAnnualUseDivisionValues wsDst, updateEndRow, updateStartRow
         SyncSecondColorNameFromColor wsDst, updateStartRow, updateEndRow
@@ -861,7 +872,7 @@ ContinueNextSourceRow:
         SyncSecondColorNameFromColor wsDst, dstLastRow + 1, appendRow - 1
     End If
 
-    ' 7) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
+    ' 8) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
     If leftFixedCount > 0 Then
         With wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, leftFixedCount))
             .Font.Bold = True
@@ -873,13 +884,13 @@ ContinueNextSourceRow:
     srcLastCol = GetLastUsedCol(wsDst)
     wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol)).AutoFilter
 
-    ' 8) 左側固定対象の不足見出しを通知用に収集（列の表示状態は変更しない）
+    ' 9) 左側固定対象の不足見出しを通知用に収集（列の表示状態は変更しない）
     HideKeyColumnsForStep2 wsDst, displayHeaders, missingHeadersText
 
-    ' 9) タイトルがある行だけ通し番号を再採番
+    ' 10) タイトルがある行だけ通し番号を再採番
     ReindexSerial_NewFileStandard wsDst
 
-    ' 10) 入力規則を見出し名ベースで再適用（列挿入/並び替え後の列位置へ追従）
+    ' 11) 入力規則を見出し名ベースで再適用（列挿入/並び替え後の列位置へ追従）
     ReapplyValidationFromTemplate wsDst, validationTemplateMap, wsValidationTemplate
     ' 条件付き書式/列幅を見出し名ベースで再適用
     ReapplyFormatAndWidthFromTemplate wsDst, formatTemplateMap, columnWidthMap, wsFormatTemplate
@@ -1179,6 +1190,88 @@ Private Function BuildFileKeyFromSheetRow(ByVal ws As Worksheet, ByVal rowNo As 
     Else
         BuildFileKeyFromSheetRow = BuildFileKey(fileId, fileNo, barcodeNo)
     End If
+
+End Function
+
+'--------------------------------------------------------
+' 新ファイル基準表の「同期状態」列を更新する
+' 判定:
+' - 現行: 今回の目録CSVキー一覧に存在
+' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
+' - 未登録: ID系すべて空欄
+'--------------------------------------------------------
+Private Sub UpdateSyncStatusColumn(ByVal wsDst As Worksheet, ByVal sourceKeyMap As Object)
+
+    Dim headerMap As Object
+    Dim lastRow As Long
+    Dim rowNo As Long
+    Dim syncCol As Long
+    Dim key As String
+
+    If wsDst Is Nothing Then Exit Sub
+    If sourceKeyMap Is Nothing Then Exit Sub
+
+    Set headerMap = CreateObject("Scripting.Dictionary")
+    BuildHeaderMap wsDst, GetLastUsedCol(wsDst), headerMap
+
+    ' 「同期状態」列は必須列として確保
+    syncCol = EnsureColumnByHeader(wsDst, headerMap, "同期状態")
+
+    lastRow = GetLastUsedRow(wsDst)
+    If lastRow < 2 Then Exit Sub
+
+    For rowNo = 2 To lastRow
+        key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
+
+        If key <> "" And sourceKeyMap.Exists(key) Then
+            wsDst.Cells(rowNo, syncCol).Value = "現行"
+        ElseIf HasAnyFileIdentity(wsDst, rowNo, headerMap) Then
+            wsDst.Cells(rowNo, syncCol).Value = "削除候補"
+        Else
+            wsDst.Cells(rowNo, syncCol).Value = "未登録"
+        End If
+    Next rowNo
+
+End Sub
+
+'--------------------------------------------------------
+' ファイルID / ファイル番号 / バーコード番号 のいずれかが入っているか
+'--------------------------------------------------------
+Private Function HasAnyFileIdentity(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal headerMap As Object) As Boolean
+
+    HasAnyFileIdentity = Not IsFileIdentityBlank(ws, rowNo, headerMap)
+
+End Function
+
+'--------------------------------------------------------
+' ファイルID / ファイル番号 / バーコード番号 がすべて空欄か
+'--------------------------------------------------------
+Private Function IsFileIdentityBlank(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal headerMap As Object) As Boolean
+
+    Dim keyFileId As String
+    Dim keyFileNo As String
+    Dim keyBarcode As String
+    Dim fileId As String
+    Dim fileNo As String
+    Dim barcodeNo As String
+
+    keyFileId = CanonicalHeaderName("ファイルID")
+    keyFileNo = CanonicalHeaderName("ファイル番号")
+    keyBarcode = CanonicalHeaderName("バーコード番号")
+
+    If Not headerMap.Exists(keyFileId) _
+       Or Not headerMap.Exists(keyFileNo) _
+       Or Not headerMap.Exists(keyBarcode) Then
+        ' キー列不足時は誤判定防止のため「空欄扱い」に倒す
+        IsFileIdentityBlank = True
+        Exit Function
+    End If
+
+    fileId = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyFileId)))
+    fileNo = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyFileNo)))
+    barcodeNo = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyBarcode)))
+
+    IsFileIdentityBlank = (fileId = "" And fileNo = "" And barcodeNo = "")
 
 End Function
 
