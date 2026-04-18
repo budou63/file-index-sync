@@ -969,6 +969,328 @@ Public Sub SyncSecondColorNameFromColor( _
 
 End Sub
 
+'========================================================
+' ｎ＋1 フラグ行から次年度フォルダ行を生成する
+'========================================================
+Public Sub ｎ＋1_次年度フォルダ生成()
+
+    Dim wsDst As Worksheet
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim rowNo As Long
+    Dim appendRow As Long
+    Dim targetRows As Collection
+    Dim generatedCount As Long
+    Dim targetCount As Long
+    Dim prevScreenUpdating As Boolean
+    Dim prevEnableEvents As Boolean
+
+    Dim colNPlus1 As Long
+    Dim colWareki As Long
+    Dim colCreateWareki As Long
+    Dim colTitle As Long
+    Dim colSubTitle As Long
+    Dim colSpineTitle As Long
+    Dim colSpineSubTitle As Long
+    Dim colPublicTitle As Long
+    Dim colPublicSubTitle As Long
+    Dim colSyncStatus As Long
+    Dim colHaiki As Long
+    Dim headerMap As Object
+
+    On Error GoTo ErrorHandler
+
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    Set targetRows = New Collection
+    Set headerMap = CreateObject("Scripting.Dictionary")
+
+    lastCol = GetLastUsedCol(wsDst)
+    lastRow = GetLastUsedRow(wsDst)
+    If lastCol <= 0 Or lastRow < 2 Then
+        MsgBox "新ファイル基準表に対象データがありません。", vbInformation
+        Exit Sub
+    End If
+
+    BuildHeaderMap wsDst, lastCol, headerMap
+
+    colNPlus1 = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates("ｎ＋1"))
+    colWareki = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    colCreateWareki = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates("作成年度（和暦）"))
+    colTitle = FindHeaderColumn(wsDst, lastCol, Array("タイトル"))
+    colSubTitle = FindHeaderColumn(wsDst, lastCol, Array("サブタイトル"))
+    colSpineTitle = FindHeaderColumn(wsDst, lastCol, Array("背表紙用タイトル"))
+    colSpineSubTitle = FindHeaderColumn(wsDst, lastCol, Array("背表紙用サブタイトル"))
+    colPublicTitle = FindHeaderColumn(wsDst, lastCol, Array("公開用タイトル"))
+    colPublicSubTitle = FindHeaderColumn(wsDst, lastCol, Array("公開用サブタイトル"))
+    colSyncStatus = EnsureColumnByHeader(wsDst, headerMap, "同期状態")
+    colHaiki = EnsureColumnByHeader(wsDst, headerMap, "廃棄年月日")
+
+    If colNPlus1 <= 0 Then
+        MsgBox "ｎ＋1 列が見つかりません。", vbExclamation
+        Exit Sub
+    End If
+
+    For rowNo = 2 To lastRow
+        If IsNPlus1Flag(GetTrimmedCell(wsDst, rowNo, colNPlus1)) Then
+            targetRows.Add rowNo
+        End If
+    Next rowNo
+
+    targetCount = targetRows.Count
+    If targetCount = 0 Then
+        MsgBox "ｎ＋1 フラグがある行はありません。", vbInformation
+        Exit Sub
+    End If
+
+    prevScreenUpdating = Application.ScreenUpdating
+    prevEnableEvents = Application.EnableEvents
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    For rowNo = 1 To targetRows.Count
+        appendRow = GetLastUsedRow(wsDst) + 1
+        wsDst.Cells(appendRow, 1).Resize(1, lastCol).Value = _
+            wsDst.Cells(CLng(targetRows(rowNo)), 1).Resize(1, lastCol).Value
+
+        If colWareki > 0 Then
+            wsDst.Cells(appendRow, colWareki).Value = IncrementWarekiYearText(CStr(wsDst.Cells(appendRow, colWareki).Value))
+        End If
+        If colCreateWareki > 0 Then
+            wsDst.Cells(appendRow, colCreateWareki).Value = IncrementWarekiYearText(CStr(wsDst.Cells(appendRow, colCreateWareki).Value))
+        End If
+
+        IncrementTitleCellIfExists wsDst, appendRow, colTitle
+        IncrementTitleCellIfExists wsDst, appendRow, colSubTitle
+        IncrementTitleCellIfExists wsDst, appendRow, colSpineTitle
+        IncrementTitleCellIfExists wsDst, appendRow, colSpineSubTitle
+        IncrementTitleCellIfExists wsDst, appendRow, colPublicTitle
+        IncrementTitleCellIfExists wsDst, appendRow, colPublicSubTitle
+
+        ClearIdentityColumnsForNewRow wsDst, appendRow
+        wsDst.Cells(appendRow, colSyncStatus).Value = "未登録"
+        wsDst.Cells(appendRow, colHaiki).ClearContents
+        wsDst.Cells(appendRow, colNPlus1).ClearContents
+
+        generatedCount = generatedCount + 1
+    Next rowNo
+
+    ReindexSerial_NewFileStandard wsDst
+
+SafeExit:
+    Application.ScreenUpdating = prevScreenUpdating
+    Application.EnableEvents = prevEnableEvents
+
+    If generatedCount > 0 Then
+        MsgBox "次年度フォルダ行を生成しました。" & vbCrLf & _
+               "対象件数: " & targetCount & " 件" & vbCrLf & _
+               "生成件数: " & generatedCount & " 件" & vbCrLf & _
+               "年度表記を変換できなかったタイトルはそのままコピーしています。", vbInformation
+    End If
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "次年度フォルダ生成中にエラーが発生しました: " & Err.Description, vbExclamation
+    Resume SafeExit
+
+End Sub
+
+Private Function IsNPlus1Flag(ByVal flagText As String) As Boolean
+
+    Dim s As String
+
+    s = NormalizeBasicText(flagText)
+
+    Select Case UCase$(s)
+        Case "1", "○", "◯", "✓", "TRUE", "レ"
+            IsNPlus1Flag = True
+        Case Else
+            IsNPlus1Flag = False
+    End Select
+
+End Function
+
+Private Function IncrementWarekiYearText(ByVal warekiText As String) As String
+
+    Dim eraName As String
+    Dim eraYear As Long
+    Dim westernYear As Long
+
+    If ParseWarekiYear(warekiText, eraName, eraYear, westernYear) Then
+        IncrementWarekiYearText = WesternYearToWarekiLabel(westernYear + 1)
+    Else
+        IncrementWarekiYearText = warekiText
+    End If
+
+End Function
+
+Private Sub IncrementTitleCellIfExists(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long)
+
+    If ws Is Nothing Then Exit Sub
+    If colNo <= 0 Then Exit Sub
+
+    ws.Cells(rowNo, colNo).Value = IncrementYearExpressionsInTitle(CStr(ws.Cells(rowNo, colNo).Value))
+
+End Sub
+
+Private Function IncrementYearExpressionsInTitle(ByVal titleText As String) As String
+
+    Dim s As String
+
+    s = CStr(titleText)
+    If Len(s) = 0 Then
+        IncrementYearExpressionsInTitle = s
+        Exit Function
+    End If
+
+    s = IncrementWarekiRangeExpressions(s)
+    s = IncrementSingleWarekiToken(s)
+    IncrementYearExpressionsInTitle = s
+
+End Function
+
+Private Function IncrementWarekiRangeExpressions(ByVal inputText As String) As String
+
+    Dim s As String
+
+    s = inputText
+    s = IncrementWarekiRangePattern(s, "(令和)\s*(\d+)\s*(から|～|・|/)\s*(\d+)(年度|年)?", "令和")
+    s = IncrementWarekiRangePattern(s, "(平成)\s*(\d+)\s*(から|～|・|/)\s*(\d+)(年度|年)?", "平成")
+    s = IncrementWarekiRangePattern(s, "([Rr])\s*(\d+)\s*(から|～|・|/)\s*([Rr])?\s*(\d+)(年度|年)?", "R")
+    s = IncrementWarekiRangePattern(s, "([Hh])\s*(\d+)\s*(から|～|・|/)\s*([Hh])?\s*(\d+)(年度|年)?", "H")
+    IncrementWarekiRangeExpressions = s
+
+End Function
+
+Private Function IncrementWarekiRangePattern(ByVal inputText As String, ByVal patternText As String, ByVal eraType As String) As String
+
+    Dim re As Object
+    Dim matches As Object
+    Dim m As Object
+    Dim idx As Long
+    Dim s As String
+    Dim firstYear As Long
+    Dim secondYear As Long
+    Dim sepText As String
+    Dim suffixText As String
+    Dim replaced As String
+
+    s = inputText
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = True
+    re.IgnoreCase = True
+    re.Pattern = patternText
+
+    Set matches = re.Execute(s)
+    If matches.Count = 0 Then
+        IncrementWarekiRangePattern = s
+        Exit Function
+    End If
+
+    For idx = matches.Count - 1 To 0 Step -1
+        Set m = matches(idx)
+        If eraType = "令和" Or eraType = "平成" Then
+            firstYear = CLng(m.SubMatches(1))
+            sepText = CStr(m.SubMatches(2))
+            secondYear = CLng(m.SubMatches(3))
+            suffixText = NzString(m.SubMatches(4))
+            replaced = eraType & CStr(firstYear + 1) & sepText & CStr(secondYear + 1) & suffixText
+        Else
+            firstYear = CLng(m.SubMatches(1))
+            sepText = CStr(m.SubMatches(2))
+            secondYear = CLng(m.SubMatches(4))
+            suffixText = NzString(m.SubMatches(5))
+            replaced = eraType & CStr(firstYear + 1) & sepText & eraType & CStr(secondYear + 1) & suffixText
+        End If
+
+        s = Left$(s, m.FirstIndex) & replaced & Mid$(s, m.FirstIndex + m.Length + 1)
+    Next idx
+
+    IncrementWarekiRangePattern = s
+
+End Function
+
+Private Function IncrementSingleWarekiToken(ByVal inputText As String) As String
+
+    Dim s As String
+
+    s = inputText
+    s = IncrementSinglePattern(s, "令和\s*(\d+)(年度|年)?", "令和")
+    s = IncrementSinglePattern(s, "平成\s*(\d+)(年度|年)?", "平成")
+    s = IncrementSinglePattern(s, "[Rr]\s*(\d+)(年度|年)?", "R")
+    s = IncrementSinglePattern(s, "[Hh]\s*(\d+)(年度|年)?", "H")
+    IncrementSingleWarekiToken = s
+
+End Function
+
+Private Function IncrementSinglePattern(ByVal inputText As String, ByVal patternText As String, ByVal prefixText As String) As String
+
+    Dim re As Object
+    Dim matches As Object
+    Dim m As Object
+    Dim idx As Long
+    Dim yearNo As Long
+    Dim suffixText As String
+    Dim replaced As String
+    Dim s As String
+
+    s = inputText
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = True
+    re.IgnoreCase = True
+    re.Pattern = patternText
+
+    Set matches = re.Execute(s)
+    If matches.Count = 0 Then
+        IncrementSinglePattern = s
+        Exit Function
+    End If
+
+    For idx = matches.Count - 1 To 0 Step -1
+        Set m = matches(idx)
+        yearNo = CLng(m.SubMatches(0))
+        suffixText = NzString(m.SubMatches(1))
+        replaced = prefixText & CStr(yearNo + 1) & suffixText
+        s = Left$(s, m.FirstIndex) & replaced & Mid$(s, m.FirstIndex + m.Length + 1)
+    Next idx
+
+    IncrementSinglePattern = s
+
+End Function
+
+Private Sub ClearIdentityColumnsForNewRow(ByVal ws As Worksheet, ByVal rowNo As Long)
+
+    Dim clearHeaders As Variant
+    Dim i As Long
+    Dim colNo As Long
+    Dim lastCol As Long
+
+    If ws Is Nothing Then Exit Sub
+
+    clearHeaders = Array( _
+        "ファイルID", "ファイル番号", "バーコード番号", _
+        "登録者メンバーID", "登録日時", _
+        "更新者メンバーID", "更新日時", _
+        "引継処理日", "棚卸処理日", "廃棄処理日", _
+        "履歴番号", "履歴管理コメント")
+
+    lastCol = GetLastUsedCol(ws)
+    For i = LBound(clearHeaders) To UBound(clearHeaders)
+        colNo = FindHeaderColumn(ws, lastCol, Array(CStr(clearHeaders(i))))
+        If colNo > 0 Then ws.Cells(rowNo, colNo).ClearContents
+    Next i
+
+End Sub
+
+Private Function NzString(ByVal v As Variant) As String
+
+    If IsNull(v) Then
+        NzString = ""
+    Else
+        NzString = CStr(v)
+    End If
+
+End Function
+
 Public Sub 通し番号_再採番_新ファイル基準表()
 
     On Error GoTo ErrorHandler
