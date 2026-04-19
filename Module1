@@ -1475,6 +1475,358 @@ Private Sub UpdateRowFromSourceByHeader( _
             beforeValue = targetCell.Value
             afterValue = wsSrc.Cells(srcRow, srcCol).Value
 
+            ' 見出しごとの意味正規化を適用して差分判定する
+            ' （毎年度利用区分は 1/2 と 毎年作成/単年のみ を同値として扱う）
+            beforeCompare = NormalizeValueForUpdateCompare(CStr(key), beforeValue)
+            afterCompare = NormalizeValueForUpdateCompare(CStr(key), afterValue)
+
+            If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
+                targetCell.Value = afterValue
+                ApplyChangedCellHighlightAndComment targetCell, beforeValue, afterValue
+            Else
+                targetCell.Value = afterValue
+                ClearChangedCellHighlightAndComment targetCell
+            End If
+        End If
+    Next key
+
+End Sub
+
+Private Sub AppendRowFromSourceByHeader( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsDst As Worksheet, _
+    ByVal srcRow As Long, _
+    ByVal dstRow As Long, _
+    ByVal srcHeaderMap As Object, _
+    ByVal srcToDstMap As Object)
+
+    Dim key As Variant
+    Dim srcCol As Long
+    Dim dstCol As Long
+
+    ' 追加時は通常書式のまま値を書き込む（赤字・コメントは付与しない）
+    For Each key In srcToDstMap.Keys
+        If srcHeaderMap.Exists(CStr(key)) Then
+            srcCol = CLng(srcHeaderMap(CStr(key)))
+            dstCol = CLng(srcToDstMap(CStr(key)))
+            wsDst.Cells(dstRow, dstCol).Value = wsSrc.Cells(srcRow, srcCol).Value
+        End If
+    Next key
+
+End Sub
+
+'--------------------------------------------------------
+' 更新判定用の見出し別正規化
+' - 通常列: NormalizeForDiffCompare
+' - 毎年度利用区分: 1/2 と 毎年作成/単年のみ を同値化
+'--------------------------------------------------------
+Private Function NormalizeValueForUpdateCompare(ByVal headerName As String, ByVal rawValue As Variant) As String
+
+    Dim normalized As String
+    Dim compact As String
+
+    normalized = NormalizeForDiffCompare(rawValue)
+
+    If IsAnnualUseDivisionHeader(headerName) Then
+        compact = Replace(normalized, " ", "")
+        compact = Replace(compact, "　", "")
+
+        Select Case compact
+            Case "1", "毎年作成"
+                NormalizeValueForUpdateCompare = "毎年作成"
+                Exit Function
+            Case "2", "単年のみ"
+                NormalizeValueForUpdateCompare = "単年のみ"
+                Exit Function
+        End Select
+    End If
+
+    NormalizeValueForUpdateCompare = normalized
+
+End Function
+
+Private Function IsAnnualUseDivisionHeader(ByVal headerName As String) As Boolean
+
+    Dim canonical As String
+
+    canonical = CanonicalHeaderName(headerName)
+
+    If canonical = CanonicalHeaderName("毎年度利用区分1:毎年作成 2:単年のみ") Then
+        IsAnnualUseDivisionHeader = True
+    ElseIf canonical = CanonicalHeaderName("毎年度利用区分") Then
+        IsAnnualUseDivisionHeader = True
+    Else
+        IsAnnualUseDivisionHeader = False
+    End If
+
+End Function
+
+'--------------------------------------------------------
+' 差分ありセルへ「赤字＋コメント」を適用する
+'--------------------------------------------------------
+Private Sub ApplyChangedCellHighlightAndComment(ByVal targetCell As Range, ByVal beforeValue As Variant, ByVal afterValue As Variant)
+
+    Dim commentText As String
+
+    If targetCell Is Nothing Then Exit Sub
+
+    targetCell.Font.Color = RGB(255, 0, 0)
+
+    commentText = "更新前: " & CStr(beforeValue) & vbCrLf & _
+                  "更新後: " & CStr(afterValue) & vbCrLf & _
+                  "更新日時: " & Format$(Now, "yyyy/mm/dd hh:nn:ss")
+
+    SafeDeleteComment targetCell
+    SafeAddComment targetCell, commentText
+
+End Sub
+
+'--------------------------------------------------------
+' 差分なしセルの赤字・コメントを通常状態へ戻す
+'--------------------------------------------------------
+Private Sub ClearChangedCellHighlightAndComment(ByVal targetCell As Range)
+
+    If targetCell Is Nothing Then Exit Sub
+
+    targetCell.Font.ColorIndex = xlColorIndexAutomatic
+    SafeDeleteComment targetCell
+
+End Sub
+
+'--------------------------------------------------------
+' コメントを安全に削除する（存在しない場合は無視）
+'--------------------------------------------------------
+Private Sub SafeDeleteComment(ByVal targetCell As Range)
+
+    On Error Resume Next
+    If Not targetCell.Comment Is Nothing Then targetCell.Comment.Delete
+    On Error GoTo 0
+
+End Sub
+
+'--------------------------------------------------------
+' コメントを安全に追加する
+'--------------------------------------------------------
+Private Sub SafeAddComment(ByVal targetCell As Range, ByVal commentText As String)
+
+    On Error Resume Next
+    targetCell.AddComment commentText
+    On Error GoTo 0
+
+End Sub
+
+Private Function BuildFileKeyFromSheetRow(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal headerMap As Object) As String
+
+    Dim fileId As String
+    Dim fileNo As String
+    Dim barcodeNo As String
+    Dim keyFileId As String
+    Dim keyFileNo As String
+    Dim keyBarcode As String
+
+    keyFileId = CanonicalHeaderName("ファイルID")
+    keyFileNo = CanonicalHeaderName("ファイル番号")
+    keyBarcode = CanonicalHeaderName("バーコード番号")
+
+    If Not headerMap.Exists(keyFileId) _
+       Or Not headerMap.Exists(keyFileNo) _
+       Or Not headerMap.Exists(keyBarcode) Then
+        BuildFileKeyFromSheetRow = ""
+        Exit Function
+    End If
+
+    fileId = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyFileId)))
+    fileNo = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyFileNo)))
+    barcodeNo = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyBarcode)))
+
+    If fileId = "" And fileNo = "" And barcodeNo = "" Then
+        BuildFileKeyFromSheetRow = ""
+    Else
+        BuildFileKeyFromSheetRow = BuildFileKey(fileId, fileNo, barcodeNo)
+    End If
+
+End Function
+
+'--------------------------------------------------------
+' 新ファイル基準表の「同期状態」列を更新する
+' 判定:
+' - 現行: 今回の目録CSVキー一覧に存在
+' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
+' - 未登録: ID系すべて空欄
+'--------------------------------------------------------
+Private Sub UpdateSyncStatusColumn(ByVal wsDst As Worksheet, ByVal sourceKeyMap As Object)
+
+    Dim headerMap As Object
+    Dim lastRow As Long
+    Dim rowNo As Long
+    Dim syncCol As Long
+    Dim key As String
+
+    If wsDst Is Nothing Then Exit Sub
+    If sourceKeyMap Is Nothing Then Exit Sub
+
+    Set headerMap = CreateObject("Scripting.Dictionary")
+    BuildHeaderMap wsDst, GetLastUsedCol(wsDst), headerMap
+
+    ' 「同期状態」列は必須列として確保
+    syncCol = EnsureColumnByHeader(wsDst, headerMap, "同期状態")
+
+    lastRow = GetLastUsedRow(wsDst)
+    If lastRow < 2 Then Exit Sub
+
+    For rowNo = 2 To lastRow
+        key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
+
+        If key <> "" And sourceKeyMap.Exists(key) Then
+            wsDst.Cells(rowNo, syncCol).Value = "現行"
+        ElseIf HasAnyFileIdentity(wsDst, rowNo, headerMap) Then
+            wsDst.Cells(rowNo, syncCol).Value = "削除候補"
+        Else
+            wsDst.Cells(rowNo, syncCol).Value = "未登録"
+        End If
+    Next rowNo
+
+End Sub
+
+'--------------------------------------------------------
+' ファイルID / ファイル番号 / バーコード番号 のいずれかが入っているか
+'--------------------------------------------------------
+Private Function HasAnyFileIdentity(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal headerMap As Object) As Boolean
+
+    HasAnyFileIdentity = Not IsFileIdentityBlank(ws, rowNo, headerMap)
+
+End Function
+
+'--------------------------------------------------------
+' ファイルID / ファイル番号 / バーコード番号 がすべて空欄か
+'--------------------------------------------------------
+Private Function IsFileIdentityBlank(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal headerMap As Object) As Boolean
+
+    Dim keyFileId As String
+    Dim keyFileNo As String
+    Dim keyBarcode As String
+    Dim fileId As String
+    Dim fileNo As String
+    Dim barcodeNo As String
+
+    keyFileId = CanonicalHeaderName("ファイルID")
+    keyFileNo = CanonicalHeaderName("ファイル番号")
+    keyBarcode = CanonicalHeaderName("バーコード番号")
+
+    If Not headerMap.Exists(keyFileId) _
+       Or Not headerMap.Exists(keyFileNo) _
+       Or Not headerMap.Exists(keyBarcode) Then
+        ' キー列不足時は誤判定防止のため「空欄扱い」に倒す
+        IsFileIdentityBlank = True
+        Exit Function
+    End If
+
+    fileId = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyFileId)))
+    fileNo = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyFileNo)))
+    barcodeNo = GetTrimmedCell(ws, rowNo, CLng(headerMap(keyBarcode)))
+
+    IsFileIdentityBlank = (fileId = "" And fileNo = "" And barcodeNo = "")
+
+End Function
+
+Private Sub BuildSourceHeaderMap(ByVal wsSrc As Worksheet, ByVal srcLastCol As Long, ByVal srcHeaderMap As Object)
+
+    Dim srcCol As Long
+    Dim headerText As String
+    Dim canonical As String
+
+    srcHeaderMap.RemoveAll
+
+    For srcCol = 1 To srcLastCol
+        headerText = Trim$(CStr(wsSrc.Cells(1, srcCol).Value))
+        If headerText <> "" Then
+            canonical = CanonicalHeaderName(headerText)
+            If Not srcHeaderMap.Exists(canonical) Then
+                srcHeaderMap.Add canonical, srcCol
+            End If
+        End If
+    Next srcCol
+
+End Sub
+
+Private Function IsUserManagedHeader( _
+    ByVal canonicalHeader As String, _
+    ByVal srcHeaderMap As Object, _
+    ByVal baselineUserManagedHeaders As Variant) As Boolean
+
+    Dim i As Long
+    Dim baseCanonical As String
+
+    ' 指定された固定ユーザー管理列は常にユーザー管理とみなす
+    For i = LBound(baselineUserManagedHeaders) To UBound(baselineUserManagedHeaders)
+        baseCanonical = CanonicalHeaderName(CStr(baselineUserManagedHeaders(i)))
+        If StrComp(canonicalHeader, baseCanonical, vbTextCompare) = 0 Then
+            IsUserManagedHeader = True
+            Exit Function
+        End If
+    Next i
+
+    ' それ以外はCSVに存在する列をCSV管理列として扱う
+    ' （新ファイル基準表だけに存在する列は転記マップに乗らないため、結果として保護される）
+    IsUserManagedHeader = Not srcHeaderMap.Exists(canonicalHeader)
+
+End Function
+
+Private Sub BuildExistingRowMap(ByVal wsDst As Worksheet, ByVal dstLastRow As Long, ByVal existingRowMap As Object)
+
+    Dim headerMap As Object
+    Dim rowNo As Long
+    Dim key As String
+
+    existingRowMap.RemoveAll
+    Set headerMap = CreateObject("Scripting.Dictionary")
+
+    BuildSourceHeaderMap wsDst, GetLastUsedCol(wsDst), headerMap
+    If Not headerMap.Exists(CanonicalHeaderName("ファイルID")) _
+       Or Not headerMap.Exists(CanonicalHeaderName("ファイル番号")) _
+       Or Not headerMap.Exists(CanonicalHeaderName("バーコード番号")) Then
+        Err.Raise vbObjectError + 2201, , "新ファイル基準表にキー列（ファイルID/ファイル番号/バーコード番号）が見つかりません。"
+    End If
+
+    For rowNo = 2 To dstLastRow
+        key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
+        If key <> "" Then
+            If Not existingRowMap.Exists(key) Then
+                existingRowMap.Add key, rowNo
+            End If
+        End If
+    Next rowNo
+
+End Sub
+
+Private Sub UpdateRowFromSourceByHeader( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsDst As Worksheet, _
+    ByVal srcRow As Long, _
+    ByVal dstRow As Long, _
+    ByVal srcHeaderMap As Object, _
+    ByVal srcToDstMap As Object)
+
+    Dim key As Variant
+    Dim srcCol As Long
+    Dim dstCol As Long
+    Dim beforeValue As Variant
+    Dim afterValue As Variant
+    Dim beforeCompare As String
+    Dim afterCompare As String
+    Dim targetCell As Range
+
+    ' CSV由来列だけを上書きし、ユーザー管理列は触らない
+    ' さらに、実際に差分があるセルだけ赤字＋コメントを付与する
+    For Each key In srcToDstMap.Keys
+        If srcHeaderMap.Exists(CStr(key)) Then
+            srcCol = CLng(srcHeaderMap(CStr(key)))
+            dstCol = CLng(srcToDstMap(CStr(key)))
+
+            Set targetCell = wsDst.Cells(dstRow, dstCol)
+            beforeValue = targetCell.Value
+            afterValue = wsSrc.Cells(srcRow, srcCol).Value
+
             beforeCompare = NormalizeForDiffCompare(CStr(beforeValue))
             afterCompare = NormalizeForDiffCompare(CStr(afterValue))
 
