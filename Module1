@@ -4,6 +4,7 @@ Private Const SHEET_MOKUROKU_CSV As String = "目録CSV"
 Private Const SHEET_NEW_FILE_STANDARD As String = "新ファイル基準表"
 Private Const SHEET_CODE_MANAGEMENT As String = "コード管理CSV"
 Private Const SHEET_DIFF_IMPORT As String = "差分インポートCSV"
+Private Const DEBUG_MODE As Boolean = False
 
 Public Sub 新ファイル基準表生成()
 
@@ -3734,6 +3735,26 @@ Public Sub 旧基準表_継続文書移行()
     Dim movedCount As Long
     Dim class2Value As String
     Dim needCloseOldBook As Boolean
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim oldDisplayAlerts As Boolean
+    Dim oldCalculation As XlCalculation
+    Dim oldStatusBar As Variant
+    Dim oldMaxCol As Long
+    Dim newLastCol As Long
+    Dim oldData As Variant
+    Dim newData As Variant
+    Dim oldRowCount As Long
+    Dim newRowCount As Long
+    Dim i As Long
+    Dim existingRows As Collection
+    Dim groupedByClass2 As Object
+    Dim orderedItems As Collection
+    Dim oneItem As Variant
+    Dim newRowValues As Variant
+    Dim writeArray As Variant
+    Dim outRow As Long
+    Dim clearLastRow As Long
 
     On Error GoTo ErrorHandler
 
@@ -3741,8 +3762,20 @@ Public Sub 旧基準表_継続文書移行()
         Exit Sub
     End If
 
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    oldDisplayAlerts = Application.DisplayAlerts
+    oldCalculation = Application.Calculation
+    oldStatusBar = Application.StatusBar
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+    Application.DisplayAlerts = False
+    Application.StatusBar = "継続文書移行: 初期化中..."
+
     oldBookPath = SelectOldStandardWorkbookPath()
-    If oldBookPath = "" Then Exit Sub
+    If oldBookPath = "" Then GoTo SafeExit
 
     Set wbOld = Workbooks.Open(Filename:=oldBookPath, ReadOnly:=True)
     needCloseOldBook = True
@@ -3764,14 +3797,14 @@ Public Sub 旧基準表_継続文書移行()
         MsgBox "旧シートの見出し行が見つかりません。", vbExclamation
         GoTo SafeExit
     End If
-    Debug.Print "[旧] 採用見出し行=" & oldHeaderRow & ", 見出し一覧=" & GetMatchedHeadersText(wsOld, oldHeaderRow, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー"))
+    DebugLog "[旧] 採用見出し行=" & oldHeaderRow & ", 見出し一覧=" & GetMatchedHeadersText(wsOld, oldHeaderRow, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー"))
 
     newHeaderRow = FindHeaderRowByKeys(wsNew, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "タイトル", "備考"), 30)
     If newHeaderRow = 0 Then
         MsgBox "新シートの見出し行が見つかりません。", vbExclamation
         GoTo SafeExit
     End If
-    Debug.Print "[新] 採用見出し行=" & newHeaderRow & ", 見出し一覧=" & GetMatchedHeadersText(wsNew, newHeaderRow, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "タイトル", "備考"))
+    DebugLog "[新] 採用見出し行=" & newHeaderRow & ", 見出し一覧=" & GetMatchedHeadersText(wsNew, newHeaderRow, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "タイトル", "備考"))
 
     oldDataStartRow = oldHeaderRow + 1
     newDataStartRow = newHeaderRow + 1
@@ -3808,33 +3841,90 @@ Public Sub 旧基準表_継続文書移行()
     If newColBiko = 0 Then StopWithMissingColumn "備考"
 
     oldLastRow = wsOld.Cells(wsOld.Rows.Count, 1).End(xlUp).Row
+    newLastRow = wsNew.Cells(wsNew.Rows.Count, 1).End(xlUp).Row
+    oldMaxCol = MaxLong(Array(oldColKeizoku, oldColGuide1, oldColColor1, oldColGuide2, oldColColor2, oldColNendo, oldColKobetsu))
+    newLastCol = GetLastUsedCol(wsNew)
+    If newLastCol < newColBiko Then newLastCol = newColBiko
 
-    Debug.Print "[旧] データ開始行=" & oldDataStartRow
-    Debug.Print "[旧] 列番号: 継続=" & oldColKeizoku & ", 第１ガイド=" & oldColGuide1 & ", １色=" & oldColColor1 & _
-                ", 第２ガイド=" & oldColGuide2 & ", ２色=" & oldColColor2 & ", 年度=" & oldColNendo & ", 個別フォルダー=" & oldColKobetsu
-    Debug.Print "[新] 列番号: 分類名２=" & newColClass2 & ", 色名=" & newColColor & ", 分類名３=" & newColClass3 & _
-                ", 2色名=" & newColColor2 & ", 年度（和暦）=" & newColWareki & ", タイトル=" & newColTitle & ", 備考=" & newColBiko
-    DebugPrintKeizokuSamples wsOld, oldDataStartRow, oldLastRow, oldColKeizoku, 10
+    DebugLog "[旧] データ開始行=" & oldDataStartRow
+    DebugLog "[旧] 列番号: 継続=" & oldColKeizoku & ", 第１ガイド=" & oldColGuide1 & ", １色=" & oldColColor1 & _
+             ", 第２ガイド=" & oldColGuide2 & ", ２色=" & oldColColor2 & ", 年度=" & oldColNendo & ", 個別フォルダー=" & oldColKobetsu
+    DebugLog "[新] 列番号: 分類名２=" & newColClass2 & ", 色名=" & newColColor & ", 分類名３=" & newColClass3 & _
+             ", 2色名=" & newColColor2 & ", 年度（和暦）=" & newColWareki & ", タイトル=" & newColTitle & ", 備考=" & newColBiko
 
-    For r = oldDataStartRow To oldLastRow
-        If IsContinuousDocument(GetRawCellMerged(wsOld, r, oldColKeizoku)) Then
-            class2Value = GetTrimmedCellMerged(wsOld, r, oldColGuide1)
-            newLastRow = wsNew.Cells(wsNew.Rows.Count, 1).End(xlUp).Row
-            insertRow = FindInsertRowByCategory2(wsNew, newDataStartRow, newLastRow, newColClass2, class2Value)
+    If oldLastRow >= oldDataStartRow Then
+        oldData = wsOld.Range(wsOld.Cells(oldDataStartRow, 1), wsOld.Cells(oldLastRow, oldMaxCol)).Value2
+        oldRowCount = UBound(oldData, 1)
+    Else
+        oldRowCount = 0
+    End If
 
-            wsNew.Rows(insertRow).Insert Shift:=xlDown
+    DebugPrintKeizokuSamplesFromArray oldData, oldDataStartRow, oldRowCount, oldColKeizoku, 10
 
-            wsNew.Cells(insertRow, newColClass2).Value = wsOld.Cells(r, oldColGuide1).Value
-            wsNew.Cells(insertRow, newColColor).Value = wsOld.Cells(r, oldColColor1).Value
-            wsNew.Cells(insertRow, newColClass3).Value = wsOld.Cells(r, oldColGuide2).Value
-            wsNew.Cells(insertRow, newColColor2).Value = wsOld.Cells(r, oldColColor2).Value
-            wsNew.Cells(insertRow, newColWareki).Value = wsOld.Cells(r, oldColNendo).Value
-            wsNew.Cells(insertRow, newColTitle).Value = wsOld.Cells(r, oldColKobetsu).Value
-            wsNew.Cells(insertRow, newColBiko).Value = "マクロ差込"
+    Set groupedByClass2 = CreateObject("Scripting.Dictionary")
+    Set orderedItems = New Collection
+    Application.StatusBar = "継続文書移行: 旧データ抽出中..."
 
-            movedCount = movedCount + 1
+    For i = 1 To oldRowCount
+        If IsContinuousDocument(CStr(oldData(i, oldColKeizoku))) Then
+            class2Value = Trim$(CStr(oldData(i, oldColGuide1)))
+            newRowValues = CreateInsertedRowArray(oldData, i, newLastCol, _
+                                                  oldColGuide1, oldColColor1, oldColGuide2, oldColColor2, oldColNendo, oldColKobetsu, _
+                                                  newColClass2, newColColor, newColClass3, newColColor2, newColWareki, newColTitle, newColBiko)
+            oneItem = Array(class2Value, newRowValues)
+            orderedItems.Add oneItem
+
+            If Not groupedByClass2.Exists(class2Value) Then
+                Set groupedByClass2(class2Value) = New Collection
+            End If
+            groupedByClass2(class2Value).Add newRowValues
         End If
-    Next r
+    Next i
+
+    Set existingRows = New Collection
+    If newLastRow >= newDataStartRow Then
+        newData = wsNew.Range(wsNew.Cells(newDataStartRow, 1), wsNew.Cells(newLastRow, newLastCol)).Value2
+        newRowCount = UBound(newData, 1)
+        For i = 1 To newRowCount
+            existingRows.Add CopyRowFrom2DArray(newData, i, newLastCol)
+        Next i
+    End If
+
+    Application.StatusBar = "継続文書移行: 差し込み位置計算中..."
+    For i = 1 To orderedItems.Count
+        oneItem = orderedItems(i)
+        class2Value = CStr(oneItem(0))
+        newRowValues = oneItem(1)
+        insertRow = FindInsertIndexByCategory2InCollection(existingRows, class2Value, newColClass2)
+        If insertRow > existingRows.Count Then
+            existingRows.Add newRowValues
+        Else
+            existingRows.Add newRowValues, , insertRow
+        End If
+    Next i
+
+    movedCount = orderedItems.Count
+
+    Application.StatusBar = "継続文書移行: シートへ反映中..."
+    If existingRows.Count > 0 Then
+        ReDim writeArray(1 To existingRows.Count, 1 To newLastCol)
+        For outRow = 1 To existingRows.Count
+            newRowValues = existingRows(outRow)
+            For i = 1 To newLastCol
+                writeArray(outRow, i) = newRowValues(i)
+            Next i
+        Next outRow
+    End If
+
+    clearLastRow = newDataStartRow + existingRows.Count - 1
+    If newLastRow > clearLastRow Then clearLastRow = newLastRow
+    If clearLastRow >= newDataStartRow Then
+        wsNew.Range(wsNew.Cells(newDataStartRow, 1), wsNew.Cells(clearLastRow, newLastCol)).ClearContents
+    End If
+
+    If existingRows.Count > 0 Then
+        wsNew.Range(wsNew.Cells(newDataStartRow, 1), wsNew.Cells(newDataStartRow + existingRows.Count - 1, newLastCol)).Value = writeArray
+    End If
 
     MsgBox CStr(movedCount) & "件の継続文書を移行しました", vbInformation
     GoTo SafeExit
@@ -3845,6 +3935,16 @@ ErrorHandler:
 SafeExit:
     On Error Resume Next
     If needCloseOldBook Then wbOld.Close SaveChanges:=False
+    Application.StatusBar = False
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Application.Calculation = oldCalculation
+    Application.DisplayAlerts = oldDisplayAlerts
+    If IsEmpty(oldStatusBar) Then
+        Application.StatusBar = False
+    Else
+        Application.StatusBar = oldStatusBar
+    End If
     On Error GoTo 0
 
 End Sub
@@ -3919,6 +4019,131 @@ Private Function NormalizeSheetNameForMatch(ByVal sheetName As String) As String
     s = Replace(s, vbTab, "")
 
     NormalizeSheetNameForMatch = s
+
+End Function
+
+Private Sub DebugLog(ByVal messageText As String)
+
+    If DEBUG_MODE Then Debug.Print messageText
+
+End Sub
+
+Private Function MaxLong(ByVal values As Variant) As Long
+
+    Dim i As Long
+    Dim m As Long
+
+    For i = LBound(values) To UBound(values)
+        If CLng(values(i)) > m Then m = CLng(values(i))
+    Next i
+    MaxLong = m
+
+End Function
+
+Private Sub DebugPrintKeizokuSamplesFromArray( _
+    ByVal oldData As Variant, _
+    ByVal startRowNo As Long, _
+    ByVal rowCount As Long, _
+    ByVal keizokuCol As Long, _
+    ByVal sampleCount As Long)
+
+    Dim i As Long
+    Dim endIndex As Long
+    Dim rawValue As String
+    Dim normalizedValue As String
+
+    If Not DEBUG_MODE Then Exit Sub
+    If rowCount <= 0 Then Exit Sub
+    If sampleCount <= 0 Then Exit Sub
+
+    endIndex = sampleCount
+    If endIndex > rowCount Then endIndex = rowCount
+
+    Debug.Print "[旧] 継続列サンプル出力: " & startRowNo & "行目～" & (startRowNo + endIndex - 1) & "行目"
+    For i = 1 To endIndex
+        rawValue = CStr(oldData(i, keizokuCol))
+        normalizedValue = NormalizeTextForMatch(rawValue)
+        Debug.Print "Row=" & (startRowNo + i - 1) & " raw=[" & rawValue & "] normalized=[" & normalizedValue & "]"
+    Next i
+
+End Sub
+
+Private Function CreateInsertedRowArray( _
+    ByVal oldData As Variant, _
+    ByVal oldIndex As Long, _
+    ByVal newLastCol As Long, _
+    ByVal oldColGuide1 As Long, _
+    ByVal oldColColor1 As Long, _
+    ByVal oldColGuide2 As Long, _
+    ByVal oldColColor2 As Long, _
+    ByVal oldColNendo As Long, _
+    ByVal oldColKobetsu As Long, _
+    ByVal newColClass2 As Long, _
+    ByVal newColColor As Long, _
+    ByVal newColClass3 As Long, _
+    ByVal newColColor2 As Long, _
+    ByVal newColWareki As Long, _
+    ByVal newColTitle As Long, _
+    ByVal newColBiko As Long) As Variant
+
+    Dim rowValues() As Variant
+
+    ReDim rowValues(1 To newLastCol)
+    rowValues(newColClass2) = oldData(oldIndex, oldColGuide1)
+    rowValues(newColColor) = oldData(oldIndex, oldColColor1)
+    rowValues(newColClass3) = oldData(oldIndex, oldColGuide2)
+    rowValues(newColColor2) = oldData(oldIndex, oldColColor2)
+    rowValues(newColWareki) = oldData(oldIndex, oldColNendo)
+    rowValues(newColTitle) = oldData(oldIndex, oldColKobetsu)
+    rowValues(newColBiko) = "マクロ差込"
+
+    CreateInsertedRowArray = rowValues
+
+End Function
+
+Private Function CopyRowFrom2DArray(ByVal data As Variant, ByVal rowIndex As Long, ByVal colCount As Long) As Variant
+
+    Dim rowValues() As Variant
+    Dim c As Long
+
+    ReDim rowValues(1 To colCount)
+    For c = 1 To colCount
+        rowValues(c) = data(rowIndex, c)
+    Next c
+
+    CopyRowFrom2DArray = rowValues
+
+End Function
+
+Private Function FindInsertIndexByCategory2InCollection( _
+    ByVal rowsData As Collection, _
+    ByVal class2Value As String, _
+    ByVal class2Col As Long) As Long
+
+    Dim i As Long
+    Dim rowValues As Variant
+    Dim checkValue As String
+    Dim blockEnd As Long
+
+    For i = 1 To rowsData.Count
+        rowValues = rowsData(i)
+        checkValue = Trim$(CStr(rowValues(class2Col)))
+
+        If StrComp(checkValue, class2Value, vbBinaryCompare) = 0 Then
+            blockEnd = i
+            Do While blockEnd < rowsData.Count
+                rowValues = rowsData(blockEnd + 1)
+                checkValue = Trim$(CStr(rowValues(class2Col)))
+                If StrComp(checkValue, class2Value, vbBinaryCompare) <> 0 Then Exit Do
+                blockEnd = blockEnd + 1
+            Loop
+
+            FindInsertIndexByCategory2InCollection = blockEnd + 1
+            Exit Function
+        End If
+    Next i
+
+    FindInsertIndexByCategory2InCollection = rowsData.Count + 1
 
 End Function
 
