@@ -3746,12 +3746,14 @@ Public Sub 旧基準表_継続文書移行()
     Set wbOld = Workbooks.Open(Filename:=oldBookPath, ReadOnly:=True)
     needCloseOldBook = True
 
-    If Not TryGetWorksheetByName(wbOld, "基準表", wsOld) Then
+    Set wsOld = GetSheetByNormalizedName(wbOld, "基準表")
+    If wsOld Is Nothing Then
         MsgBox "選択したブックに『基準表』シートがありません。", vbExclamation
         GoTo SafeExit
     End If
 
-    If Not TryGetWorksheetByName(ThisWorkbook, "基準表", wsNew) Then
+    Set wsNew = GetSheetByNormalizedName(ThisWorkbook, "基準表")
+    If wsNew Is Nothing Then
         MsgBox "このブックに『基準表』シートがありません。", vbExclamation
         GoTo SafeExit
     End If
@@ -3850,13 +3852,60 @@ Private Function SelectOldStandardWorkbookPath() As String
 
 End Function
 
-Private Function TryGetWorksheetByName(ByVal wb As Workbook, ByVal sheetName As String, ByRef outSheet As Worksheet) As Boolean
+Private Function GetSheetByNormalizedName(ByVal wb As Workbook, ByVal targetName As String) As Worksheet
 
-    On Error Resume Next
-    Set outSheet = wb.Worksheets(sheetName)
-    On Error GoTo 0
+    Dim ws As Worksheet
+    Dim normalizedTarget As String
+    Dim normalizedSheetName As String
+    Dim partialMatches As Collection
+    Dim candidate As Variant
+    Dim candidateList As String
 
-    TryGetWorksheetByName = Not outSheet Is Nothing
+    normalizedTarget = NormalizeSheetNameForMatch(targetName)
+    Set partialMatches = New Collection
+
+    For Each ws In wb.Worksheets
+        normalizedSheetName = NormalizeSheetNameForMatch(ws.Name)
+
+        If StrComp(normalizedSheetName, normalizedTarget, vbBinaryCompare) = 0 Then
+            Set GetSheetByNormalizedName = ws
+            Exit Function
+        End If
+
+        If InStr(1, normalizedSheetName, normalizedTarget, vbBinaryCompare) > 0 Then
+            partialMatches.Add ws
+        End If
+    Next ws
+
+    If partialMatches.Count = 1 Then
+        Set GetSheetByNormalizedName = partialMatches(1)
+        Exit Function
+    End If
+
+    If partialMatches.Count > 1 Then
+        For Each candidate In partialMatches
+            If Len(candidateList) > 0 Then candidateList = candidateList & vbCrLf
+            candidateList = candidateList & "・" & CStr(candidate.Name)
+        Next candidate
+        Err.Raise vbObjectError + 3902, , _
+            "「" & targetName & "」に一致するシート候補が複数あります。" & vbCrLf & candidateList
+    End If
+
+End Function
+
+Private Function NormalizeSheetNameForMatch(ByVal sheetName As String) As String
+
+    Dim s As String
+
+    s = CStr(sheetName)
+    s = Trim$(s)
+    s = Replace(s, " ", "")
+    s = Replace(s, "　", "")
+    s = Replace(s, vbCr, "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, vbTab, "")
+
+    NormalizeSheetNameForMatch = s
 
 End Function
 
