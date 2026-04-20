@@ -3707,6 +3707,8 @@ Public Sub 旧基準表_継続文書移行()
 
     Dim wsOld As Worksheet
     Dim wsNew As Worksheet
+    Dim wbOld As Workbook
+    Dim oldBookPath As String
     Dim oldHeaderRow As Long
     Dim newHeaderRow As Long
     Dim oldDataStartRow As Long
@@ -3730,6 +3732,7 @@ Public Sub 旧基準表_継続文書移行()
     Dim insertRow As Long
     Dim movedCount As Long
     Dim class2Value As String
+    Dim needCloseOldBook As Boolean
 
     On Error GoTo ErrorHandler
 
@@ -3737,22 +3740,32 @@ Public Sub 旧基準表_継続文書移行()
         Exit Sub
     End If
 
-    Set wsOld = PickWorksheetByUser("旧（移行元）の「基準表」シートを選択してください。")
-    If wsOld Is Nothing Then Exit Sub
+    oldBookPath = SelectOldStandardWorkbookPath()
+    If oldBookPath = "" Then Exit Sub
 
-    Set wsNew = PickWorksheetByUser("新（移行先）の「基準表」シートを選択してください。")
-    If wsNew Is Nothing Then Exit Sub
+    Set wbOld = Workbooks.Open(Filename:=oldBookPath, ReadOnly:=True)
+    needCloseOldBook = True
+
+    If Not TryGetWorksheetByName(wbOld, "基準表", wsOld) Then
+        MsgBox "選択したブックに『基準表』シートがありません。", vbExclamation
+        GoTo SafeExit
+    End If
+
+    If Not TryGetWorksheetByName(ThisWorkbook, "基準表", wsNew) Then
+        MsgBox "このブックに『基準表』シートがありません。", vbExclamation
+        GoTo SafeExit
+    End If
 
     oldHeaderRow = FindHeaderRowByKeys(wsOld, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー"), 30)
     If oldHeaderRow = 0 Then
         MsgBox "旧シートの見出し行が見つかりません。", vbExclamation
-        Exit Sub
+        GoTo SafeExit
     End If
 
     newHeaderRow = FindHeaderRowByKeys(wsNew, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "タイトル"), 30)
     If newHeaderRow = 0 Then
         MsgBox "新シートの見出し行が見つかりません。", vbExclamation
-        Exit Sub
+        GoTo SafeExit
     End If
 
     oldDataStartRow = oldHeaderRow + 1
@@ -3809,23 +3822,41 @@ Public Sub 旧基準表_継続文書移行()
     Next r
 
     MsgBox CStr(movedCount) & "件の継続文書を移行しました", vbInformation
-    Exit Sub
+    GoTo SafeExit
 
 ErrorHandler:
     MsgBox "処理を停止しました: " & Err.Description, vbExclamation
+    
+SafeExit:
+    On Error Resume Next
+    If needCloseOldBook Then wbOld.Close SaveChanges:=False
+    On Error GoTo 0
 
 End Sub
 
-Private Function PickWorksheetByUser(ByVal promptText As String) As Worksheet
+Private Function SelectOldStandardWorkbookPath() As String
 
-    Dim selectedRange As Range
+    Dim fd As FileDialog
+
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = "旧ファイル基準表ブックを選択してください"
+        .AllowMultiSelect = False
+        .Filters.Clear
+        .Filters.Add "Excelファイル", "*.xls;*.xlsx;*.xlsm;*.xlsb"
+        If .Show <> -1 Then Exit Function
+        SelectOldStandardWorkbookPath = CStr(.SelectedItems(1))
+    End With
+
+End Function
+
+Private Function TryGetWorksheetByName(ByVal wb As Workbook, ByVal sheetName As String, ByRef outSheet As Worksheet) As Boolean
 
     On Error Resume Next
-    Set selectedRange = Application.InputBox(promptText, "基準表選択", Type:=8)
+    Set outSheet = wb.Worksheets(sheetName)
     On Error GoTo 0
 
-    If selectedRange Is Nothing Then Exit Function
-    Set PickWorksheetByUser = selectedRange.Worksheet
+    TryGetWorksheetByName = Not outSheet Is Nothing
 
 End Function
 
@@ -3833,28 +3864,27 @@ Private Function FindHeaderRowByKeys(ByVal ws As Worksheet, ByVal requiredKeys A
 
     Dim r As Long
     Dim i As Long
-    Dim c As Long
     Dim lastColInRow As Long
-    Dim foundAll As Boolean
     Dim keyText As String
+    Dim hitCount As Long
+    Dim bestCount As Long
 
     For r = 1 To maxScanRow
         lastColInRow = ws.Cells(r, ws.Columns.Count).End(xlToLeft).Column
-        foundAll = True
+        hitCount = 0
 
         For i = LBound(requiredKeys) To UBound(requiredKeys)
             keyText = CStr(requiredKeys(i))
-            If Not HeaderExistsInRow(ws, r, lastColInRow, keyText) Then
-                foundAll = False
-                Exit For
-            End If
+            If HeaderExistsInRow(ws, r, lastColInRow, keyText) Then hitCount = hitCount + 1
         Next i
 
-        If foundAll Then
+        If hitCount > bestCount Then
+            bestCount = hitCount
             FindHeaderRowByKeys = r
-            Exit Function
         End If
     Next r
+
+    If bestCount = 0 Then FindHeaderRowByKeys = 0
 
 End Function
 
