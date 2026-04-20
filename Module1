@@ -3702,3 +3702,414 @@ Public Sub ClearAllSeals_NewSpec()
     Next slot
 
 End Sub
+
+Public Sub 旧基準表_継続文書移行()
+
+    Dim wsOld As Worksheet
+    Dim wsNew As Worksheet
+    Dim wbOld As Workbook
+    Dim oldBookPath As String
+    Dim oldHeaderRow As Long
+    Dim newHeaderRow As Long
+    Dim oldDataStartRow As Long
+    Dim newDataStartRow As Long
+    Dim oldLastRow As Long
+    Dim newLastRow As Long
+    Dim oldColKeizoku As Long
+    Dim oldColGuide1 As Long
+    Dim oldColColor1 As Long
+    Dim oldColGuide2 As Long
+    Dim oldColColor2 As Long
+    Dim oldColNendo As Long
+    Dim oldColKobetsu As Long
+    Dim newColClass2 As Long
+    Dim newColColor As Long
+    Dim newColClass3 As Long
+    Dim newColColor2 As Long
+    Dim newColWareki As Long
+    Dim newColTitle As Long
+    Dim newColBiko As Long
+    Dim r As Long
+    Dim insertRow As Long
+    Dim movedCount As Long
+    Dim class2Value As String
+    Dim needCloseOldBook As Boolean
+
+    On Error GoTo ErrorHandler
+
+    If MsgBox("旧ファイル基準表から新ファイル基準表へ継続文書を移行します。実行しますか？", vbYesNo + vbQuestion) <> vbYes Then
+        Exit Sub
+    End If
+
+    oldBookPath = SelectOldStandardWorkbookPath()
+    If oldBookPath = "" Then Exit Sub
+
+    Set wbOld = Workbooks.Open(Filename:=oldBookPath, ReadOnly:=True)
+    needCloseOldBook = True
+
+    Set wsOld = GetSheetByNormalizedName(wbOld, "基準表")
+    If wsOld Is Nothing Then
+        MsgBox "選択したブックに『基準表』シートがありません。", vbExclamation
+        GoTo SafeExit
+    End If
+
+    Set wsNew = GetSheetByNormalizedName(ThisWorkbook, "基準表")
+    If wsNew Is Nothing Then
+        MsgBox "このブックに『基準表』シートがありません。", vbExclamation
+        GoTo SafeExit
+    End If
+
+    oldHeaderRow = FindHeaderRowByKeys(wsOld, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー"), 30)
+    If oldHeaderRow = 0 Then
+        MsgBox "旧シートの見出し行が見つかりません。", vbExclamation
+        GoTo SafeExit
+    End If
+    Debug.Print "[旧] 採用見出し行=" & oldHeaderRow & ", 見出し一覧=" & GetMatchedHeadersText(wsOld, oldHeaderRow, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー"))
+
+    newHeaderRow = FindHeaderRowByKeys(wsNew, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "タイトル", "備考"), 30)
+    If newHeaderRow = 0 Then
+        MsgBox "新シートの見出し行が見つかりません。", vbExclamation
+        GoTo SafeExit
+    End If
+    Debug.Print "[新] 採用見出し行=" & newHeaderRow & ", 見出し一覧=" & GetMatchedHeadersText(wsNew, newHeaderRow, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "タイトル", "備考"))
+
+    oldDataStartRow = oldHeaderRow + 1
+    newDataStartRow = newHeaderRow + 1
+
+    oldColKeizoku = GetHeaderColumnByName(wsOld, oldHeaderRow, "継続")
+    oldColGuide1 = GetHeaderColumnByName(wsOld, oldHeaderRow, "第１ガイド")
+    oldColColor1 = GetHeaderColumnByName(wsOld, oldHeaderRow, "１色")
+    oldColGuide2 = GetHeaderColumnByName(wsOld, oldHeaderRow, "第２ガイド")
+    oldColColor2 = GetHeaderColumnByName(wsOld, oldHeaderRow, "２色")
+    oldColNendo = GetHeaderColumnByName(wsOld, oldHeaderRow, "年度")
+    oldColKobetsu = GetHeaderColumnByName(wsOld, oldHeaderRow, "個別フォルダー")
+
+    newColClass2 = GetHeaderColumnByName(wsNew, newHeaderRow, "分類名２")
+    newColColor = GetHeaderColumnByName(wsNew, newHeaderRow, "色名")
+    newColClass3 = GetHeaderColumnByName(wsNew, newHeaderRow, "分類名３")
+    newColColor2 = GetHeaderColumnByName(wsNew, newHeaderRow, "2色名")
+    newColWareki = GetHeaderColumnByName(wsNew, newHeaderRow, "年度（和暦）")
+    newColTitle = GetHeaderColumnByName(wsNew, newHeaderRow, "タイトル")
+    newColBiko = GetHeaderColumnByName(wsNew, newHeaderRow, "備考")
+
+    If oldColKeizoku = 0 Then StopWithMissingColumn "継続"
+    If oldColGuide1 = 0 Then StopWithMissingColumn "第１ガイド"
+    If oldColColor1 = 0 Then StopWithMissingColumn "１色"
+    If oldColGuide2 = 0 Then StopWithMissingColumn "第２ガイド"
+    If oldColColor2 = 0 Then StopWithMissingColumn "２色"
+    If oldColNendo = 0 Then StopWithMissingColumn "年度"
+    If oldColKobetsu = 0 Then StopWithMissingColumn "個別フォルダー"
+    If newColClass2 = 0 Then StopWithMissingColumn "分類名２"
+    If newColColor = 0 Then StopWithMissingColumn "色名"
+    If newColClass3 = 0 Then StopWithMissingColumn "分類名３"
+    If newColColor2 = 0 Then StopWithMissingColumn "2色名"
+    If newColWareki = 0 Then StopWithMissingColumn "年度（和暦）"
+    If newColTitle = 0 Then StopWithMissingColumn "タイトル"
+    If newColBiko = 0 Then StopWithMissingColumn "備考"
+
+    oldLastRow = wsOld.Cells(wsOld.Rows.Count, 1).End(xlUp).Row
+
+    Debug.Print "[旧] データ開始行=" & oldDataStartRow
+    Debug.Print "[旧] 列番号: 継続=" & oldColKeizoku & ", 第１ガイド=" & oldColGuide1 & ", １色=" & oldColColor1 & _
+                ", 第２ガイド=" & oldColGuide2 & ", ２色=" & oldColColor2 & ", 年度=" & oldColNendo & ", 個別フォルダー=" & oldColKobetsu
+    Debug.Print "[新] 列番号: 分類名２=" & newColClass2 & ", 色名=" & newColColor & ", 分類名３=" & newColClass3 & _
+                ", 2色名=" & newColColor2 & ", 年度（和暦）=" & newColWareki & ", タイトル=" & newColTitle & ", 備考=" & newColBiko
+    DebugPrintKeizokuSamples wsOld, oldDataStartRow, oldLastRow, oldColKeizoku, 10
+
+    For r = oldDataStartRow To oldLastRow
+        If IsContinuousDocument(GetRawCellMerged(wsOld, r, oldColKeizoku)) Then
+            class2Value = GetTrimmedCellMerged(wsOld, r, oldColGuide1)
+            newLastRow = wsNew.Cells(wsNew.Rows.Count, 1).End(xlUp).Row
+            insertRow = FindInsertRowByCategory2(wsNew, newDataStartRow, newLastRow, newColClass2, class2Value)
+
+            wsNew.Rows(insertRow).Insert Shift:=xlDown
+
+            wsNew.Cells(insertRow, newColClass2).Value = wsOld.Cells(r, oldColGuide1).Value
+            wsNew.Cells(insertRow, newColColor).Value = wsOld.Cells(r, oldColColor1).Value
+            wsNew.Cells(insertRow, newColClass3).Value = wsOld.Cells(r, oldColGuide2).Value
+            wsNew.Cells(insertRow, newColColor2).Value = wsOld.Cells(r, oldColColor2).Value
+            wsNew.Cells(insertRow, newColWareki).Value = wsOld.Cells(r, oldColNendo).Value
+            wsNew.Cells(insertRow, newColTitle).Value = wsOld.Cells(r, oldColKobetsu).Value
+            wsNew.Cells(insertRow, newColBiko).Value = "マクロ差込"
+
+            movedCount = movedCount + 1
+        End If
+    Next r
+
+    MsgBox CStr(movedCount) & "件の継続文書を移行しました", vbInformation
+    GoTo SafeExit
+
+ErrorHandler:
+    MsgBox "処理を停止しました: " & Err.Description, vbExclamation
+    
+SafeExit:
+    On Error Resume Next
+    If needCloseOldBook Then wbOld.Close SaveChanges:=False
+    On Error GoTo 0
+
+End Sub
+
+Private Function SelectOldStandardWorkbookPath() As String
+
+    Dim fd As FileDialog
+
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = "旧ファイル基準表ブックを選択してください"
+        .AllowMultiSelect = False
+        .Filters.Clear
+        .Filters.Add "Excelファイル", "*.xls;*.xlsx;*.xlsm;*.xlsb"
+        If .Show <> -1 Then Exit Function
+        SelectOldStandardWorkbookPath = CStr(.SelectedItems(1))
+    End With
+
+End Function
+
+Private Function GetSheetByNormalizedName(ByVal wb As Workbook, ByVal targetName As String) As Worksheet
+
+    Dim ws As Worksheet
+    Dim normalizedTarget As String
+    Dim normalizedSheetName As String
+    Dim partialMatches As Collection
+    Dim candidate As Variant
+    Dim candidateList As String
+
+    normalizedTarget = NormalizeSheetNameForMatch(targetName)
+    Set partialMatches = New Collection
+
+    For Each ws In wb.Worksheets
+        normalizedSheetName = NormalizeSheetNameForMatch(ws.Name)
+
+        If StrComp(normalizedSheetName, normalizedTarget, vbBinaryCompare) = 0 Then
+            Set GetSheetByNormalizedName = ws
+            Exit Function
+        End If
+
+        If InStr(1, normalizedSheetName, normalizedTarget, vbBinaryCompare) > 0 Then
+            partialMatches.Add ws
+        End If
+    Next ws
+
+    If partialMatches.Count = 1 Then
+        Set GetSheetByNormalizedName = partialMatches(1)
+        Exit Function
+    End If
+
+    If partialMatches.Count > 1 Then
+        For Each candidate In partialMatches
+            If Len(candidateList) > 0 Then candidateList = candidateList & vbCrLf
+            candidateList = candidateList & "・" & CStr(candidate.Name)
+        Next candidate
+        Err.Raise vbObjectError + 3902, , _
+            "「" & targetName & "」に一致するシート候補が複数あります。" & vbCrLf & candidateList
+    End If
+
+End Function
+
+Private Function NormalizeSheetNameForMatch(ByVal sheetName As String) As String
+
+    Dim s As String
+
+    s = CStr(sheetName)
+    s = Trim$(s)
+    s = Replace(s, " ", "")
+    s = Replace(s, "　", "")
+    s = Replace(s, vbCr, "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, vbTab, "")
+
+    NormalizeSheetNameForMatch = s
+
+End Function
+
+Private Sub DebugPrintKeizokuSamples( _
+    ByVal ws As Worksheet, _
+    ByVal startRow As Long, _
+    ByVal lastRow As Long, _
+    ByVal keizokuCol As Long, _
+    ByVal sampleCount As Long)
+
+    Dim endRow As Long
+    Dim r As Long
+    Dim rawValue As String
+    Dim normalizedValue As String
+
+    If sampleCount <= 0 Then Exit Sub
+    If lastRow < startRow Then Exit Sub
+
+    endRow = startRow + sampleCount - 1
+    If endRow > lastRow Then endRow = lastRow
+
+    Debug.Print "[旧] 継続列サンプル出力: " & startRow & "行目～" & endRow & "行目"
+    For r = startRow To endRow
+        rawValue = GetRawCellMerged(ws, r, keizokuCol)
+        normalizedValue = NormalizeTextForMatch(rawValue)
+        Debug.Print "Row=" & r & " raw=[" & rawValue & "] normalized=[" & normalizedValue & "]"
+    Next r
+
+End Sub
+
+Private Function GetMatchedHeadersText(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal expectedHeaders As Variant) As String
+
+    Dim i As Long
+    Dim foundText As String
+    Dim colNo As Long
+    Dim headerName As String
+
+    For i = LBound(expectedHeaders) To UBound(expectedHeaders)
+        headerName = CStr(expectedHeaders(i))
+        colNo = GetHeaderColumnByName(ws, headerRow, headerName)
+        If colNo > 0 Then
+            If Len(foundText) > 0 Then foundText = foundText & ", "
+            foundText = foundText & headerName & "(C" & colNo & ")"
+        End If
+    Next i
+
+    GetMatchedHeadersText = foundText
+
+End Function
+
+Private Function FindHeaderRowByKeys(ByVal ws As Worksheet, ByVal requiredKeys As Variant, ByVal maxScanRow As Long) As Long
+
+    Dim r As Long
+    Dim i As Long
+    Dim lastColInRow As Long
+    Dim keyText As String
+    Dim hitCount As Long
+    Dim bestCount As Long
+
+    For r = 1 To maxScanRow
+        lastColInRow = ws.Cells(r, ws.Columns.Count).End(xlToLeft).Column
+        hitCount = 0
+
+        For i = LBound(requiredKeys) To UBound(requiredKeys)
+            keyText = CStr(requiredKeys(i))
+            If HeaderExistsInRow(ws, r, lastColInRow, keyText) Then hitCount = hitCount + 1
+        Next i
+
+        If hitCount > bestCount Then
+            bestCount = hitCount
+            FindHeaderRowByKeys = r
+        End If
+    Next r
+
+    If bestCount = 0 Then FindHeaderRowByKeys = 0
+
+End Function
+
+Private Function HeaderExistsInRow(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal lastCol As Long, ByVal headerName As String) As Boolean
+
+    Dim c As Long
+
+    For c = 1 To lastCol
+        If StrComp(GetTrimmedCellMerged(ws, rowNo, c), Trim$(headerName), vbBinaryCompare) = 0 Then
+            HeaderExistsInRow = True
+            Exit Function
+        End If
+    Next c
+
+End Function
+
+Private Function GetHeaderColumnByName(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerName As String) As Long
+
+    Dim c As Long
+    Dim lastCol As Long
+
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        If StrComp(GetTrimmedCellMerged(ws, headerRow, c), Trim$(headerName), vbBinaryCompare) = 0 Then
+            GetHeaderColumnByName = c
+            Exit Function
+        End If
+    Next c
+
+End Function
+
+Private Function GetTrimmedCellMerged(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As String
+
+    GetTrimmedCellMerged = Trim$(GetRawCellMerged(ws, rowNo, colNo))
+
+End Function
+
+Private Function GetRawCellMerged(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As String
+
+    Dim targetCell As Range
+    Dim rawText As String
+
+    Set targetCell = ws.Cells(rowNo, colNo)
+    If targetCell.MergeCells Then
+        rawText = CStr(targetCell.MergeArea.Cells(1, 1).Value)
+    Else
+        rawText = CStr(targetCell.Value)
+    End If
+
+    GetRawCellMerged = rawText
+
+End Function
+
+Private Function NormalizeTextForMatch(ByVal valueText As String) As String
+
+    Dim s As String
+
+    s = CStr(valueText)
+    s = Trim$(s)
+    s = Replace(s, " ", "")
+    s = Replace(s, "　", "")
+    s = Replace(s, vbCr, "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, vbTab, "")
+
+    NormalizeTextForMatch = s
+
+End Function
+
+Private Function IsContinuousDocument(ByVal rawValue As String) As Boolean
+
+    Dim normalized As String
+
+    normalized = NormalizeTextForMatch(rawValue)
+    IsContinuousDocument = (StrComp(normalized, "継", vbBinaryCompare) = 0 Or _
+                            StrComp(normalized, "継続", vbBinaryCompare) = 0)
+
+End Function
+
+Private Function FindInsertRowByCategory2( _
+    ByVal wsNew As Worksheet, _
+    ByVal dataStartRow As Long, _
+    ByVal lastRow As Long, _
+    ByVal colClass2 As Long, _
+    ByVal class2Value As String) As Long
+
+    Dim r As Long
+    Dim blockEndRow As Long
+
+    If lastRow < dataStartRow Then
+        FindInsertRowByCategory2 = dataStartRow
+        Exit Function
+    End If
+
+    For r = dataStartRow To lastRow
+        If StrComp(GetTrimmedCellMerged(wsNew, r, colClass2), class2Value, vbBinaryCompare) = 0 Then
+            blockEndRow = r
+            Do While blockEndRow + 1 <= lastRow
+                If StrComp(GetTrimmedCellMerged(wsNew, blockEndRow + 1, colClass2), class2Value, vbBinaryCompare) <> 0 Then
+                    Exit Do
+                End If
+                blockEndRow = blockEndRow + 1
+            Loop
+
+            FindInsertRowByCategory2 = blockEndRow + 1
+            Exit Function
+        End If
+    Next r
+
+    FindInsertRowByCategory2 = lastRow + 1
+
+End Function
+
+Private Sub StopWithMissingColumn(ByVal headerName As String)
+
+    Err.Raise vbObjectError + 3901, , headerName & "列が見つかりません"
+
+End Sub
