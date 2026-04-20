@@ -3728,6 +3728,7 @@ Public Sub 旧基準表_継続文書移行()
     Dim newColColor2 As Long
     Dim newColWareki As Long
     Dim newColTitle As Long
+    Dim newColBiko As Long
     Dim r As Long
     Dim insertRow As Long
     Dim movedCount As Long
@@ -3765,12 +3766,12 @@ Public Sub 旧基準表_継続文書移行()
     End If
     Debug.Print "[旧] 採用見出し行=" & oldHeaderRow & ", 見出し一覧=" & GetMatchedHeadersText(wsOld, oldHeaderRow, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー"))
 
-    newHeaderRow = FindHeaderRowByKeys(wsNew, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "タイトル"), 30)
+    newHeaderRow = FindHeaderRowByKeys(wsNew, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "タイトル", "備考"), 30)
     If newHeaderRow = 0 Then
         MsgBox "新シートの見出し行が見つかりません。", vbExclamation
         GoTo SafeExit
     End If
-    Debug.Print "[新] 採用見出し行=" & newHeaderRow & ", 見出し一覧=" & GetMatchedHeadersText(wsNew, newHeaderRow, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "タイトル"))
+    Debug.Print "[新] 採用見出し行=" & newHeaderRow & ", 見出し一覧=" & GetMatchedHeadersText(wsNew, newHeaderRow, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "タイトル", "備考"))
 
     oldDataStartRow = oldHeaderRow + 1
     newDataStartRow = newHeaderRow + 1
@@ -3789,6 +3790,7 @@ Public Sub 旧基準表_継続文書移行()
     newColColor2 = GetHeaderColumnByName(wsNew, newHeaderRow, "2色名")
     newColWareki = GetHeaderColumnByName(wsNew, newHeaderRow, "年度（和暦）")
     newColTitle = GetHeaderColumnByName(wsNew, newHeaderRow, "タイトル")
+    newColBiko = GetHeaderColumnByName(wsNew, newHeaderRow, "備考")
 
     If oldColKeizoku = 0 Then StopWithMissingColumn "継続"
     If oldColGuide1 = 0 Then StopWithMissingColumn "第１ガイド"
@@ -3803,15 +3805,19 @@ Public Sub 旧基準表_継続文書移行()
     If newColColor2 = 0 Then StopWithMissingColumn "2色名"
     If newColWareki = 0 Then StopWithMissingColumn "年度（和暦）"
     If newColTitle = 0 Then StopWithMissingColumn "タイトル"
+    If newColBiko = 0 Then StopWithMissingColumn "備考"
 
     oldLastRow = wsOld.Cells(wsOld.Rows.Count, 1).End(xlUp).Row
 
-    Debug.Print "[旧] デバッグ情報: 見出し行=" & oldHeaderRow & ", データ開始行=" & oldDataStartRow & _
-                ", 継続列=" & oldColKeizoku & ", 第１ガイド列=" & oldColGuide1 & ", 個別フォルダー列=" & oldColKobetsu
+    Debug.Print "[旧] データ開始行=" & oldDataStartRow
+    Debug.Print "[旧] 列番号: 継続=" & oldColKeizoku & ", 第１ガイド=" & oldColGuide1 & ", １色=" & oldColColor1 & _
+                ", 第２ガイド=" & oldColGuide2 & ", ２色=" & oldColColor2 & ", 年度=" & oldColNendo & ", 個別フォルダー=" & oldColKobetsu
+    Debug.Print "[新] 列番号: 分類名２=" & newColClass2 & ", 色名=" & newColColor & ", 分類名３=" & newColClass3 & _
+                ", 2色名=" & newColColor2 & ", 年度（和暦）=" & newColWareki & ", タイトル=" & newColTitle & ", 備考=" & newColBiko
     DebugPrintKeizokuSamples wsOld, oldDataStartRow, oldLastRow, oldColKeizoku, 10
 
     For r = oldDataStartRow To oldLastRow
-        If IsKeizokuValueMatch(GetRawCellMerged(wsOld, r, oldColKeizoku)) Then
+        If IsContinuousDocument(GetRawCellMerged(wsOld, r, oldColKeizoku)) Then
             class2Value = GetTrimmedCellMerged(wsOld, r, oldColGuide1)
             newLastRow = wsNew.Cells(wsNew.Rows.Count, 1).End(xlUp).Row
             insertRow = FindInsertRowByCategory2(wsNew, newDataStartRow, newLastRow, newColClass2, class2Value)
@@ -3824,6 +3830,7 @@ Public Sub 旧基準表_継続文書移行()
             wsNew.Cells(insertRow, newColColor2).Value = wsOld.Cells(r, oldColColor2).Value
             wsNew.Cells(insertRow, newColWareki).Value = wsOld.Cells(r, oldColNendo).Value
             wsNew.Cells(insertRow, newColTitle).Value = wsOld.Cells(r, oldColKobetsu).Value
+            wsNew.Cells(insertRow, newColBiko).Value = "マクロ差込"
 
             movedCount = movedCount + 1
         End If
@@ -3925,7 +3932,6 @@ Private Sub DebugPrintKeizokuSamples( _
     Dim endRow As Long
     Dim r As Long
     Dim rawValue As String
-    Dim trimmedValue As String
     Dim normalizedValue As String
 
     If sampleCount <= 0 Then Exit Sub
@@ -3937,9 +3943,8 @@ Private Sub DebugPrintKeizokuSamples( _
     Debug.Print "[旧] 継続列サンプル出力: " & startRow & "行目～" & endRow & "行目"
     For r = startRow To endRow
         rawValue = GetRawCellMerged(ws, r, keizokuCol)
-        trimmedValue = Trim$(rawValue)
-        normalizedValue = NormalizeKeizokuValue(rawValue)
-        Debug.Print "Row=" & r & ", 継続列値=[" & rawValue & "], Trim後=[" & trimmedValue & "], 正規化後=[" & normalizedValue & "]"
+        normalizedValue = NormalizeTextForMatch(rawValue)
+        Debug.Print "Row=" & r & " raw=[" & rawValue & "] normalized=[" & normalizedValue & "]"
     Next r
 
 End Sub
@@ -4043,7 +4048,7 @@ Private Function GetRawCellMerged(ByVal ws As Worksheet, ByVal rowNo As Long, By
 
 End Function
 
-Private Function NormalizeKeizokuValue(ByVal valueText As String) As String
+Private Function NormalizeTextForMatch(ByVal valueText As String) As String
 
     Dim s As String
 
@@ -4055,13 +4060,17 @@ Private Function NormalizeKeizokuValue(ByVal valueText As String) As String
     s = Replace(s, vbLf, "")
     s = Replace(s, vbTab, "")
 
-    NormalizeKeizokuValue = s
+    NormalizeTextForMatch = s
 
 End Function
 
-Private Function IsKeizokuValueMatch(ByVal rawValue As String) As Boolean
+Private Function IsContinuousDocument(ByVal rawValue As String) As Boolean
 
-    IsKeizokuValueMatch = (StrComp(NormalizeKeizokuValue(rawValue), "継続", vbBinaryCompare) = 0)
+    Dim normalized As String
+
+    normalized = NormalizeTextForMatch(rawValue)
+    IsContinuousDocument = (StrComp(normalized, "継", vbBinaryCompare) = 0 Or _
+                            StrComp(normalized, "継続", vbBinaryCompare) = 0)
 
 End Function
 
