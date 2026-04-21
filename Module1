@@ -672,8 +672,6 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim srcToDstMap As Object
     Dim srcHeaderMap As Object
     Dim existingDstHeaders As Object
-    Dim existingRowMap As Object
-    Dim sourceKeyMap As Object
     Dim srcCol As Long
     Dim dstCol As Long
     Dim headerText As String
@@ -694,11 +692,15 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim appendRow As Long
     Dim key As String
     Dim appendedCount As Long
-    Dim updatedCount As Long
     Dim skippedNoKeyCount As Long
-    Dim updateStartRow As Long
-    Dim updateEndRow As Long
-    Dim didUpdateRows As Boolean
+    Dim targetFiscalYear As String
+    Dim srcYearCol As Long
+    Dim dstYearCol As Long
+    Dim srcRowYear As String
+    Dim srcTargetCount As Long
+    Dim deletedCount As Long
+    Dim remarkCol As Long
+    Dim oldCalculation As XlCalculation
 
     On Error GoTo ErrorHandler
 
@@ -707,20 +709,30 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Set srcToDstMap = CreateObject("Scripting.Dictionary")
     Set srcHeaderMap = CreateObject("Scripting.Dictionary")
     Set existingDstHeaders = CreateObject("Scripting.Dictionary")
-    Set existingRowMap = CreateObject("Scripting.Dictionary")
-    Set sourceKeyMap = CreateObject("Scripting.Dictionary")
     Set validationTemplateMap = CreateObject("Scripting.Dictionary")
     Set formatTemplateMap = CreateObject("Scripting.Dictionary")
     Set columnWidthMap = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
+    oldCalculation = Application.Calculation
+    Application.Calculation = xlCalculationManual
 
     srcLastCol = GetLastUsedCol(wsSrc)
     srcLastRow = GetLastUsedRow(wsSrc)
     dstLastCol = GetLastUsedCol(wsDst)
 
     If srcLastCol <= 0 Then Err.Raise vbObjectError + 2001, , "目録CSV の見出し行が見つかりません。"
+
+    targetFiscalYear = Trim$(CStr(wsDst.Range("B1").Value))
+    If targetFiscalYear = "" Then
+        Err.Raise vbObjectError + 2305, , "新ファイル基準表のB1セル（対象年度（和暦））を入力してください。"
+    End If
+
+    srcYearCol = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    If srcYearCol = 0 Then
+        Err.Raise vbObjectError + 2306, , "目録CSVに「年度（和暦）」列が見つかりません。"
+    End If
 
     ' 並び替え前に既存入力規則のテンプレートを退避（見出し名ベースで復元するため）
     CreateValidationTemplateSheet wsDst, dstLastCol, validationTemplateMap, wsValidationTemplate
@@ -781,46 +793,59 @@ Public Sub 手順2_新ファイル基準表を作成する()
     ' 4) 既存行マップを作成し、「更新＋新規追加」で反映する
     dstLastRow = GetLastUsedRow(wsDst)
     If dstLastRow < 1 Then dstLastRow = 1
-    appendRow = dstLastRow + 1
 
-    BuildExistingRowMap wsDst, dstLastRow, existingRowMap
+    dstYearCol = FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    If dstYearCol = 0 Then
+        Err.Raise vbObjectError + 2307, , "新ファイル基準表に「年度（和暦）」列が見つかりません。"
+    End If
 
+    ' 目録CSVの対象年度行件数を先に確認
     If srcLastRow >= 2 Then
         For srcRow = 2 To srcLastRow
-            key = BuildFileKeyFromSheetRow(wsSrc, srcRow, srcHeaderMap)
-
-            If key = "" Then
-                ' キー（ファイルID/ファイル番号/バーコード番号）不足行は更新不可のためスキップ
-                skippedNoKeyCount = skippedNoKeyCount + 1
-                GoTo ContinueNextSourceRow
+            srcRowYear = GetTrimmedCell(wsSrc, srcRow, srcYearCol)
+            If StrComp(srcRowYear, targetFiscalYear, vbTextCompare) = 0 Then
+                srcTargetCount = srcTargetCount + 1
             End If
+        Next srcRow
+    End If
+    If srcTargetCount = 0 Then
+        Err.Raise vbObjectError + 2308, , "目録CSVに対象年度（" & targetFiscalYear & "）のデータがありません。"
+    End If
 
-            ' 今回の目録CSVに存在するキーとして記録（同期状態判定で利用）
-            If Not sourceKeyMap.Exists(key) Then
-                sourceKeyMap.Add key, True
+    ' 新ファイル基準表の対象年度だけを下から削除（他年度は保持）
+    If dstLastRow >= 2 Then
+        For targetRow = dstLastRow To 2 Step -1
+            If StrComp(GetTrimmedCell(wsDst, targetRow, dstYearCol), targetFiscalYear, vbTextCompare) = 0 Then
+                wsDst.Rows(targetRow).Delete
+                deletedCount = deletedCount + 1
             End If
+        Next targetRow
+    End If
 
-            If existingRowMap.Exists(key) Then
-                targetRow = CLng(existingRowMap(key))
-                UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap
-                updatedCount = updatedCount + 1
+    dstLastRow = GetLastUsedRow(wsDst)
+    If dstLastRow < 1 Then dstLastRow = 1
+    appendRow = dstLastRow + 1
+    remarkCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("備考"))
 
-                If Not didUpdateRows Then
-                    updateStartRow = targetRow
-                    updateEndRow = targetRow
-                    didUpdateRows = True
-                Else
-                    If targetRow < updateStartRow Then updateStartRow = targetRow
-                    If targetRow > updateEndRow Then updateEndRow = targetRow
+    ' 目録CSVの対象年度行だけを新規追加
+    If srcLastRow >= 2 Then
+        For srcRow = 2 To srcLastRow
+            srcRowYear = GetTrimmedCell(wsSrc, srcRow, srcYearCol)
+            If StrComp(srcRowYear, targetFiscalYear, vbTextCompare) = 0 Then
+                key = BuildFileKeyFromSheetRow(wsSrc, srcRow, srcHeaderMap)
+                If key = "" Then
+                    skippedNoKeyCount = skippedNoKeyCount + 1
+                    GoTo ContinueAppendTargetYear
                 End If
-            Else
+
                 AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
-                existingRowMap.Add key, appendRow
+                If remarkCol > 0 Then
+                    wsDst.Cells(appendRow, remarkCol).Value = "マクロ差込"
+                End If
                 appendedCount = appendedCount + 1
                 appendRow = appendRow + 1
             End If
-
-ContinueNextSourceRow:
+ContinueAppendTargetYear:
         Next srcRow
     End If
 
@@ -859,21 +884,13 @@ ContinueNextSourceRow:
 
     leftFixedCount = targetCol - 1
 
-    ' 6) 同期状態列を更新（現行 / 削除候補 / 未登録）
-    UpdateSyncStatusColumn wsDst, sourceKeyMap
-
-    ' 7) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
-    If didUpdateRows Then
-        ConvertAnnualUseDivisionValues wsDst, updateEndRow, updateStartRow
-        SyncSecondColorNameFromColor wsDst, updateStartRow, updateEndRow
-    End If
-
+    ' 6) 「毎年度利用区分」表示値変換と2色名同期（今回追加行のみ）
     If appendRow > dstLastRow + 1 Then
         ConvertAnnualUseDivisionValues wsDst, appendRow - 1, dstLastRow + 1
         SyncSecondColorNameFromColor wsDst, dstLastRow + 1, appendRow - 1
     End If
 
-    ' 8) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
+    ' 7) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
     If leftFixedCount > 0 Then
         With wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, leftFixedCount))
             .Font.Bold = True
@@ -885,20 +902,18 @@ ContinueNextSourceRow:
     srcLastCol = GetLastUsedCol(wsDst)
     wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol)).AutoFilter
 
-    ' 9) 左側固定対象の不足見出しを通知用に収集（列の表示状態は変更しない）
+    ' 8) 左側固定対象の不足見出しを通知用に収集（列の表示状態は変更しない）
     HideKeyColumnsForStep2 wsDst, displayHeaders, missingHeadersText
 
-    ' 10) タイトルがある行だけ通し番号を再採番
-    ReindexSerial_NewFileStandard wsDst
-
-    ' 11) 入力規則を見出し名ベースで再適用（列挿入/並び替え後の列位置へ追従）
+    ' 9) 入力規則を見出し名ベースで再適用（列挿入/並び替え後の列位置へ追従）
     ReapplyValidationFromTemplate wsDst, validationTemplateMap, wsValidationTemplate
     ' 条件付き書式/列幅を見出し名ベースで再適用
     ReapplyFormatAndWidthFromTemplate wsDst, formatTemplateMap, columnWidthMap, wsFormatTemplate
 
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
-               "更新件数: " & updatedCount & " 件" & vbCrLf & _
+               "対象年度: " & targetFiscalYear & vbCrLf & _
+               "削除件数: " & deletedCount & " 件" & vbCrLf & _
                "追加件数: " & appendedCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
@@ -906,7 +921,8 @@ ContinueNextSourceRow:
                missingHeadersText, vbExclamation
     Else
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
-               "更新件数: " & updatedCount & " 件" & vbCrLf & _
+               "対象年度: " & targetFiscalYear & vbCrLf & _
+               "削除件数: " & deletedCount & " 件" & vbCrLf & _
                "追加件数: " & appendedCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
@@ -928,6 +944,7 @@ SafeExit:
 
     Application.ScreenUpdating = True
     Application.EnableEvents = True
+    Application.Calculation = oldCalculation
     Exit Sub
 
 ErrorHandler:
