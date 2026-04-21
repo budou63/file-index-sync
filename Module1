@@ -4161,6 +4161,7 @@ Public Sub 旧基準表_継続文書移行()
     Dim oldColColor2 As Long
     Dim oldColNendo As Long
     Dim oldColKobetsu As Long
+    Dim oldColMedia As Long
 
     Dim newColClass2 As Long
     Dim newColColor As Long
@@ -4215,7 +4216,7 @@ Public Sub 旧基準表_継続文書移行()
     If Not FindKijunSheet_Mig(wbOld, wsOld, "選択したブックに『基準表』シートがありません。") Then GoTo SafeExit
     If Not FindKijunSheet_Mig(ThisWorkbook, wsNew, "このブックに『基準表』シートがありません。") Then GoTo SafeExit
 
-    oldHeaderRow = FindHeaderRowByKeys_Mig(wsOld, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー"), 30)
+    oldHeaderRow = FindHeaderRowByKeys_Mig(wsOld, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー", "媒体"), 30)
     newHeaderRow = FindHeaderRowByKeys_Mig(wsNew, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "作成年度（和暦）", "タイトル", "備考"), 30)
 
     If oldHeaderRow = 0 Then MsgBox "旧シートの見出し行が見つかりません。", vbExclamation: GoTo SafeExit
@@ -4233,6 +4234,7 @@ Public Sub 旧基準表_継続文書移行()
     oldColColor2 = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "２色")
     oldColNendo = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "年度")
     oldColKobetsu = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "個別フォルダー")
+    oldColMedia = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "媒体")
 
     newColClass2 = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "分類名２")
     newColColor = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "色名")
@@ -4250,6 +4252,7 @@ Public Sub 旧基準表_継続文書移行()
     If oldColColor2 = 0 Then StopWithMissingColumn "２色"
     If oldColNendo = 0 Then StopWithMissingColumn "年度"
     If oldColKobetsu = 0 Then StopWithMissingColumn "個別フォルダー"
+    If oldColMedia = 0 Then StopWithMissingColumn "媒体"
     If newColClass2 = 0 Then StopWithMissingColumn "分類名２"
     If newColColor = 0 Then StopWithMissingColumn "色名"
     If newColClass3 = 0 Then StopWithMissingColumn "分類名３"
@@ -4259,7 +4262,7 @@ Public Sub 旧基準表_継続文書移行()
     If newColTitle = 0 Then StopWithMissingColumn "タイトル"
     If newColBiko = 0 Then StopWithMissingColumn "備考"
 
-    DebugLog "[列番号][旧] 継続=" & oldColKeizoku & " 第１ガイド=" & oldColGuide1 & " １色=" & oldColColor1 & " 第２ガイド=" & oldColGuide2 & " ２色=" & oldColColor2 & " 年度=" & oldColNendo & " 個別フォルダー=" & oldColKobetsu
+    DebugLog "[列番号][旧] 継続=" & oldColKeizoku & " 第１ガイド=" & oldColGuide1 & " １色=" & oldColColor1 & " 第２ガイド=" & oldColGuide2 & " ２色=" & oldColColor2 & " 年度=" & oldColNendo & " 個別フォルダー=" & oldColKobetsu & " 媒体=" & oldColMedia
     DebugLog "[列番号][新] 分類名２=" & newColClass2 & " 色名=" & newColColor & " 分類名３=" & newColClass3 & " 2色名=" & newColColor2 & " 年度（和暦）=" & newColWareki & " 作成年度（和暦）=" & newColCreatedWareki & " タイトル=" & newColTitle & " 備考=" & newColBiko
 
     oldLastRow = wsOld.Cells(wsOld.Rows.Count, 1).End(xlUp).Row
@@ -4277,11 +4280,13 @@ Public Sub 旧基準表_継続文書移行()
     Set keyOrder = New Collection
 
     For i = 1 To rowCount
-        If DebugModeEnabled() And i <= 10 Then
-            Debug.Print "Row=" & (oldDataStartRow + i - 1) & " raw=[" & CStr(oldData(i, oldColKeizoku)) & "] normalized=[" & NormalizeTextForMatch(CStr(oldData(i, oldColKeizoku))) & "]"
+        If i <= 10 Then
+            Debug.Print "Row=" & (oldDataStartRow + i - 1) & _
+                " 継続 raw=[" & CStr(oldData(i, oldColKeizoku)) & "] normalized=[" & NormalizeTextForMatch(CStr(oldData(i, oldColKeizoku))) & "]" & _
+                " 媒体 raw=[" & CStr(oldData(i, oldColMedia)) & "] normalized=[" & NormalizeMediaValue(CStr(oldData(i, oldColMedia))) & "]"
         End If
 
-        If IsContinuousDocument(CStr(oldData(i, oldColKeizoku))) Then
+        If IsContinuousDocument(CStr(oldData(i, oldColKeizoku))) And IsPaperMedia(CStr(oldData(i, oldColMedia))) Then
             groupKey = NormalizeTextForMatch(CStr(oldData(i, oldColGuide1)))
             If Not grouped.Exists(groupKey) Then
                 Set recs = New Collection
@@ -4640,5 +4645,15 @@ Private Function IsContinuousDocument(ByVal rawValue As String) As Boolean
 
     normalized = NormalizeTextForMatch(rawValue)
     IsContinuousDocument = (StrComp(normalized, "継", vbBinaryCompare) = 0 Or StrComp(normalized, "継続", vbBinaryCompare) = 0)
+
+End Function
+
+Private Function NormalizeMediaValue(ByVal rawValue As String) As String
+    NormalizeMediaValue = NormalizeTextForMatch(rawValue)
+End Function
+
+Private Function IsPaperMedia(ByVal rawValue As String) As Boolean
+
+    IsPaperMedia = (StrComp(NormalizeMediaValue(rawValue), "紙", vbBinaryCompare) = 0)
 
 End Function
