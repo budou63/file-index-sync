@@ -4309,9 +4309,9 @@ Public Sub 旧基準表_継続文書移行()
             For j = 1 To recs.Count
                 rec = recs(j)
                 wsNew.Cells(insertRow + j - 1, newColClass2).Value = rec(0)
-                wsNew.Cells(insertRow + j - 1, newColColor).Value = rec(1)
+                wsNew.Cells(insertRow + j - 1, newColColor).Value = NormalizeColorName(CStr(rec(1)))
                 wsNew.Cells(insertRow + j - 1, newColClass3).Value = rec(2)
-                wsNew.Cells(insertRow + j - 1, newColColor2).Value = rec(3)
+                wsNew.Cells(insertRow + j - 1, newColColor2).Value = NormalizeColorName(CStr(rec(3)))
                 wsNew.Cells(insertRow + j - 1, newColCreatedWareki).Value = rec(4)
                 wsNew.Cells(insertRow + j - 1, newColTitle).Value = rec(5)
                 wsNew.Cells(insertRow + j - 1, newColBiko).Value = "マクロ差込"
@@ -4338,6 +4338,29 @@ ErrorHandler:
     Resume SafeExit
 
 End Sub
+
+Private Function NormalizeColorName(ByVal value As String) As String
+
+    Dim normalized As String
+
+    normalized = Trim$(CStr(value))
+
+    Select Case normalized
+        Case "赤"
+            NormalizeColorName = "赤色"
+        Case "青"
+            NormalizeColorName = "青色"
+        Case "黄"
+            NormalizeColorName = "黄色"
+        Case "緑"
+            NormalizeColorName = "緑色"
+        Case "白"
+            NormalizeColorName = "白色"
+        Case Else
+            NormalizeColorName = normalized
+    End Select
+
+End Function
 
 Private Function FindKijunSheet_Mig(ByVal wb As Workbook, ByRef foundWs As Worksheet, ByVal notFoundMessage As String) As Boolean
 
