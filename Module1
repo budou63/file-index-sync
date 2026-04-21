@@ -3721,18 +3721,26 @@ Public Sub ClearAllSeals_NewSpec()
 
 End Sub
 
+
 Public Sub 旧基準表_継続文書移行()
 
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim oldDisplayAlerts As Boolean
+    Dim oldCalculation As XlCalculation
+
+    Dim targetYearRaw As String
+    Dim targetYearNorm As String
+    Dim oldBookPath As String
+
+    Dim wbOld As Workbook
     Dim wsOld As Worksheet
     Dim wsNew As Worksheet
-    Dim wbOld As Workbook
-    Dim oldBookPath As String
+
     Dim oldHeaderRow As Long
     Dim newHeaderRow As Long
     Dim oldDataStartRow As Long
-    Dim newDataStartRow As Long
-    Dim oldLastRow As Long
-    Dim newLastRow As Long
+
     Dim oldColKeizoku As Long
     Dim oldColGuide1 As Long
     Dim oldColColor1 As Long
@@ -3740,42 +3748,39 @@ Public Sub 旧基準表_継続文書移行()
     Dim oldColColor2 As Long
     Dim oldColNendo As Long
     Dim oldColKobetsu As Long
+
     Dim newColClass2 As Long
     Dim newColColor As Long
     Dim newColClass3 As Long
     Dim newColColor2 As Long
     Dim newColWareki As Long
+    Dim newColCreatedWareki As Long
     Dim newColTitle As Long
     Dim newColBiko As Long
-    Dim r As Long
-    Dim insertRow As Long
-    Dim movedCount As Long
-    Dim class2Value As String
-    Dim needCloseOldBook As Boolean
-    Dim oldScreenUpdating As Boolean
-    Dim oldEnableEvents As Boolean
-    Dim oldDisplayAlerts As Boolean
-    Dim oldCalculation As XlCalculation
-    Dim oldStatusBar As Variant
-    Dim oldMaxCol As Long
-    Dim newLastCol As Long
+
+    Dim oldLastRow As Long
+    Dim oldLastCol As Long
     Dim oldData As Variant
-    Dim newData As Variant
-    Dim oldRowCount As Long
-    Dim newRowCount As Long
+    Dim rowCount As Long
+
+    Dim grouped As Object
+    Dim keyOrder As Collection
+    Dim groupKey As String
+    Dim recs As Collection
+    Dim rec As Variant
+
     Dim i As Long
-    Dim existingRows As Collection
-    Dim groupedByClass2 As Object
-    Dim orderedItems As Collection
-    Dim oneItem As Variant
-    Dim newRowValues As Variant
-    Dim writeArray As Variant
-    Dim outRow As Long
-    Dim clearLastRow As Long
+    Dim movedCount As Long
 
     On Error GoTo ErrorHandler
 
-    If MsgBox("旧ファイル基準表から新ファイル基準表へ継続文書を移行します。実行しますか？", vbYesNo + vbQuestion) <> vbYes Then
+    If MsgBox("旧ファイル基準表から新ファイル基準表へ継続文書を移行します。実行しますか？", vbYesNo + vbQuestion) <> vbYes Then Exit Sub
+
+    targetYearRaw = InputBox("対象年度（和暦）を入力してください。（例: R8 / 令和8）", "対象年度入力")
+    targetYearNorm = NormalizeWarekiYear_Mig(targetYearRaw)
+    DebugLog "[年度入力] raw=[" & targetYearRaw & "] normalized=[" & targetYearNorm & "]"
+    If targetYearNorm = "" Then
+        MsgBox "年度（和暦）の入力を解釈できませんでした", vbExclamation
         Exit Sub
     End If
 
@@ -3783,64 +3788,47 @@ Public Sub 旧基準表_継続文書移行()
     oldEnableEvents = Application.EnableEvents
     oldDisplayAlerts = Application.DisplayAlerts
     oldCalculation = Application.Calculation
-    oldStatusBar = Application.StatusBar
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
     Application.Calculation = xlCalculationManual
     Application.DisplayAlerts = False
-    Application.StatusBar = "継続文書移行: 初期化中..."
 
     oldBookPath = SelectOldStandardWorkbookPath()
     If oldBookPath = "" Then GoTo SafeExit
 
     Set wbOld = Workbooks.Open(Filename:=oldBookPath, ReadOnly:=True)
-    needCloseOldBook = True
 
-    Set wsOld = GetSheetByNormalizedName(wbOld, "基準表")
-    If wsOld Is Nothing Then
-        MsgBox "選択したブックに『基準表』シートがありません。", vbExclamation
-        GoTo SafeExit
-    End If
+    If Not FindKijunSheet_Mig(wbOld, wsOld, "選択したブックに『基準表』シートがありません。") Then GoTo SafeExit
+    If Not FindKijunSheet_Mig(ThisWorkbook, wsNew, "このブックに『基準表』シートがありません。") Then GoTo SafeExit
 
-    Set wsNew = GetSheetByNormalizedName(ThisWorkbook, "基準表")
-    If wsNew Is Nothing Then
-        MsgBox "このブックに『基準表』シートがありません。", vbExclamation
-        GoTo SafeExit
-    End If
+    oldHeaderRow = FindHeaderRowByKeys_Mig(wsOld, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー"), 30)
+    newHeaderRow = FindHeaderRowByKeys_Mig(wsNew, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "作成年度（和暦）", "タイトル", "備考"), 30)
 
-    oldHeaderRow = FindHeaderRowByKeys(wsOld, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー"), 30)
-    If oldHeaderRow = 0 Then
-        MsgBox "旧シートの見出し行が見つかりません。", vbExclamation
-        GoTo SafeExit
-    End If
-    DebugLog "[旧] 採用見出し行=" & oldHeaderRow & ", 見出し一覧=" & GetMatchedHeadersText(wsOld, oldHeaderRow, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー"))
-
-    newHeaderRow = FindHeaderRowByKeys(wsNew, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "タイトル", "備考"), 30)
-    If newHeaderRow = 0 Then
-        MsgBox "新シートの見出し行が見つかりません。", vbExclamation
-        GoTo SafeExit
-    End If
-    DebugLog "[新] 採用見出し行=" & newHeaderRow & ", 見出し一覧=" & GetMatchedHeadersText(wsNew, newHeaderRow, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "タイトル", "備考"))
+    If oldHeaderRow = 0 Then MsgBox "旧シートの見出し行が見つかりません。", vbExclamation: GoTo SafeExit
+    If newHeaderRow = 0 Then MsgBox "新シートの見出し行が見つかりません。", vbExclamation: GoTo SafeExit
 
     oldDataStartRow = oldHeaderRow + 1
-    newDataStartRow = newHeaderRow + 1
+    DebugLog "[旧] 採用見出し行=" & oldHeaderRow
+    DebugLog "[新] 採用見出し行=" & newHeaderRow
+    DebugLog "[旧] データ開始行=" & oldDataStartRow
 
-    oldColKeizoku = GetHeaderColumnByName(wsOld, oldHeaderRow, "継続")
-    oldColGuide1 = GetHeaderColumnByName(wsOld, oldHeaderRow, "第１ガイド")
-    oldColColor1 = GetHeaderColumnByName(wsOld, oldHeaderRow, "１色")
-    oldColGuide2 = GetHeaderColumnByName(wsOld, oldHeaderRow, "第２ガイド")
-    oldColColor2 = GetHeaderColumnByName(wsOld, oldHeaderRow, "２色")
-    oldColNendo = GetHeaderColumnByName(wsOld, oldHeaderRow, "年度")
-    oldColKobetsu = GetHeaderColumnByName(wsOld, oldHeaderRow, "個別フォルダー")
+    oldColKeizoku = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "継続")
+    oldColGuide1 = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "第１ガイド")
+    oldColColor1 = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "１色")
+    oldColGuide2 = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "第２ガイド")
+    oldColColor2 = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "２色")
+    oldColNendo = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "年度")
+    oldColKobetsu = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "個別フォルダー")
 
-    newColClass2 = GetHeaderColumnByName(wsNew, newHeaderRow, "分類名２")
-    newColColor = GetHeaderColumnByName(wsNew, newHeaderRow, "色名")
-    newColClass3 = GetHeaderColumnByName(wsNew, newHeaderRow, "分類名３")
-    newColColor2 = GetHeaderColumnByName(wsNew, newHeaderRow, "2色名")
-    newColWareki = GetHeaderColumnByName(wsNew, newHeaderRow, "年度（和暦）")
-    newColTitle = GetHeaderColumnByName(wsNew, newHeaderRow, "タイトル")
-    newColBiko = GetHeaderColumnByName(wsNew, newHeaderRow, "備考")
+    newColClass2 = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "分類名２")
+    newColColor = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "色名")
+    newColClass3 = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "分類名３")
+    newColColor2 = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "2色名")
+    newColWareki = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "年度（和暦）")
+    newColCreatedWareki = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "作成年度（和暦）")
+    newColTitle = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "タイトル")
+    newColBiko = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "備考")
 
     If oldColKeizoku = 0 Then StopWithMissingColumn "継続"
     If oldColGuide1 = 0 Then StopWithMissingColumn "第１ガイド"
@@ -3854,116 +3842,308 @@ Public Sub 旧基準表_継続文書移行()
     If newColClass3 = 0 Then StopWithMissingColumn "分類名３"
     If newColColor2 = 0 Then StopWithMissingColumn "2色名"
     If newColWareki = 0 Then StopWithMissingColumn "年度（和暦）"
+    If newColCreatedWareki = 0 Then StopWithMissingColumn "作成年度（和暦）"
     If newColTitle = 0 Then StopWithMissingColumn "タイトル"
     If newColBiko = 0 Then StopWithMissingColumn "備考"
 
+    DebugLog "[列番号][旧] 継続=" & oldColKeizoku & " 第１ガイド=" & oldColGuide1 & " １色=" & oldColColor1 & " 第２ガイド=" & oldColGuide2 & " ２色=" & oldColColor2 & " 年度=" & oldColNendo & " 個別フォルダー=" & oldColKobetsu
+    DebugLog "[列番号][新] 分類名２=" & newColClass2 & " 色名=" & newColColor & " 分類名３=" & newColClass3 & " 2色名=" & newColColor2 & " 年度（和暦）=" & newColWareki & " 作成年度（和暦）=" & newColCreatedWareki & " タイトル=" & newColTitle & " 備考=" & newColBiko
+
     oldLastRow = wsOld.Cells(wsOld.Rows.Count, 1).End(xlUp).Row
-    newLastRow = wsNew.Cells(wsNew.Rows.Count, 1).End(xlUp).Row
-    oldMaxCol = MaxLong(Array(oldColKeizoku, oldColGuide1, oldColColor1, oldColGuide2, oldColColor2, oldColNendo, oldColKobetsu))
-    newLastCol = GetLastUsedCol(wsNew)
-    If newLastCol < newColBiko Then newLastCol = newColBiko
-
-    DebugLog "[旧] データ開始行=" & oldDataStartRow
-    DebugLog "[旧] 列番号: 継続=" & oldColKeizoku & ", 第１ガイド=" & oldColGuide1 & ", １色=" & oldColColor1 & _
-             ", 第２ガイド=" & oldColGuide2 & ", ２色=" & oldColColor2 & ", 年度=" & oldColNendo & ", 個別フォルダー=" & oldColKobetsu
-    DebugLog "[新] 列番号: 分類名２=" & newColClass2 & ", 色名=" & newColColor & ", 分類名３=" & newColClass3 & _
-             ", 2色名=" & newColColor2 & ", 年度（和暦）=" & newColWareki & ", タイトル=" & newColTitle & ", 備考=" & newColBiko
-
-    If oldLastRow >= oldDataStartRow Then
-        oldData = wsOld.Range(wsOld.Cells(oldDataStartRow, 1), wsOld.Cells(oldLastRow, oldMaxCol)).Value2
-        oldRowCount = UBound(oldData, 1)
-    Else
-        oldRowCount = 0
+    If oldLastRow < oldDataStartRow Then
+        MsgBox "0件の継続文書を移行しました", vbInformation
+        GoTo SafeExit
     End If
 
-    DebugPrintKeizokuSamplesFromArray oldData, oldDataStartRow, oldRowCount, oldColKeizoku, 10
+    oldLastCol = wsOld.Cells(oldHeaderRow, wsOld.Columns.Count).End(xlToLeft).Column
+    oldData = wsOld.Range(wsOld.Cells(oldDataStartRow, 1), wsOld.Cells(oldLastRow, oldLastCol)).Value2
+    rowCount = UBound(oldData, 1)
 
-    Set groupedByClass2 = CreateObject("Scripting.Dictionary")
-    Set orderedItems = New Collection
-    Application.StatusBar = "継続文書移行: 旧データ抽出中..."
+    Set grouped = CreateObject("Scripting.Dictionary")
+    grouped.CompareMode = vbTextCompare
+    Set keyOrder = New Collection
 
-    For i = 1 To oldRowCount
+    For i = 1 To rowCount
+        If DebugModeEnabled() And i <= 10 Then
+            Debug.Print "Row=" & (oldDataStartRow + i - 1) & " raw=[" & CStr(oldData(i, oldColKeizoku)) & "] normalized=[" & NormalizeTextForMatch(CStr(oldData(i, oldColKeizoku))) & "]"
+        End If
+
         If IsContinuousDocument(CStr(oldData(i, oldColKeizoku))) Then
-            class2Value = Trim$(CStr(oldData(i, oldColGuide1)))
-            newRowValues = CreateInsertedRowArray(oldData, i, newLastCol, _
-                                                  oldColGuide1, oldColColor1, oldColGuide2, oldColColor2, oldColNendo, oldColKobetsu, _
-                                                  newColClass2, newColColor, newColClass3, newColColor2, newColWareki, newColTitle, newColBiko)
-            oneItem = Array(class2Value, newRowValues)
-            orderedItems.Add oneItem
-
-            If Not groupedByClass2.Exists(class2Value) Then
-                Set groupedByClass2(class2Value) = New Collection
+            groupKey = NormalizeTextForMatch(CStr(oldData(i, oldColGuide1)))
+            If Not grouped.Exists(groupKey) Then
+                Set recs = New Collection
+                grouped.Add groupKey, recs
+                keyOrder.Add groupKey
             End If
-            groupedByClass2(class2Value).Add newRowValues
+            rec = Array(CStr(oldData(i, oldColGuide1)), CStr(oldData(i, oldColColor1)), CStr(oldData(i, oldColGuide2)), CStr(oldData(i, oldColColor2)), CStr(oldData(i, oldColNendo)), CStr(oldData(i, oldColKobetsu)))
+            grouped(groupKey).Add rec
         End If
     Next i
 
-    Set existingRows = New Collection
-    If newLastRow >= newDataStartRow Then
-        newData = wsNew.Range(wsNew.Cells(newDataStartRow, 1), wsNew.Cells(newLastRow, newLastCol)).Value2
-        newRowCount = UBound(newData, 1)
-        For i = 1 To newRowCount
-            existingRows.Add CopyRowFrom2DArray(newData, i, newLastCol)
-        Next i
-    End If
+    DebugPrintNewYearSample_Mig wsNew, newHeaderRow + 1, newColWareki, 10
 
-    Application.StatusBar = "継続文書移行: 差し込み位置計算中..."
-    For i = 1 To orderedItems.Count
-        oneItem = orderedItems(i)
-        class2Value = CStr(oneItem(0))
-        newRowValues = oneItem(1)
-        insertRow = FindInsertIndexByCategory2InCollection(existingRows, class2Value, newColClass2)
-        If insertRow > existingRows.Count Then
-            existingRows.Add newRowValues
-        Else
-            existingRows.Add newRowValues, , insertRow
+    movedCount = 0
+    For i = 1 To keyOrder.Count
+        groupKey = CStr(keyOrder(i))
+        Set recs = grouped(groupKey)
+        If recs.Count > 0 Then
+            Dim insertRow As Long
+            insertRow = FindInsertRowForGroup_Mig(wsNew, newHeaderRow + 1, newColWareki, newColClass2, targetYearNorm, groupKey)
+
+            wsNew.Rows(insertRow).Resize(recs.Count).Insert Shift:=xlDown
+
+            Dim j As Long
+            For j = 1 To recs.Count
+                rec = recs(j)
+                wsNew.Cells(insertRow + j - 1, newColClass2).Value = rec(0)
+                wsNew.Cells(insertRow + j - 1, newColColor).Value = rec(1)
+                wsNew.Cells(insertRow + j - 1, newColClass3).Value = rec(2)
+                wsNew.Cells(insertRow + j - 1, newColColor2).Value = rec(3)
+                wsNew.Cells(insertRow + j - 1, newColCreatedWareki).Value = rec(4)
+                wsNew.Cells(insertRow + j - 1, newColTitle).Value = rec(5)
+                wsNew.Cells(insertRow + j - 1, newColBiko).Value = "マクロ差込"
+                movedCount = movedCount + 1
+            Next j
         End If
     Next i
-
-    movedCount = orderedItems.Count
-
-    Application.StatusBar = "継続文書移行: シートへ反映中..."
-    If existingRows.Count > 0 Then
-        ReDim writeArray(1 To existingRows.Count, 1 To newLastCol)
-        For outRow = 1 To existingRows.Count
-            newRowValues = existingRows(outRow)
-            For i = 1 To newLastCol
-                writeArray(outRow, i) = newRowValues(i)
-            Next i
-        Next outRow
-    End If
-
-    clearLastRow = newDataStartRow + existingRows.Count - 1
-    If newLastRow > clearLastRow Then clearLastRow = newLastRow
-    If clearLastRow >= newDataStartRow Then
-        wsNew.Range(wsNew.Cells(newDataStartRow, 1), wsNew.Cells(clearLastRow, newLastCol)).ClearContents
-    End If
-
-    If existingRows.Count > 0 Then
-        wsNew.Range(wsNew.Cells(newDataStartRow, 1), wsNew.Cells(newDataStartRow + existingRows.Count - 1, newLastCol)).Value = writeArray
-    End If
 
     MsgBox CStr(movedCount) & "件の継続文書を移行しました", vbInformation
-    GoTo SafeExit
 
-ErrorHandler:
-    MsgBox "処理を停止しました: " & Err.Description, vbExclamation
-    
 SafeExit:
     On Error Resume Next
-    If needCloseOldBook Then wbOld.Close SaveChanges:=False
-    Application.StatusBar = False
+    If Not wbOld Is Nothing Then wbOld.Close SaveChanges:=False
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
     Application.Calculation = oldCalculation
     Application.DisplayAlerts = oldDisplayAlerts
-    If IsEmpty(oldStatusBar) Then
-        Application.StatusBar = False
-    Else
-        Application.StatusBar = oldStatusBar
+    Application.StatusBar = False
+    On Error GoTo 0
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "処理を停止しました: " & Err.Description, vbExclamation
+    Resume SafeExit
+
+End Sub
+
+Private Function FindKijunSheet_Mig(ByVal wb As Workbook, ByRef foundWs As Worksheet, ByVal notFoundMessage As String) As Boolean
+
+    Dim ws As Worksheet
+    Dim partial As Collection
+    Dim normName As String
+    Dim msg As String
+    Dim i As Long
+
+    Set partial = New Collection
+
+    For Each ws In wb.Worksheets
+        normName = NormalizeSheetNameForMatch(ws.Name)
+        If normName = "基準表" Then
+            Set foundWs = ws
+            FindKijunSheet_Mig = True
+            Exit Function
+        End If
+    Next ws
+
+    For Each ws In wb.Worksheets
+        normName = NormalizeSheetNameForMatch(ws.Name)
+        If InStr(1, normName, "基準表", vbBinaryCompare) > 0 Then
+            partial.Add ws.Name
+            Set foundWs = ws
+        End If
+    Next ws
+
+    If partial.Count = 1 Then
+        FindKijunSheet_Mig = True
+        Exit Function
     End If
+
+    If partial.Count > 1 Then
+        msg = "『基準表』に一致するシート候補が複数あります:" & vbCrLf
+        For i = 1 To partial.Count
+            msg = msg & "- " & CStr(partial(i)) & vbCrLf
+        Next i
+        MsgBox msg, vbExclamation
+        Exit Function
+    End If
+
+    MsgBox notFoundMessage, vbExclamation
+
+End Function
+
+Private Function FindHeaderRowByKeys_Mig(ByVal ws As Worksheet, ByVal requiredKeys As Variant, ByVal maxScanRow As Long) As Long
+
+    Dim r As Long
+    Dim i As Long
+    Dim lastColInRow As Long
+    Dim keyText As String
+    Dim hitCount As Long
+    Dim bestCount As Long
+
+    For r = 1 To maxScanRow
+        lastColInRow = ws.Cells(r, ws.Columns.Count).End(xlToLeft).Column
+        hitCount = 0
+
+        For i = LBound(requiredKeys) To UBound(requiredKeys)
+            keyText = CStr(requiredKeys(i))
+            If HeaderExistsInRow_Mig(ws, r, lastColInRow, keyText) Then hitCount = hitCount + 1
+        Next i
+
+        If hitCount > bestCount Then
+            bestCount = hitCount
+            FindHeaderRowByKeys_Mig = r
+        End If
+    Next r
+
+    If bestCount = 0 Then FindHeaderRowByKeys_Mig = 0
+
+End Function
+
+Private Function HeaderExistsInRow_Mig(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal lastCol As Long, ByVal headerName As String) As Boolean
+
+    Dim c As Long
+
+    For c = 1 To lastCol
+        If StrComp(NormalizeTextForMatch(GetRawCellMerged(ws, rowNo, c)), NormalizeTextForMatch(headerName), vbBinaryCompare) = 0 Then
+            HeaderExistsInRow_Mig = True
+            Exit Function
+        End If
+    Next c
+
+End Function
+
+Private Function GetHeaderColumnByName_Mig(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerName As String) As Long
+
+    Dim c As Long
+    Dim lastCol As Long
+
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        If StrComp(NormalizeTextForMatch(GetRawCellMerged(ws, headerRow, c)), NormalizeTextForMatch(headerName), vbBinaryCompare) = 0 Then
+            GetHeaderColumnByName_Mig = c
+            Exit Function
+        End If
+    Next c
+
+End Function
+
+Private Function NormalizeWarekiYear_Mig(ByVal rawValue As Variant) As String
+
+    Dim s As String
+    Dim i As Long
+    Dim ch As String
+    Dim n As String
+
+    s = NormalizeTextForMatch(CStr(rawValue))
+    If s = "" Then Exit Function
+
+    On Error Resume Next
+    s = StrConv(s, vbNarrow)
     On Error GoTo 0
 
+    s = UCase$(s)
+    s = Replace(s, " ", "")
+
+    If Left$(s, 2) = "令和" Then s = "R" & Mid$(s, 3)
+    If Left$(s, 1) = "Ｒ" Then s = "R" & Mid$(s, 2)
+    If Left$(s, 1) <> "R" Then Exit Function
+
+    For i = 2 To Len(s)
+        ch = Mid$(s, i, 1)
+        If ch Like "[0-9]" Then
+            n = n & ch
+        Else
+            Exit Function
+        End If
+    Next i
+
+    If n = "" Then Exit Function
+    Do While Len(n) > 1 And Left$(n, 1) = "0"
+        n = Mid$(n, 2)
+    Loop
+
+    NormalizeWarekiYear_Mig = "R" & n
+
+End Function
+
+Private Function FindInsertRowForGroup_Mig( _
+    ByVal wsNew As Worksheet, _
+    ByVal dataStartRow As Long, _
+    ByVal colYear As Long, _
+    ByVal colClass2 As Long, _
+    ByVal targetYearNorm As String, _
+    ByVal class2Norm As String) As Long
+
+    Dim lastRow As Long
+    Dim r As Long
+    Dim y As String
+    Dim c2 As String
+    Dim hasYear As Boolean
+    Dim yearEnd As Long
+    Dim hasClass2 As Boolean
+    Dim class2End As Long
+
+    lastRow = wsNew.Cells(wsNew.Rows.Count, 1).End(xlUp).Row
+    If lastRow < dataStartRow Then
+        FindInsertRowForGroup_Mig = dataStartRow
+        Exit Function
+    End If
+
+    For r = dataStartRow To lastRow
+        y = NormalizeWarekiYear_Mig(GetRawCellMerged(wsNew, r, colYear))
+        If y = targetYearNorm Then
+            hasYear = True
+            yearEnd = r
+
+            c2 = NormalizeTextForMatch(GetRawCellMerged(wsNew, r, colClass2))
+            If c2 = class2Norm Then
+                hasClass2 = True
+                class2End = r
+                Do While class2End < lastRow
+                    If NormalizeWarekiYear_Mig(GetRawCellMerged(wsNew, class2End + 1, colYear)) = targetYearNorm And _
+                       NormalizeTextForMatch(GetRawCellMerged(wsNew, class2End + 1, colClass2)) = class2Norm Then
+                        class2End = class2End + 1
+                    Else
+                        Exit Do
+                    End If
+                Loop
+            End If
+        End If
+    Next r
+
+    If hasClass2 Then
+        FindInsertRowForGroup_Mig = class2End + 1
+    ElseIf hasYear Then
+        FindInsertRowForGroup_Mig = yearEnd + 1
+    Else
+        FindInsertRowForGroup_Mig = lastRow + 1
+    End If
+
+End Function
+
+Private Sub DebugPrintNewYearSample_Mig(ByVal ws As Worksheet, ByVal startRow As Long, ByVal yearCol As Long, ByVal sampleCount As Long)
+
+    Dim i As Long
+    Dim r As Long
+    Dim rawValue As String
+
+    If Not DebugModeEnabled() Then Exit Sub
+
+    For i = 0 To sampleCount - 1
+        r = startRow + i
+        rawValue = GetRawCellMerged(ws, r, yearCol)
+        Debug.Print "[新年度] Row=" & r & " raw=[" & rawValue & "] normalized=[" & NormalizeWarekiYear_Mig(rawValue) & "]"
+    Next i
+
+End Sub
+
+Private Function DebugModeEnabled() As Boolean
+    DebugModeEnabled = DEBUG_MODE
+End Function
+
+Private Sub StopWithMissingColumn(ByVal headerName As String)
+    Err.Raise vbObjectError + 3901, , headerName & "列が見つかりません"
 End Sub
 
 Private Function SelectOldStandardWorkbookPath() As String
@@ -3982,312 +4162,12 @@ Private Function SelectOldStandardWorkbookPath() As String
 
 End Function
 
-Private Function GetSheetByNormalizedName(ByVal wb As Workbook, ByVal targetName As String) As Worksheet
-
-    Dim ws As Worksheet
-    Dim normalizedTarget As String
-    Dim normalizedSheetName As String
-    Dim partialMatches As Collection
-    Dim candidate As Variant
-    Dim candidateList As String
-
-    normalizedTarget = NormalizeSheetNameForMatch(targetName)
-    Set partialMatches = New Collection
-
-    For Each ws In wb.Worksheets
-        normalizedSheetName = NormalizeSheetNameForMatch(ws.Name)
-
-        If StrComp(normalizedSheetName, normalizedTarget, vbBinaryCompare) = 0 Then
-            Set GetSheetByNormalizedName = ws
-            Exit Function
-        End If
-
-        If InStr(1, normalizedSheetName, normalizedTarget, vbBinaryCompare) > 0 Then
-            partialMatches.Add ws
-        End If
-    Next ws
-
-    If partialMatches.Count = 1 Then
-        Set GetSheetByNormalizedName = partialMatches(1)
-        Exit Function
-    End If
-
-    If partialMatches.Count > 1 Then
-        For Each candidate In partialMatches
-            If Len(candidateList) > 0 Then candidateList = candidateList & vbCrLf
-            candidateList = candidateList & "・" & CStr(candidate.Name)
-        Next candidate
-        Err.Raise vbObjectError + 3902, , _
-            "「" & targetName & "」に一致するシート候補が複数あります。" & vbCrLf & candidateList
-    End If
-
-End Function
+Private Sub DebugLog(ByVal messageText As String)
+    If DEBUG_MODE Then Debug.Print messageText
+End Sub
 
 Private Function NormalizeSheetNameForMatch(ByVal sheetName As String) As String
-
-    Dim s As String
-
-    s = CStr(sheetName)
-    s = Trim$(s)
-    s = Replace(s, " ", "")
-    s = Replace(s, "　", "")
-    s = Replace(s, vbCr, "")
-    s = Replace(s, vbLf, "")
-    s = Replace(s, vbTab, "")
-
-    NormalizeSheetNameForMatch = s
-
-End Function
-
-Private Sub DebugLog(ByVal messageText As String)
-
-    If DEBUG_MODE Then Debug.Print messageText
-
-End Sub
-
-Private Function MaxLong(ByVal values As Variant) As Long
-
-    Dim i As Long
-    Dim m As Long
-
-    For i = LBound(values) To UBound(values)
-        If CLng(values(i)) > m Then m = CLng(values(i))
-    Next i
-    MaxLong = m
-
-End Function
-
-Private Sub DebugPrintKeizokuSamplesFromArray( _
-    ByVal oldData As Variant, _
-    ByVal startRowNo As Long, _
-    ByVal rowCount As Long, _
-    ByVal keizokuCol As Long, _
-    ByVal sampleCount As Long)
-
-    Dim i As Long
-    Dim endIndex As Long
-    Dim rawValue As String
-    Dim normalizedValue As String
-
-    If Not DEBUG_MODE Then Exit Sub
-    If rowCount <= 0 Then Exit Sub
-    If sampleCount <= 0 Then Exit Sub
-
-    endIndex = sampleCount
-    If endIndex > rowCount Then endIndex = rowCount
-
-    Debug.Print "[旧] 継続列サンプル出力: " & startRowNo & "行目～" & (startRowNo + endIndex - 1) & "行目"
-    For i = 1 To endIndex
-        rawValue = CStr(oldData(i, keizokuCol))
-        normalizedValue = NormalizeTextForMatch(rawValue)
-        Debug.Print "Row=" & (startRowNo + i - 1) & " raw=[" & rawValue & "] normalized=[" & normalizedValue & "]"
-    Next i
-
-End Sub
-
-Private Function CreateInsertedRowArray( _
-    ByVal oldData As Variant, _
-    ByVal oldIndex As Long, _
-    ByVal newLastCol As Long, _
-    ByVal oldColGuide1 As Long, _
-    ByVal oldColColor1 As Long, _
-    ByVal oldColGuide2 As Long, _
-    ByVal oldColColor2 As Long, _
-    ByVal oldColNendo As Long, _
-    ByVal oldColKobetsu As Long, _
-    ByVal newColClass2 As Long, _
-    ByVal newColColor As Long, _
-    ByVal newColClass3 As Long, _
-    ByVal newColColor2 As Long, _
-    ByVal newColWareki As Long, _
-    ByVal newColTitle As Long, _
-    ByVal newColBiko As Long) As Variant
-
-    Dim rowValues() As Variant
-
-    ReDim rowValues(1 To newLastCol)
-    rowValues(newColClass2) = oldData(oldIndex, oldColGuide1)
-    rowValues(newColColor) = oldData(oldIndex, oldColColor1)
-    rowValues(newColClass3) = oldData(oldIndex, oldColGuide2)
-    rowValues(newColColor2) = oldData(oldIndex, oldColColor2)
-    rowValues(newColWareki) = oldData(oldIndex, oldColNendo)
-    rowValues(newColTitle) = oldData(oldIndex, oldColKobetsu)
-    rowValues(newColBiko) = "マクロ差込"
-
-    CreateInsertedRowArray = rowValues
-
-End Function
-
-Private Function CopyRowFrom2DArray(ByVal data As Variant, ByVal rowIndex As Long, ByVal colCount As Long) As Variant
-
-    Dim rowValues() As Variant
-    Dim c As Long
-
-    ReDim rowValues(1 To colCount)
-    For c = 1 To colCount
-        rowValues(c) = data(rowIndex, c)
-    Next c
-
-    CopyRowFrom2DArray = rowValues
-
-End Function
-
-Private Function FindInsertIndexByCategory2InCollection( _
-    ByVal rowsData As Collection, _
-    ByVal class2Value As String, _
-    ByVal class2Col As Long) As Long
-
-    Dim i As Long
-    Dim rowValues As Variant
-    Dim checkValue As String
-    Dim blockEnd As Long
-
-    For i = 1 To rowsData.Count
-        rowValues = rowsData(i)
-        checkValue = Trim$(CStr(rowValues(class2Col)))
-
-        If StrComp(checkValue, class2Value, vbBinaryCompare) = 0 Then
-            blockEnd = i
-            Do While blockEnd < rowsData.Count
-                rowValues = rowsData(blockEnd + 1)
-                checkValue = Trim$(CStr(rowValues(class2Col)))
-                If StrComp(checkValue, class2Value, vbBinaryCompare) <> 0 Then Exit Do
-                blockEnd = blockEnd + 1
-            Loop
-
-            FindInsertIndexByCategory2InCollection = blockEnd + 1
-            Exit Function
-        End If
-    Next i
-
-    FindInsertIndexByCategory2InCollection = rowsData.Count + 1
-
-End Function
-
-Private Sub DebugPrintKeizokuSamples( _
-    ByVal ws As Worksheet, _
-    ByVal startRow As Long, _
-    ByVal lastRow As Long, _
-    ByVal keizokuCol As Long, _
-    ByVal sampleCount As Long)
-
-    Dim endRow As Long
-    Dim r As Long
-    Dim rawValue As String
-    Dim normalizedValue As String
-
-    If sampleCount <= 0 Then Exit Sub
-    If lastRow < startRow Then Exit Sub
-
-    endRow = startRow + sampleCount - 1
-    If endRow > lastRow Then endRow = lastRow
-
-    Debug.Print "[旧] 継続列サンプル出力: " & startRow & "行目～" & endRow & "行目"
-    For r = startRow To endRow
-        rawValue = GetRawCellMerged(ws, r, keizokuCol)
-        normalizedValue = NormalizeTextForMatch(rawValue)
-        Debug.Print "Row=" & r & " raw=[" & rawValue & "] normalized=[" & normalizedValue & "]"
-    Next r
-
-End Sub
-
-Private Function GetMatchedHeadersText(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal expectedHeaders As Variant) As String
-
-    Dim i As Long
-    Dim foundText As String
-    Dim colNo As Long
-    Dim headerName As String
-
-    For i = LBound(expectedHeaders) To UBound(expectedHeaders)
-        headerName = CStr(expectedHeaders(i))
-        colNo = GetHeaderColumnByName(ws, headerRow, headerName)
-        If colNo > 0 Then
-            If Len(foundText) > 0 Then foundText = foundText & ", "
-            foundText = foundText & headerName & "(C" & colNo & ")"
-        End If
-    Next i
-
-    GetMatchedHeadersText = foundText
-
-End Function
-
-Private Function FindHeaderRowByKeys(ByVal ws As Worksheet, ByVal requiredKeys As Variant, ByVal maxScanRow As Long) As Long
-
-    Dim r As Long
-    Dim i As Long
-    Dim lastColInRow As Long
-    Dim keyText As String
-    Dim hitCount As Long
-    Dim bestCount As Long
-
-    For r = 1 To maxScanRow
-        lastColInRow = ws.Cells(r, ws.Columns.Count).End(xlToLeft).Column
-        hitCount = 0
-
-        For i = LBound(requiredKeys) To UBound(requiredKeys)
-            keyText = CStr(requiredKeys(i))
-            If HeaderExistsInRow(ws, r, lastColInRow, keyText) Then hitCount = hitCount + 1
-        Next i
-
-        If hitCount > bestCount Then
-            bestCount = hitCount
-            FindHeaderRowByKeys = r
-        End If
-    Next r
-
-    If bestCount = 0 Then FindHeaderRowByKeys = 0
-
-End Function
-
-Private Function HeaderExistsInRow(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal lastCol As Long, ByVal headerName As String) As Boolean
-
-    Dim c As Long
-
-    For c = 1 To lastCol
-        If StrComp(GetTrimmedCellMerged(ws, rowNo, c), Trim$(headerName), vbBinaryCompare) = 0 Then
-            HeaderExistsInRow = True
-            Exit Function
-        End If
-    Next c
-
-End Function
-
-Private Function GetHeaderColumnByName(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerName As String) As Long
-
-    Dim c As Long
-    Dim lastCol As Long
-
-    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
-
-    For c = 1 To lastCol
-        If StrComp(GetTrimmedCellMerged(ws, headerRow, c), Trim$(headerName), vbBinaryCompare) = 0 Then
-            GetHeaderColumnByName = c
-            Exit Function
-        End If
-    Next c
-
-End Function
-
-Private Function GetTrimmedCellMerged(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As String
-
-    GetTrimmedCellMerged = Trim$(GetRawCellMerged(ws, rowNo, colNo))
-
-End Function
-
-Private Function GetRawCellMerged(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As String
-
-    Dim targetCell As Range
-    Dim rawText As String
-
-    Set targetCell = ws.Cells(rowNo, colNo)
-    If targetCell.MergeCells Then
-        rawText = CStr(targetCell.MergeArea.Cells(1, 1).Value)
-    Else
-        rawText = CStr(targetCell.Value)
-    End If
-
-    GetRawCellMerged = rawText
-
+    NormalizeSheetNameForMatch = NormalizeTextForMatch(sheetName)
 End Function
 
 Private Function NormalizeTextForMatch(ByVal valueText As String) As String
@@ -4295,14 +4175,26 @@ Private Function NormalizeTextForMatch(ByVal valueText As String) As String
     Dim s As String
 
     s = CStr(valueText)
-    s = Trim$(s)
-    s = Replace(s, " ", "")
-    s = Replace(s, "　", "")
     s = Replace(s, vbCr, "")
     s = Replace(s, vbLf, "")
     s = Replace(s, vbTab, "")
+    s = Replace(s, ChrW(&H3000), "")
+    s = Trim$(s)
 
     NormalizeTextForMatch = s
+
+End Function
+
+Private Function GetRawCellMerged(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As String
+
+    Dim targetCell As Range
+
+    Set targetCell = ws.Cells(rowNo, colNo)
+    If targetCell.MergeCells Then
+        GetRawCellMerged = CStr(targetCell.MergeArea.Cells(1, 1).Value)
+    Else
+        GetRawCellMerged = CStr(targetCell.Value)
+    End If
 
 End Function
 
@@ -4311,47 +4203,6 @@ Private Function IsContinuousDocument(ByVal rawValue As String) As Boolean
     Dim normalized As String
 
     normalized = NormalizeTextForMatch(rawValue)
-    IsContinuousDocument = (StrComp(normalized, "継", vbBinaryCompare) = 0 Or _
-                            StrComp(normalized, "継続", vbBinaryCompare) = 0)
+    IsContinuousDocument = (StrComp(normalized, "継", vbBinaryCompare) = 0 Or StrComp(normalized, "継続", vbBinaryCompare) = 0)
 
 End Function
-
-Private Function FindInsertRowByCategory2( _
-    ByVal wsNew As Worksheet, _
-    ByVal dataStartRow As Long, _
-    ByVal lastRow As Long, _
-    ByVal colClass2 As Long, _
-    ByVal class2Value As String) As Long
-
-    Dim r As Long
-    Dim blockEndRow As Long
-
-    If lastRow < dataStartRow Then
-        FindInsertRowByCategory2 = dataStartRow
-        Exit Function
-    End If
-
-    For r = dataStartRow To lastRow
-        If StrComp(GetTrimmedCellMerged(wsNew, r, colClass2), class2Value, vbBinaryCompare) = 0 Then
-            blockEndRow = r
-            Do While blockEndRow + 1 <= lastRow
-                If StrComp(GetTrimmedCellMerged(wsNew, blockEndRow + 1, colClass2), class2Value, vbBinaryCompare) <> 0 Then
-                    Exit Do
-                End If
-                blockEndRow = blockEndRow + 1
-            Loop
-
-            FindInsertRowByCategory2 = blockEndRow + 1
-            Exit Function
-        End If
-    Next r
-
-    FindInsertRowByCategory2 = lastRow + 1
-
-End Function
-
-Private Sub StopWithMissingColumn(ByVal headerName As String)
-
-    Err.Raise vbObjectError + 3901, , headerName & "列が見つかりません"
-
-End Sub
