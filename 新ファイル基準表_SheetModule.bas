@@ -22,6 +22,8 @@ Private Sub Worksheet_Change(ByVal Target As Range)
     Application.EnableEvents = False
 
     ' 標準モジュール(Module1)の補完処理を呼び出す
+    ' ※この中で「年度（和暦）→年度（西暦）」および
+    '   「廃棄年月日自動計算」まで連続実行する
     新ファイル基準表_表示名からID自動補完 Target
     ' 追記: 色名が変更された行は 2色名 へ同値同期
     新ファイル基準表_色名から2色名同期 Target, Me
