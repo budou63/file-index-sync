@@ -700,6 +700,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim updateStartRow As Long
     Dim updateEndRow As Long
     Dim didUpdateRows As Boolean
+    Dim shapeLayouts As Object
+    Dim shapeLayoutsSaved As Boolean
 
     On Error GoTo ErrorHandler
 
@@ -731,26 +733,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
     CreateFormatAndWidthTemplate wsDst, dstLastCol, formatTemplateMap, columnWidthMap, wsFormatTemplate
 
     ' 主要表示列（左側に寄せる列）
-    displayHeaders = Array( _
-        "通し番号", _
-        "キャビネット番号", _
-        "ｎ＋1", _
-        "毎年度利用区分1:毎年作成 2:単年のみ", _
-        "原課", _
-        "年度（和暦）", _
-        "分類名１", _
-        "分類名２", _
-        "2色名", _
-        "分類名３", _
-        "色名", _
-        "作成年度（和暦）", _
-        "タイトル", _
-        "保存期間", _
-        "媒体種別", _
-        "保存番号", _
-        "廃棄年月日", _
-        "同期状態", _
-        "ファイルID")
+    ' 差し替えポイント: 列順定義は専用関数で一元管理
+    displayHeaders = GetStep2DisplayHeadersOrder()
 
     ' ユーザー管理列（CSV上書き対象外）
     baselineUserManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1", "保存番号", "廃棄年月日", "同期状態")
@@ -835,7 +819,12 @@ ContinueNextSourceRow:
     End If
 
     ' 5) 主要列だけ左側へ並べ直し（それ以外は削除せず後ろに残す）
+    ' 差し替えポイント: ボタン/図形ずれ対策として Shapes を退避してから列移動
+    Set shapeLayouts = SaveSheetShapesLayout(wsDst)
+    shapeLayoutsSaved = Not shapeLayouts Is Nothing
+
     targetCol = 1
+    On Error GoTo ReorderError
     For i = LBound(displayHeaders) To UBound(displayHeaders)
         srcLastCol = GetLastUsedCol(wsDst)
         foundCol = FindHeaderColumn(wsDst, srcLastCol, GetStep2HeaderCandidates(CStr(displayHeaders(i))))
@@ -865,6 +854,11 @@ ContinueNextSourceRow:
                 targetCol = targetCol + 1
             End If
         Next i
+    End If
+ReorderExit:
+    On Error GoTo ErrorHandler
+    If shapeLayoutsSaved Then
+        RestoreSheetShapesLayout wsDst, shapeLayouts
     End If
 
     leftFixedCount = targetCol - 1
@@ -924,6 +918,7 @@ ContinueNextSourceRow:
 
 SafeExit:
     On Error Resume Next
+    If shapeLayoutsSaved Then RestoreSheetShapesLayout wsDst, shapeLayouts
     If Not wsValidationTemplate Is Nothing Then
         Application.DisplayAlerts = False
         wsValidationTemplate.Delete
@@ -944,6 +939,10 @@ SafeExit:
 ErrorHandler:
     MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & Err.Description, vbCritical
     Resume SafeExit
+
+ReorderError:
+    If shapeLayoutsSaved Then RestoreSheetShapesLayout wsDst, shapeLayouts
+    Resume ErrorHandler
 
 End Sub
 
@@ -2016,6 +2015,92 @@ Private Function GetStep2HeaderCandidates(ByVal targetHeader As String) As Varia
         Case Else
             GetStep2HeaderCandidates = Array(targetHeader)
     End Select
+
+End Function
+
+'========================================================
+' 手順2 左側表示列順（見出し名ベース）を一元管理
+' - 指定順に存在する列のみ前へ寄せる
+' - 指定外列は後方に残す
+'========================================================
+Private Function GetStep2DisplayHeadersOrder() As Variant
+
+    GetStep2DisplayHeadersOrder = Array( _
+        "通し番号", "キャビネット番号", "ｎ＋1", "毎年度利用区分1:毎年作成 2:単年のみ", "原課", "年度（和暦）", "分類名１", "分類名２", "2色名", "分類名３", _
+        "色名", "作成年度（和暦）", "タイトル", "保存期間", "媒体種別", "保存番号", "廃棄年月日", "内容・取扱い", "備考", "同期状態", _
+        "ファイルID", "ファイル番号", "バーコード番号", "年度", "原課ID", "サブタイトル", "完結日", "完結区分-1：未完結 1：完結", "完結者メンバーID", "保管期間ID", _
+        "保管期間", "保管期間完了予定年", "保管期間完了予定年（和暦）", "保存期間ID", "保存期間満了時の措置ID", "保存期間満了時の措置", "分類コード１", "分類コード２", "分類コード３", "分類コード４", _
+        "分類名４", "分類コード５", "分類名５", "分類内ファイルソート順", "年度暦年区分1:年度 2:暦年", "色ID", "媒体種別ID", "保存場所ID1", "保存場所コード１", "保存場所１", _
+        "保存場所ID2", "保存場所コード２", "保存場所２", "保存場所ID3", "保存場所コード３", "保存場所３", "保存場所ID4", "保存場所コード４", "保存場所４", "保存場所ID5", _
+        "保存場所コード５", "保存場所５", "保存箱ID", "保存箱コード", "保存箱名称", "ファイルラベルID", "ファイルラベル", "ファイルラベル出力済み-1:未出力 1:出力", "背表紙用タイトル", "背表紙用サブタイトル", _
+        "公開用タイトル", "公開用サブタイトル", "公開区分-1:非公開 1:公開", "歴史資料区分-1:非該当 1:該当", "廃棄区分1:未廃棄 2:廃棄済 3:不明", "廃棄延長年", "廃棄延長理由", "廃棄予定年", "廃棄予定年（和暦）", "機密レベルID", _
+        "機密レベル名称", "作成所属名", "作成年度", "作成者名", "引継処理日", "棚卸処理日", "廃棄処理日", "履歴ファイル区分-1:非該当 1:該当", "機密ファイル区分-1:機密ファイル", "履歴番号", _
+        "履歴管理コメント", "登録者メンバーID", "登録日時", "更新者メンバーID", "更新日時", "汎用項目１", "汎用項目２", "汎用項目３", "汎用項目４", "汎用項目５", _
+        "汎用項目６", "汎用項目７", "汎用項目８", "汎用項目９", "汎用項目１０", "汎用日付項目１", "汎用日付項目２", "汎用日付項目３", "汎用日付項目４", "汎用日付項目５", _
+        "汎用数値項目１", "汎用数値項目２", "汎用数値項目３", "汎用数値項目４", "汎用数値項目５", "汎用選択項目１", "汎用選択項目２", "汎用選択項目３", "汎用選択項目４", "汎用選択項目５", _
+        "汎用チェック項目１", "汎用チェック項目２", "汎用チェック項目３", "汎用チェック項目４", "汎用チェック項目５", "ファイルラベル区分", "ファイルラベルサイズ" _
+    )
+
+End Function
+
+Private Function SaveSheetShapesLayout(ByVal ws As Worksheet) As Object
+
+    Dim shapeLayouts As Object
+    Dim shp As Shape
+    Dim info As Variant
+
+    If ws Is Nothing Then Exit Function
+
+    Set shapeLayouts = CreateObject("Scripting.Dictionary")
+
+    For Each shp In ws.Shapes
+        info = Array(shp.Name, shp.Top, shp.Left, shp.Width, shp.Height, CLng(shp.Placement))
+        shapeLayouts(shp.Name) = info
+
+        On Error Resume Next
+        shp.Placement = xlFreeFloating
+        On Error GoTo 0
+    Next shp
+
+    Set SaveSheetShapesLayout = shapeLayouts
+
+End Function
+
+Private Sub RestoreSheetShapesLayout(ByVal ws As Worksheet, ByVal shapeLayouts As Object)
+
+    Dim shapeName As Variant
+    Dim info As Variant
+    Dim shp As Shape
+
+    If ws Is Nothing Then Exit Sub
+    If shapeLayouts Is Nothing Then Exit Sub
+
+    For Each shapeName In shapeLayouts.Keys
+        If TryGetShapeByName(ws, CStr(shapeName), shp) Then
+            info = shapeLayouts(shapeName)
+
+            On Error Resume Next
+            shp.Left = CDbl(info(2))
+            shp.Top = CDbl(info(1))
+            shp.Width = CDbl(info(3))
+            shp.Height = CDbl(info(4))
+            shp.Placement = CLng(info(5))
+            On Error GoTo 0
+        End If
+    Next shapeName
+
+End Sub
+
+Private Function TryGetShapeByName(ByVal ws As Worksheet, ByVal shapeName As String, ByRef outShape As Shape) As Boolean
+
+    On Error GoTo NotFound
+    Set outShape = ws.Shapes(shapeName)
+    TryGetShapeByName = True
+    Exit Function
+
+NotFound:
+    Set outShape = Nothing
+    TryGetShapeByName = False
 
 End Function
 
@@ -4161,6 +4246,7 @@ Public Sub 旧基準表_継続文書移行()
     Dim oldColColor2 As Long
     Dim oldColNendo As Long
     Dim oldColKobetsu As Long
+    Dim oldColMedia As Long
 
     Dim newColClass2 As Long
     Dim newColColor As Long
@@ -4215,7 +4301,7 @@ Public Sub 旧基準表_継続文書移行()
     If Not FindKijunSheet_Mig(wbOld, wsOld, "選択したブックに『基準表』シートがありません。") Then GoTo SafeExit
     If Not FindKijunSheet_Mig(ThisWorkbook, wsNew, "このブックに『基準表』シートがありません。") Then GoTo SafeExit
 
-    oldHeaderRow = FindHeaderRowByKeys_Mig(wsOld, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー"), 30)
+    oldHeaderRow = FindHeaderRowByKeys_Mig(wsOld, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー", "媒体"), 30)
     newHeaderRow = FindHeaderRowByKeys_Mig(wsNew, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "作成年度（和暦）", "タイトル", "備考"), 30)
 
     If oldHeaderRow = 0 Then MsgBox "旧シートの見出し行が見つかりません。", vbExclamation: GoTo SafeExit
@@ -4233,6 +4319,7 @@ Public Sub 旧基準表_継続文書移行()
     oldColColor2 = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "２色")
     oldColNendo = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "年度")
     oldColKobetsu = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "個別フォルダー")
+    oldColMedia = GetHeaderColumnByName_Mig(wsOld, oldHeaderRow, "媒体")
 
     newColClass2 = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "分類名２")
     newColColor = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "色名")
@@ -4250,6 +4337,7 @@ Public Sub 旧基準表_継続文書移行()
     If oldColColor2 = 0 Then StopWithMissingColumn "２色"
     If oldColNendo = 0 Then StopWithMissingColumn "年度"
     If oldColKobetsu = 0 Then StopWithMissingColumn "個別フォルダー"
+    If oldColMedia = 0 Then StopWithMissingColumn "媒体"
     If newColClass2 = 0 Then StopWithMissingColumn "分類名２"
     If newColColor = 0 Then StopWithMissingColumn "色名"
     If newColClass3 = 0 Then StopWithMissingColumn "分類名３"
@@ -4259,7 +4347,7 @@ Public Sub 旧基準表_継続文書移行()
     If newColTitle = 0 Then StopWithMissingColumn "タイトル"
     If newColBiko = 0 Then StopWithMissingColumn "備考"
 
-    DebugLog "[列番号][旧] 継続=" & oldColKeizoku & " 第１ガイド=" & oldColGuide1 & " １色=" & oldColColor1 & " 第２ガイド=" & oldColGuide2 & " ２色=" & oldColColor2 & " 年度=" & oldColNendo & " 個別フォルダー=" & oldColKobetsu
+    DebugLog "[列番号][旧] 継続=" & oldColKeizoku & " 第１ガイド=" & oldColGuide1 & " １色=" & oldColColor1 & " 第２ガイド=" & oldColGuide2 & " ２色=" & oldColColor2 & " 年度=" & oldColNendo & " 個別フォルダー=" & oldColKobetsu & " 媒体=" & oldColMedia
     DebugLog "[列番号][新] 分類名２=" & newColClass2 & " 色名=" & newColColor & " 分類名３=" & newColClass3 & " 2色名=" & newColColor2 & " 年度（和暦）=" & newColWareki & " 作成年度（和暦）=" & newColCreatedWareki & " タイトル=" & newColTitle & " 備考=" & newColBiko
 
     oldLastRow = wsOld.Cells(wsOld.Rows.Count, 1).End(xlUp).Row
@@ -4277,11 +4365,13 @@ Public Sub 旧基準表_継続文書移行()
     Set keyOrder = New Collection
 
     For i = 1 To rowCount
-        If DebugModeEnabled() And i <= 10 Then
-            Debug.Print "Row=" & (oldDataStartRow + i - 1) & " raw=[" & CStr(oldData(i, oldColKeizoku)) & "] normalized=[" & NormalizeTextForMatch(CStr(oldData(i, oldColKeizoku))) & "]"
+        If i <= 10 Then
+            Debug.Print "Row=" & (oldDataStartRow + i - 1) & _
+                " 継続 raw=[" & CStr(oldData(i, oldColKeizoku)) & "] normalized=[" & NormalizeTextForMatch(CStr(oldData(i, oldColKeizoku))) & "]" & _
+                " 媒体 raw=[" & CStr(oldData(i, oldColMedia)) & "] normalized=[" & NormalizeMediaValue(CStr(oldData(i, oldColMedia))) & "]"
         End If
 
-        If IsContinuousDocument(CStr(oldData(i, oldColKeizoku))) Then
+        If IsContinuousDocument(CStr(oldData(i, oldColKeizoku))) And IsPaperMedia(CStr(oldData(i, oldColMedia))) Then
             groupKey = NormalizeTextForMatch(CStr(oldData(i, oldColGuide1)))
             If Not grouped.Exists(groupKey) Then
                 Set recs = New Collection
@@ -4309,9 +4399,9 @@ Public Sub 旧基準表_継続文書移行()
             For j = 1 To recs.Count
                 rec = recs(j)
                 wsNew.Cells(insertRow + j - 1, newColClass2).Value = rec(0)
-                wsNew.Cells(insertRow + j - 1, newColColor).Value = rec(1)
+                wsNew.Cells(insertRow + j - 1, newColColor).Value = NormalizeColorName(CStr(rec(1)))
                 wsNew.Cells(insertRow + j - 1, newColClass3).Value = rec(2)
-                wsNew.Cells(insertRow + j - 1, newColColor2).Value = rec(3)
+                wsNew.Cells(insertRow + j - 1, newColColor2).Value = NormalizeColorName(CStr(rec(3)))
                 wsNew.Cells(insertRow + j - 1, newColCreatedWareki).Value = rec(4)
                 wsNew.Cells(insertRow + j - 1, newColTitle).Value = rec(5)
                 wsNew.Cells(insertRow + j - 1, newColBiko).Value = "マクロ差込"
@@ -4338,6 +4428,29 @@ ErrorHandler:
     Resume SafeExit
 
 End Sub
+
+Private Function NormalizeColorName(ByVal value As String) As String
+
+    Dim normalized As String
+
+    normalized = Trim$(CStr(value))
+
+    Select Case normalized
+        Case "赤"
+            NormalizeColorName = "赤色"
+        Case "青"
+            NormalizeColorName = "青色"
+        Case "黄"
+            NormalizeColorName = "黄色"
+        Case "緑"
+            NormalizeColorName = "緑色"
+        Case "白"
+            NormalizeColorName = "白色"
+        Case Else
+            NormalizeColorName = normalized
+    End Select
+
+End Function
 
 Private Function FindKijunSheet_Mig(ByVal wb As Workbook, ByRef foundWs As Worksheet, ByVal notFoundMessage As String) As Boolean
 
@@ -4617,5 +4730,15 @@ Private Function IsContinuousDocument(ByVal rawValue As String) As Boolean
 
     normalized = NormalizeTextForMatch(rawValue)
     IsContinuousDocument = (StrComp(normalized, "継", vbBinaryCompare) = 0 Or StrComp(normalized, "継続", vbBinaryCompare) = 0)
+
+End Function
+
+Private Function NormalizeMediaValue(ByVal rawValue As String) As String
+    NormalizeMediaValue = NormalizeTextForMatch(rawValue)
+End Function
+
+Private Function IsPaperMedia(ByVal rawValue As String) As Boolean
+
+    IsPaperMedia = (StrComp(NormalizeMediaValue(rawValue), "紙", vbBinaryCompare) = 0)
 
 End Function
