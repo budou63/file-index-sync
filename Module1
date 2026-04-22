@@ -370,6 +370,9 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim srcRow As Long
     Dim yearVal As String, titleVal As String, category2Val As String, mediaVal As String, periodVal As String
     Dim isKeyBlank As Boolean
+    Dim bikoColEdit As Long
+    Dim bikoVal As String
+    Dim skippedMacroInsertCount As Long
 
     On Error GoTo ErrorHandler
 
@@ -400,6 +403,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     keyCategory2Edit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名２"))
     keyMediaEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("媒体種別"))
     keyPeriodEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("保存期間"))
+    bikoColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("備考"))
 
     If keyYearSrc = 0 Or keyTitleSrc = 0 Or keyCategory2Src = 0 Or keyMediaSrc = 0 Or keyPeriodSrc = 0 Then
         Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列（年度（和暦）/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
@@ -473,6 +477,16 @@ Public Sub 手順4_差分インポートCSVを作成する()
 
     ' ② 新ファイル基準表を1行ずつ処理
     For r = 2 To editLastRow
+        ' 備考列が存在し、値が「マクロ差込」の行は差分判定対象外
+        If bikoColEdit > 0 Then
+            bikoVal = Trim(CStr(wsEdit.Cells(r, bikoColEdit).Value))
+            If bikoVal = "マクロ差込" Then
+                skippedMacroInsertCount = skippedMacroInsertCount + 1
+                Debug.Print "行" & r & " は備考=マクロ差込 のためスキップ"
+                GoTo ContinueNextEditRow
+            End If
+        End If
+
         yearVal = GetTrimmedCell(wsEdit, r, keyYearEdit)
         titleVal = GetTrimmedCell(wsEdit, r, keyTitleEdit)
         category2Val = GetTrimmedCell(wsEdit, r, keyCategory2Edit)
@@ -528,6 +542,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
             WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
             outRow = outRow + 1
         End If
+
+ContinueNextEditRow:
     Next r
 
     With wsOut.Range(wsOut.Cells(1, 1), wsOut.Cells(1, UBound(fixedHeaders) - LBound(fixedHeaders) + 1))
@@ -538,7 +554,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     wsOut.Columns(1).Resize(, UBound(fixedHeaders) - LBound(fixedHeaders) + 1).EntireColumn.AutoFit
 
     MsgBox "差分インポートCSV の作成が完了しました。" & vbCrLf & _
-           "出力件数: " & outRow - 2 & " 件", vbInformation
+           "出力件数: " & outRow - 2 & " 件" & vbCrLf & _
+           "備考=マクロ差込 のスキップ件数: " & skippedMacroInsertCount & " 件", vbInformation
 
 SafeExit:
     Application.ScreenUpdating = True
