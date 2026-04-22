@@ -845,7 +845,8 @@ ContinueNextSourceRow:
     End If
 
     ' 5) 主要列だけ左側へ並べ直し（それ以外は削除せず後ろに残す）
-    ' 高速化対応: Cut/Insert ではなく配列一括並び替え
+    ' 高速化対応: Cut/Insert廃止済みのため Shapes退避/復元は行わない
+    ' 高速化対応: 配列一括並び替えを実行
     columnOrderMap = BuildColumnOrderMap(wsDst, displayHeaders, additionalLeftDisplayHeaders, leftFixedCount, shouldReorderColumns)
 
     ' 高速化対応: 実際に列順変更がある場合のみテンプレート退避/再適用を行う
@@ -854,11 +855,6 @@ ContinueNextSourceRow:
         CreateValidationTemplateSheet wsDst, dstLastCol, validationTemplateMap, wsValidationTemplate
         CreateFormatAndWidthTemplate wsDst, dstLastCol, formatTemplateMap, columnWidthMap, wsFormatTemplate
         ReorderSheetColumnsByMap wsDst, columnOrderMap
-    End If
-ReorderExit:
-    On Error GoTo ErrorHandler
-    If shapeLayoutsSaved Then
-        RestoreSheetShapesLayout wsDst, shapeLayouts
     End If
 
     ' 6) 同期状態列を更新（現行 / 削除候補 / 未登録）
