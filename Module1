@@ -913,6 +913,7 @@ ContinueNextSourceRow:
 
 SafeExit:
     On Error Resume Next
+    If shapeLayoutsSaved Then RestoreSheetShapesLayout wsDst, shapeLayouts
     If Not wsValidationTemplate Is Nothing Then
         Application.DisplayAlerts = False
         wsValidationTemplate.Delete
@@ -933,6 +934,10 @@ SafeExit:
 ErrorHandler:
     MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & Err.Description, vbCritical
     Resume SafeExit
+
+ReorderError:
+    If shapeLayoutsSaved Then RestoreSheetShapesLayout wsDst, shapeLayouts
+    Resume ErrorHandler
 
 End Sub
 
