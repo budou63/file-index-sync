@@ -4326,6 +4326,7 @@ Public Sub 旧基準表_継続文書移行()
     Dim newColCreatedWareki As Long
     Dim newColTitle As Long
     Dim newColBiko As Long
+    Dim newColMediaType As Long
 
     Dim oldLastRow As Long
     Dim oldLastCol As Long
@@ -4372,7 +4373,7 @@ Public Sub 旧基準表_継続文書移行()
     If Not FindKijunSheet_Mig(ThisWorkbook, wsNew, "このブックに『基準表』シートがありません。") Then GoTo SafeExit
 
     oldHeaderRow = FindHeaderRowByKeys_Mig(wsOld, Array("継続", "第１ガイド", "１色", "第２ガイド", "２色", "年度", "個別フォルダー", "媒体"), 30)
-    newHeaderRow = FindHeaderRowByKeys_Mig(wsNew, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "作成年度（和暦）", "タイトル", "備考"), 30)
+    newHeaderRow = FindHeaderRowByKeys_Mig(wsNew, Array("分類名２", "色名", "分類名３", "2色名", "年度（和暦）", "作成年度（和暦）", "タイトル", "備考", "媒体種別"), 30)
 
     If oldHeaderRow = 0 Then MsgBox "旧シートの見出し行が見つかりません。", vbExclamation: GoTo SafeExit
     If newHeaderRow = 0 Then MsgBox "新シートの見出し行が見つかりません。", vbExclamation: GoTo SafeExit
@@ -4399,6 +4400,7 @@ Public Sub 旧基準表_継続文書移行()
     newColCreatedWareki = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "作成年度（和暦）")
     newColTitle = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "タイトル")
     newColBiko = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "備考")
+    newColMediaType = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "媒体種別")
 
     If oldColKeizoku = 0 Then StopWithMissingColumn "継続"
     If oldColGuide1 = 0 Then StopWithMissingColumn "第１ガイド"
@@ -4416,9 +4418,10 @@ Public Sub 旧基準表_継続文書移行()
     If newColCreatedWareki = 0 Then StopWithMissingColumn "作成年度（和暦）"
     If newColTitle = 0 Then StopWithMissingColumn "タイトル"
     If newColBiko = 0 Then StopWithMissingColumn "備考"
+    If newColMediaType = 0 Then StopWithMissingColumn "媒体種別"
 
     DebugLog "[列番号][旧] 継続=" & oldColKeizoku & " 第１ガイド=" & oldColGuide1 & " １色=" & oldColColor1 & " 第２ガイド=" & oldColGuide2 & " ２色=" & oldColColor2 & " 年度=" & oldColNendo & " 個別フォルダー=" & oldColKobetsu & " 媒体=" & oldColMedia
-    DebugLog "[列番号][新] 分類名２=" & newColClass2 & " 色名=" & newColColor & " 分類名３=" & newColClass3 & " 2色名=" & newColColor2 & " 年度（和暦）=" & newColWareki & " 作成年度（和暦）=" & newColCreatedWareki & " タイトル=" & newColTitle & " 備考=" & newColBiko
+    DebugLog "[列番号][新] 分類名２=" & newColClass2 & " 色名=" & newColColor & " 分類名３=" & newColClass3 & " 2色名=" & newColColor2 & " 年度（和暦）=" & newColWareki & " 作成年度（和暦）=" & newColCreatedWareki & " タイトル=" & newColTitle & " 備考=" & newColBiko & " 媒体種別=" & newColMediaType
 
     oldLastRow = wsOld.Cells(wsOld.Rows.Count, 1).End(xlUp).Row
     If oldLastRow < oldDataStartRow Then
@@ -4448,7 +4451,15 @@ Public Sub 旧基準表_継続文書移行()
                 grouped.Add groupKey, recs
                 keyOrder.Add groupKey
             End If
-            rec = Array(CStr(oldData(i, oldColGuide1)), CStr(oldData(i, oldColColor1)), CStr(oldData(i, oldColGuide2)), CStr(oldData(i, oldColColor2)), CStr(oldData(i, oldColNendo)), CStr(oldData(i, oldColKobetsu)))
+            ' 転記対応一覧（継続文書差込）
+            ' - 第１ガイド -> 分類名２
+            ' - １色 -> 色名
+            ' - 第２ガイド -> 分類名３
+            ' - ２色 -> 2色名
+            ' - 年度 -> 作成年度（和暦）
+            ' - 個別フォルダー -> タイトル
+            ' - 媒体 -> 媒体種別
+            rec = Array(CStr(oldData(i, oldColGuide1)), CStr(oldData(i, oldColColor1)), CStr(oldData(i, oldColGuide2)), CStr(oldData(i, oldColColor2)), CStr(oldData(i, oldColNendo)), CStr(oldData(i, oldColKobetsu)), Trim$(CStr(oldData(i, oldColMedia))))
             grouped(groupKey).Add rec
         End If
     Next i
@@ -4474,6 +4485,7 @@ Public Sub 旧基準表_継続文書移行()
                 wsNew.Cells(insertRow + j - 1, newColColor2).Value = NormalizeColorName(CStr(rec(3)))
                 wsNew.Cells(insertRow + j - 1, newColCreatedWareki).Value = rec(4)
                 wsNew.Cells(insertRow + j - 1, newColTitle).Value = rec(5)
+                wsNew.Cells(insertRow + j - 1, newColMediaType).Value = Trim$(CStr(rec(6)))
                 wsNew.Cells(insertRow + j - 1, newColBiko).Value = "マクロ差込"
                 movedCount = movedCount + 1
             Next j
