@@ -3610,12 +3610,41 @@ End Sub
 '========================================================
 ' キャビネット別第1ガイド抽出（新ファイル基準表対応）
 '========================================================
+Public Sub キャビネットガイド作成_実行()
+
+    Dim currentStep As String
+
+    On Error GoTo ErrorHandler
+
+    currentStep = "1本目（新ファイル基準表）"
+    MsgBox "1/2: キャビネット別第1ガイド抽出_新ファイル基準表 を実行します。", vbInformation
+    キャビネット別第1ガイド抽出_新ファイル基準表
+    MsgBox "1/2: キャビネット別第1ガイド抽出_新ファイル基準表 が完了しました。", vbInformation
+
+    currentStep = "2本目（継続ルール適用）"
+    MsgBox "2/2: キャビネット別第1ガイド抽出_継続ルール適用 を実行します。", vbInformation
+    キャビネット別第1ガイド抽出_継続ルール適用
+    MsgBox "2/2: キャビネット別第1ガイド抽出_継続ルール適用 が完了しました。", vbInformation
+
+    MsgBox "キャビネットガイド作成が完了しました。", vbInformation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox currentStep & " の実行中にエラーが発生しました: " & Err.Description, vbExclamation
+
+End Sub
+
 Public Sub キャビネット別第1ガイド抽出_新ファイル基準表()
     キャビネット別第1ガイド抽出_続きルール適用_NewSpec
 End Sub
 
 ' 互換用エントリ: 既存名称に近い公開マクロ
 Public Sub キャビネット別第1ガイド抽出_続きルール適用()
+    キャビネット別第1ガイド抽出_続きルール適用_NewSpec
+End Sub
+
+' 呼び出し名の揺れ対応（「継続」表記）
+Public Sub キャビネット別第1ガイド抽出_継続ルール適用()
     キャビネット別第1ガイド抽出_続きルール適用_NewSpec
 End Sub
 
