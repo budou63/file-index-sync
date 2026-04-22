@@ -53,6 +53,7 @@ Private Sub btnApply_Click()
 
     On Error GoTo ErrorHandler
 
+    singleSerialText = GetSingleSerialFromForm(Me)
     bulkStartText = GetBulkStartFromForm(Me)
     bulkEndText = GetBulkEndFromForm(Me)
     hasSingleInput = HasAnySingleInput(Me)
@@ -118,17 +119,13 @@ Private Sub ApplySingleSlots_NewSpec(ByVal frm As Object)
     Set wsSrc = FindSheetByCandidates(ThisWorkbook, Array("新ファイル基準表"))
     Set wsSeal = FindSheetByCandidates(ThisWorkbook, Array("個別フォルダシール", "個別フォルダーシール", "フォルダシール"))
 
-    If wsSrc Is Nothing Then Err.Raise vbObjectError + 2201, , "転記元シート（新ファイル基準表）が見つかりません。"
-    If wsSeal Is Nothing Then Err.Raise vbObjectError + 2202, , "転記先シート（個別フォルダシール）が見つかりません。"
+Private Function GetSingleSerialFromForm(ByVal frm As Object) As String
 
-    BuildIndexes_NewSpec wsSrc, serialIndex, headerIndex
+    Dim candidates As Variant
+    Dim i As Long
+    Dim v As String
 
-    If serialIndex Is Nothing Or headerIndex Is Nothing Then
-        Err.Raise vbObjectError + 2203, , "見出しインデックスの作成に失敗しました。"
-    End If
-    If CLng(headerIndex("通し番号")) = 0 Then
-        Err.Raise vbObjectError + 2204, , "見出し「通し番号」が見つかりません。"
-    End If
+    candidates = Array("txtSerialSingle", "txtSerial", "tbID1")
 
     ' 1st pass: 全入力を数値妥当性チェック（エラー時は何も反映しない）
     For slot = 1 To 12
@@ -164,7 +161,8 @@ Private Sub ApplySingleSlots_NewSpec(ByVal frm As Object)
                 missingList = missingList & "枠" & CStr(slot) & ": " & serialKey
             End If
         End If
-    Next slot
+    Next i
+    On Error GoTo 0
 
     If Len(missingList) > 0 Then
         MsgBox "個別フォルダシールへ反映しました（一部未該当は空欄）。" & vbCrLf & missingList, vbExclamation
@@ -176,7 +174,41 @@ Private Sub ApplySingleSlots_NewSpec(ByVal frm As Object)
 ErrorHandler:
     MsgBox "単発反映処理でエラーが発生しました: " & Err.Description, vbExclamation
 
-End Sub
+Private Function TryParseLongStrict(ByVal textValue As String, ByRef outValue As Long) As Boolean
+
+    Dim normalized As String
+    Dim d As Double
+
+    normalized = Trim$(textValue)
+    If Len(normalized) = 0 Then Exit Function
+    If Not IsNumeric(normalized) Then Exit Function
+
+    d = CDbl(normalized)
+    If d <> Fix(d) Then Exit Function
+    If d < -2147483648# Or d > 2147483647# Then Exit Function
+
+    outValue = CLng(d)
+    TryParseLongStrict = True
+
+End Function
+
+Private Function TryParseLongStrict(ByVal textValue As String, ByRef outValue As Long) As Boolean
+
+    Dim normalized As String
+    Dim d As Double
+
+    normalized = Trim$(textValue)
+    If Len(normalized) = 0 Then Exit Function
+    If Not IsNumeric(normalized) Then Exit Function
+
+    d = CDbl(normalized)
+    If d <> Fix(d) Then Exit Function
+    If d < -2147483648# Or d > 2147483647# Then Exit Function
+
+    outValue = CLng(d)
+    TryParseLongStrict = True
+
+End Function
 
 ' 数値妥当性判定（本モジュール内で TryParseLongStrict はこの1定義のみ）
 Private Function TryParseLongStrict(ByVal textValue As String, ByRef outValue As Long) As Boolean
@@ -226,6 +258,20 @@ End Sub
 Private Sub btnApplyBulk_Click()
 
     btnApply_Click
+
+End Sub
+
+' 「キャビネットガイド作成」ボタン用（Name がこの候補の場合）
+Private Sub btnCabinetGuideCreate_Click()
+
+    キャビネットガイド作成_実行
+
+End Sub
+
+' 「キャビネットガイド作成」ボタン用（既存Name互換候補）
+Private Sub btnCabinetGuide_Click()
+
+    キャビネットガイド作成_実行
 
 End Sub
 
