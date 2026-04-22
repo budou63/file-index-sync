@@ -729,7 +729,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim targetRow As Long
     Dim appendRow As Long
     Dim key As String
-    Dim oldCalculation As XlCalculation
+    Dim previousCalculationMode As XlCalculation
     Dim appendedCount As Long
     Dim updatedCount As Long
     Dim skippedNoKeyCount As Long
@@ -754,7 +754,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
-    oldCalculation = Application.Calculation
+    previousCalculationMode = Application.Calculation
     Application.Calculation = xlCalculationManual
 
     srcLastCol = GetLastUsedCol(wsSrc)
@@ -928,7 +928,7 @@ SafeExit:
 
     Application.ScreenUpdating = True
     Application.EnableEvents = True
-    Application.Calculation = oldCalculation
+    Application.Calculation = previousCalculationMode
     Exit Sub
 
 ErrorHandler:
@@ -4299,7 +4299,7 @@ Public Sub 旧基準表_継続文書移行()
     Dim oldScreenUpdating As Boolean
     Dim oldEnableEvents As Boolean
     Dim oldDisplayAlerts As Boolean
-    Dim oldCalculation As XlCalculation
+    Dim previousCalculationMode As XlCalculation
 
     Dim targetYearRaw As String
     Dim targetYearNorm As String
@@ -4360,7 +4360,7 @@ Public Sub 旧基準表_継続文書移行()
     oldScreenUpdating = Application.ScreenUpdating
     oldEnableEvents = Application.EnableEvents
     oldDisplayAlerts = Application.DisplayAlerts
-    oldCalculation = Application.Calculation
+    previousCalculationMode = Application.Calculation
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -4491,7 +4491,7 @@ SafeExit:
     If Not wbOld Is Nothing Then wbOld.Close SaveChanges:=False
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
-    Application.Calculation = oldCalculation
+    Application.Calculation = previousCalculationMode
     Application.DisplayAlerts = oldDisplayAlerts
     Application.StatusBar = False
     On Error GoTo 0
