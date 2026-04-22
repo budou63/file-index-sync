@@ -145,6 +145,20 @@ Private Sub btnApplyBulk_Click()
 
 End Sub
 
+' 「キャビネットガイド作成」ボタン用（Name がこの候補の場合）
+Private Sub btnCabinetGuideCreate_Click()
+
+    キャビネットガイド作成_実行
+
+End Sub
+
+' 「キャビネットガイド作成」ボタン用（既存Name互換候補）
+Private Sub btnCabinetGuide_Click()
+
+    キャビネットガイド作成_実行
+
+End Sub
+
 Private Function HasAnySingleInput(ByVal frm As Object) As Boolean
 
     Dim slot As Long
