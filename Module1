@@ -5,6 +5,9 @@ Private Const SHEET_NEW_FILE_STANDARD As String = "新ファイル基準表"
 Private Const SHEET_CODE_MANAGEMENT As String = "コード管理CSV"
 Private Const SHEET_DIFF_IMPORT As String = "差分インポートCSV"
 Private Const DEBUG_MODE As Boolean = False
+' 高速化対応: 差分更新時のコメント/強調を既定で無効化
+Private Const ENABLE_UPDATE_COMMENT As Boolean = False
+Private Const ENABLE_UPDATE_HIGHLIGHT As Boolean = False
 
 Public Sub 新ファイル基準表生成()
 
@@ -129,14 +132,8 @@ Public Sub CSV取込_シンプル版()
             Err.Raise vbObjectError + 2105, , "目録CSVシートに「年度（和暦）」列が見つかりません。"
         End If
 
-        ' 対象年度と一致する既存行のみ下から削除（他年度は残す）
-        For srcRow = dstLastRow To 2 Step -1
-            rowYear = GetTrimmedCell(ws, srcRow, dstWarekiCol)
-            If rowYear = targetFiscalYear Then
-                ws.Rows(srcRow).Delete
-                deletedCount = deletedCount + 1
-            End If
-        Next srcRow
+        ' 高速化対応: 対象年度行を連続ブロック単位で一括削除（他年度は残す）
+        deletedCount = DeleteRowsByFiscalYearBulk(ws, 2, dstLastRow, dstWarekiCol, targetFiscalYear)
 
         dstLastRow = GetLastUsedRow(ws)
         appendRow = dstLastRow + 1
@@ -200,6 +197,47 @@ SafeExit:
     ' 改行除去は補助処理のため、失敗しても取込本体を止めない
 
 End Sub
+
+'========================================================
+' 高速化対応: 対象年度行を連続ブロック単位で一括削除
+'========================================================
+Private Function DeleteRowsByFiscalYearBulk( _
+    ByVal ws As Worksheet, _
+    ByVal startRow As Long, _
+    ByVal endRow As Long, _
+    ByVal fiscalYearCol As Long, _
+    ByVal targetFiscalYear As String) As Long
+
+    Dim rowNo As Long
+    Dim inBlock As Boolean
+    Dim blockStart As Long
+    Dim blockEnd As Long
+
+    If ws Is Nothing Then Exit Function
+    If endRow < startRow Then Exit Function
+
+    For rowNo = endRow To startRow Step -1
+        If GetTrimmedCell(ws, rowNo, fiscalYearCol) = targetFiscalYear Then
+            If Not inBlock Then
+                inBlock = True
+                blockEnd = rowNo
+                blockStart = rowNo
+            Else
+                blockStart = rowNo
+            End If
+        ElseIf inBlock Then
+            ws.Rows(blockStart & ":" & blockEnd).Delete
+            DeleteRowsByFiscalYearBulk = DeleteRowsByFiscalYearBulk + (blockEnd - blockStart + 1)
+            inBlock = False
+        End If
+    Next rowNo
+
+    If inBlock Then
+        ws.Rows(blockStart & ":" & blockEnd).Delete
+        DeleteRowsByFiscalYearBulk = DeleteRowsByFiscalYearBulk + (blockEnd - blockStart + 1)
+    End If
+
+End Function
 
 Public Sub 手順5_差分インポートCSVを外部出力する()
 
@@ -679,8 +717,6 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim headerText As String
     Dim canonical As String
     Dim i As Long
-    Dim targetCol As Long
-    Dim foundCol As Long
     Dim leftFixedCount As Long
     Dim missingHeadersText As String
     Dim validationTemplateMap As Object
@@ -700,8 +736,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim updateStartRow As Long
     Dim updateEndRow As Long
     Dim didUpdateRows As Boolean
-    Dim shapeLayouts As Object
-    Dim shapeLayoutsSaved As Boolean
+    Dim shouldReorderColumns As Boolean
+    Dim columnOrderMap As Variant
 
     On Error GoTo ErrorHandler
 
@@ -726,11 +762,6 @@ Public Sub 手順2_新ファイル基準表を作成する()
     dstLastCol = GetLastUsedCol(wsDst)
 
     If srcLastCol <= 0 Then Err.Raise vbObjectError + 2001, , "目録CSV の見出し行が見つかりません。"
-
-    ' 並び替え前に既存入力規則のテンプレートを退避（見出し名ベースで復元するため）
-    CreateValidationTemplateSheet wsDst, dstLastCol, validationTemplateMap, wsValidationTemplate
-    ' 並び替え前に既存書式/列幅を退避（条件付き書式・列幅の崩れ防止）
-    CreateFormatAndWidthTemplate wsDst, dstLastCol, formatTemplateMap, columnWidthMap, wsFormatTemplate
 
     ' 主要表示列（左側に寄せる列）
     ' 差し替えポイント: 列順定義は専用関数で一元管理
@@ -770,12 +801,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     If dstLastRow < 1 Then dstLastRow = 1
     appendRow = dstLastRow + 1
 
-    BuildExistingRowMap wsDst, dstLastRow, existingRowMap
-
-    BuildExistingRowMap wsDst, dstLastRow, existingRowMap
-
-    BuildExistingRowMap wsDst, dstLastRow, existingRowMap
-
+    ' 高速化対応: 重複呼び出しを削除（1回のみ）
     BuildExistingRowMap wsDst, dstLastRow, existingRowMap
 
     ' 目録CSVの対象年度行件数を先に確認
@@ -819,49 +845,21 @@ ContinueNextSourceRow:
     End If
 
     ' 5) 主要列だけ左側へ並べ直し（それ以外は削除せず後ろに残す）
-    ' 差し替えポイント: ボタン/図形ずれ対策として Shapes を退避してから列移動
-    Set shapeLayouts = SaveSheetShapesLayout(wsDst)
-    shapeLayoutsSaved = Not shapeLayouts Is Nothing
+    ' 高速化対応: Cut/Insert ではなく配列一括並び替え
+    columnOrderMap = BuildColumnOrderMap(wsDst, displayHeaders, additionalLeftDisplayHeaders, leftFixedCount, shouldReorderColumns)
 
-    targetCol = 1
-    On Error GoTo ReorderError
-    For i = LBound(displayHeaders) To UBound(displayHeaders)
-        srcLastCol = GetLastUsedCol(wsDst)
-        foundCol = FindHeaderColumn(wsDst, srcLastCol, GetStep2HeaderCandidates(CStr(displayHeaders(i))))
-
-        If foundCol > 0 Then
-            If foundCol <> targetCol Then
-                wsDst.Columns(foundCol).Cut
-                wsDst.Columns(targetCol).Insert Shift:=xlToRight
-                Application.CutCopyMode = False
-            End If
-            targetCol = targetCol + 1
-        End If
-    Next i
-
-    ' 拡張独自列を左側表示に追加しやすくする（見つかった列だけ移動）
-    If HasArrayElements(additionalLeftDisplayHeaders) Then
-        For i = LBound(additionalLeftDisplayHeaders) To UBound(additionalLeftDisplayHeaders)
-            srcLastCol = GetLastUsedCol(wsDst)
-            foundCol = FindHeaderColumn(wsDst, srcLastCol, GetStep2HeaderCandidates(CStr(additionalLeftDisplayHeaders(i))))
-
-            If foundCol > 0 Then
-                If foundCol <> targetCol Then
-                    wsDst.Columns(foundCol).Cut
-                    wsDst.Columns(targetCol).Insert Shift:=xlToRight
-                    Application.CutCopyMode = False
-                End If
-                targetCol = targetCol + 1
-            End If
-        Next i
+    ' 高速化対応: 実際に列順変更がある場合のみテンプレート退避/再適用を行う
+    If shouldReorderColumns Then
+        dstLastCol = GetLastUsedCol(wsDst)
+        CreateValidationTemplateSheet wsDst, dstLastCol, validationTemplateMap, wsValidationTemplate
+        CreateFormatAndWidthTemplate wsDst, dstLastCol, formatTemplateMap, columnWidthMap, wsFormatTemplate
+        ReorderSheetColumnsByMap wsDst, columnOrderMap
     End If
 ReorderExit:
     On Error GoTo ErrorHandler
     If shapeLayoutsSaved Then
         RestoreSheetShapesLayout wsDst, shapeLayouts
     End If
-
-    leftFixedCount = targetCol - 1
 
     ' 6) 同期状態列を更新（現行 / 削除候補 / 未登録）
     UpdateSyncStatusColumn wsDst, sourceKeyMap
@@ -895,10 +893,11 @@ ReorderExit:
     ' 10) タイトルがある行だけ通し番号を再採番
     ReindexSerial_NewFileStandard wsDst
 
-    ' 11) 入力規則を見出し名ベースで再適用（列挿入/並び替え後の列位置へ追従）
-    ReapplyValidationFromTemplate wsDst, validationTemplateMap, wsValidationTemplate
-    ' 条件付き書式/列幅を見出し名ベースで再適用
-    ReapplyFormatAndWidthFromTemplate wsDst, formatTemplateMap, columnWidthMap, wsFormatTemplate
+    ' 11) 高速化対応: 実際に列順変更があった場合のみ再適用
+    If shouldReorderColumns Then
+        ReapplyValidationFromTemplate wsDst, validationTemplateMap, wsValidationTemplate
+        ReapplyFormatAndWidthFromTemplate wsDst, formatTemplateMap, columnWidthMap, wsFormatTemplate
+    End If
 
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
@@ -1367,8 +1366,10 @@ Public Sub ReindexSerial_NewFileStandard(Optional ByVal ws As Worksheet)
     Dim lastRow As Long
     Dim serialCol As Long
     Dim titleCol As Long
-    Dim rowNo As Long
     Dim nextSerial As Long
+    Dim rowNo As Long
+    Dim titles As Variant
+    Dim serials As Variant
     Dim titleValue As String
     Dim prevEnableEvents As Boolean
     Dim prevScreenUpdating As Boolean
@@ -1398,16 +1399,22 @@ Public Sub ReindexSerial_NewFileStandard(Optional ByVal ws As Worksheet)
     lastRow = GetLastUsedRow(targetWs)
     If lastRow < 2 Then Exit Sub
 
+    ' 高速化対応: タイトル列を配列で読み込み、通し番号列を一括書き戻し
+    titles = targetWs.Range(targetWs.Cells(2, titleCol), targetWs.Cells(lastRow, titleCol)).Value2
+    ReDim serials(1 To UBound(titles, 1), 1 To 1)
+
     nextSerial = 0
-    For rowNo = 2 To lastRow
-        titleValue = Trim(CStr(targetWs.Cells(rowNo, titleCol).value))
+    For rowNo = 1 To UBound(titles, 1)
+        titleValue = Trim$(CStr(titles(rowNo, 1)))
         If titleValue <> "" Then
             nextSerial = nextSerial + 1
-            targetWs.Cells(rowNo, serialCol).value = nextSerial
+            serials(rowNo, 1) = nextSerial
         Else
-            targetWs.Cells(rowNo, serialCol).ClearContents
+            serials(rowNo, 1) = vbNullString
         End If
     Next rowNo
+
+    targetWs.Range(targetWs.Cells(2, serialCol), targetWs.Cells(lastRow, serialCol)).Value = serials
 
 SafeExit:
     Application.EnableEvents = prevEnableEvents
@@ -1682,11 +1689,11 @@ Private Sub UpdateRowFromSourceByHeader( _
             beforeCompare = NormalizeValueForUpdateCompare(CStr(key), beforeValue)
             afterCompare = NormalizeValueForUpdateCompare(CStr(key), afterValue)
 
+            targetCell.Value = afterValue
+
             If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
-                targetCell.Value = afterValue
                 ApplyChangedCellHighlightAndComment targetCell, beforeValue, afterValue
             Else
-                targetCell.Value = afterValue
                 ClearChangedCellHighlightAndComment targetCell
             End If
         End If
@@ -1772,14 +1779,19 @@ Private Sub ApplyChangedCellHighlightAndComment(ByVal targetCell As Range, ByVal
 
     If targetCell Is Nothing Then Exit Sub
 
-    targetCell.Font.Color = RGB(255, 0, 0)
+    ' 高速化対応: 設定ON時のみ強調表示/コメントを実行
+    If ENABLE_UPDATE_HIGHLIGHT Then
+        targetCell.Font.Color = RGB(255, 0, 0)
+    End If
 
-    commentText = "更新前: " & CStr(beforeValue) & vbCrLf & _
-                  "更新後: " & CStr(afterValue) & vbCrLf & _
-                  "更新日時: " & Format$(Now, "yyyy/mm/dd hh:nn:ss")
+    If ENABLE_UPDATE_COMMENT Then
+        commentText = "更新前: " & CStr(beforeValue) & vbCrLf & _
+                      "更新後: " & CStr(afterValue) & vbCrLf & _
+                      "更新日時: " & Format$(Now, "yyyy/mm/dd hh:nn:ss")
 
-    SafeDeleteComment targetCell
-    SafeAddComment targetCell, commentText
+        SafeDeleteComment targetCell
+        SafeAddComment targetCell, commentText
+    End If
 
 End Sub
 
@@ -1790,8 +1802,13 @@ Private Sub ClearChangedCellHighlightAndComment(ByVal targetCell As Range)
 
     If targetCell Is Nothing Then Exit Sub
 
-    targetCell.Font.ColorIndex = xlColorIndexAutomatic
-    SafeDeleteComment targetCell
+    ' 高速化対応: 設定ON時のみ戻し処理を実行
+    If ENABLE_UPDATE_HIGHLIGHT Then
+        targetCell.Font.ColorIndex = xlColorIndexAutomatic
+    End If
+    If ENABLE_UPDATE_COMMENT Then
+        SafeDeleteComment targetCell
+    End If
 
 End Sub
 
@@ -2043,64 +2060,125 @@ Private Function GetStep2DisplayHeadersOrder() As Variant
 
 End Function
 
-Private Function SaveSheetShapesLayout(ByVal ws As Worksheet) As Object
+'========================================================
+' 高速化対応: 表示見出し順から列並びマップを作成
+'========================================================
+Private Function BuildColumnOrderMap( _
+    ByVal ws As Worksheet, _
+    ByVal displayHeaders As Variant, _
+    ByVal additionalLeftDisplayHeaders As Variant, _
+    ByRef leftFixedCount As Long, _
+    ByRef shouldReorder As Boolean) As Variant
 
-    Dim shapeLayouts As Object
-    Dim shp As Shape
-    Dim info As Variant
+    Dim lastCol As Long
+    Dim colMap() As Long
+    Dim usedCols As Object
+    Dim headerValues As Variant
+    Dim headerCandidates As Variant
+    Dim i As Long
+    Dim c As Long
+    Dim found As Long
+    Dim writePos As Long
 
-    If ws Is Nothing Then Exit Function
+    lastCol = GetLastUsedCol(ws)
+    ReDim colMap(1 To lastCol)
+    Set usedCols = CreateObject("Scripting.Dictionary")
 
-    Set shapeLayouts = CreateObject("Scripting.Dictionary")
+    headerValues = ws.Range(ws.Cells(1, 1), ws.Cells(1, lastCol)).Value2
+    writePos = 1
 
-    For Each shp In ws.Shapes
-        info = Array(shp.Name, shp.Top, shp.Left, shp.Width, shp.Height, CLng(shp.Placement))
-        shapeLayouts(shp.Name) = info
+    For i = LBound(displayHeaders) To UBound(displayHeaders)
+        headerCandidates = GetStep2HeaderCandidates(CStr(displayHeaders(i)))
+        found = FindColumnIndexFromHeaderArray(headerValues, headerCandidates, usedCols)
+        If found > 0 Then
+            colMap(writePos) = found
+            usedCols(CStr(found)) = True
+            writePos = writePos + 1
+        End If
+    Next i
 
-        On Error Resume Next
-        shp.Placement = xlFreeFloating
-        On Error GoTo 0
-    Next shp
+    If HasArrayElements(additionalLeftDisplayHeaders) Then
+        For i = LBound(additionalLeftDisplayHeaders) To UBound(additionalLeftDisplayHeaders)
+            headerCandidates = GetStep2HeaderCandidates(CStr(additionalLeftDisplayHeaders(i)))
+            found = FindColumnIndexFromHeaderArray(headerValues, headerCandidates, usedCols)
+            If found > 0 Then
+                colMap(writePos) = found
+                usedCols(CStr(found)) = True
+                writePos = writePos + 1
+            End If
+        Next i
+    End If
 
-    Set SaveSheetShapesLayout = shapeLayouts
+    leftFixedCount = writePos - 1
+
+    For c = 1 To lastCol
+        If Not usedCols.Exists(CStr(c)) Then
+            colMap(writePos) = c
+            writePos = writePos + 1
+        End If
+    Next c
+
+    shouldReorder = False
+    For c = 1 To lastCol
+        If colMap(c) <> c Then
+            shouldReorder = True
+            Exit For
+        End If
+    Next c
+
+    BuildColumnOrderMap = colMap
 
 End Function
 
-Private Sub RestoreSheetShapesLayout(ByVal ws As Worksheet, ByVal shapeLayouts As Object)
+'========================================================
+' 高速化対応: 列並びを配列一括で反映（Cut/Insert廃止）
+'========================================================
+Private Sub ReorderSheetColumnsByMap(ByVal ws As Worksheet, ByVal colMap As Variant)
 
-    Dim shapeName As Variant
-    Dim info As Variant
-    Dim shp As Shape
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim src As Variant
+    Dim dst As Variant
+    Dim r As Long
+    Dim c As Long
 
-    If ws Is Nothing Then Exit Sub
-    If shapeLayouts Is Nothing Then Exit Sub
+    lastCol = UBound(colMap)
+    lastRow = GetLastUsedRow(ws)
+    If lastCol <= 0 Or lastRow <= 0 Then Exit Sub
 
-    For Each shapeName In shapeLayouts.Keys
-        If TryGetShapeByName(ws, CStr(shapeName), shp) Then
-            info = shapeLayouts(shapeName)
+    src = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Value2
+    ReDim dst(1 To UBound(src, 1), 1 To UBound(src, 2))
 
-            On Error Resume Next
-            shp.Left = CDbl(info(2))
-            shp.Top = CDbl(info(1))
-            shp.Width = CDbl(info(3))
-            shp.Height = CDbl(info(4))
-            shp.Placement = CLng(info(5))
-            On Error GoTo 0
-        End If
-    Next shapeName
+    For c = 1 To lastCol
+        For r = 1 To lastRow
+            dst(r, c) = src(r, CLng(colMap(c)))
+        Next r
+    Next c
+
+    ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Value = dst
 
 End Sub
 
-Private Function TryGetShapeByName(ByVal ws As Worksheet, ByVal shapeName As String, ByRef outShape As Shape) As Boolean
+Private Function FindColumnIndexFromHeaderArray( _
+    ByVal headerValues As Variant, _
+    ByVal candidates As Variant, _
+    ByVal usedCols As Object) As Long
 
-    On Error GoTo NotFound
-    Set outShape = ws.Shapes(shapeName)
-    TryGetShapeByName = True
-    Exit Function
+    Dim c As Long
+    Dim i As Long
+    Dim headerValue As String
 
-NotFound:
-    Set outShape = Nothing
-    TryGetShapeByName = False
+    For c = 1 To UBound(headerValues, 2)
+        If Not usedCols.Exists(CStr(c)) Then
+            headerValue = Trim$(CStr(headerValues(1, c)))
+            For i = LBound(candidates) To UBound(candidates)
+                If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+                    FindColumnIndexFromHeaderArray = c
+                    Exit Function
+                End If
+            Next i
+        End If
+    Next c
 
 End Function
 
