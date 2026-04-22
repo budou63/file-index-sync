@@ -210,6 +210,25 @@ Private Function TryParseLongStrict(ByVal textValue As String, ByRef outValue As
 
 End Function
 
+' 数値妥当性判定（本モジュール内で TryParseLongStrict はこの1定義のみ）
+Private Function TryParseLongStrict(ByVal textValue As String, ByRef outValue As Long) As Boolean
+
+    Dim normalized As String
+    Dim d As Double
+
+    normalized = Trim$(textValue)
+    If Len(normalized) = 0 Then Exit Function
+    If Not IsNumeric(normalized) Then Exit Function
+
+    d = CDbl(normalized)
+    If d <> Fix(d) Then Exit Function
+    If d < -2147483648# Or d > 2147483647# Then Exit Function
+
+    outValue = CLng(d)
+    TryParseLongStrict = True
+
+End Function
+
 Private Sub btnClear_Click()
 
     Dim slot As Long
