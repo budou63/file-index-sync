@@ -2,9 +2,45 @@ Option Explicit
 
 '========================================================
 ' frmSeal（新基準表対応）
-' - tbID1～tbID12 に入力された通し番号を、同じslot面へ個別反映
-' - 空欄/未該当はそのslotだけクリア
+' - UserForm の各ボタン Click から既存マクロを呼び出す
+' - btnApply は 単件 / 複数 の入力状態で分岐
 '========================================================
+Private Sub CommandButton1_Click()
+
+    CSV取込_シンプル版
+
+End Sub
+
+Private Sub CommandButton2_Click()
+
+    手順2_新ファイル基準表を作成する
+
+End Sub
+
+Private Sub CommandButton3_Click()
+
+    手順4_差分インポートCSVを作成する
+
+End Sub
+
+Private Sub CommandButton4_Click()
+
+    手順5_差分インポートCSVを外部出力する
+
+End Sub
+
+Private Sub CommandButton5_Click()
+
+    キャビネットガイド作成_実行
+
+End Sub
+
+Private Sub CommandButton6_Click()
+
+    旧基準表_継続文書移行
+
+End Sub
+
 Private Sub btnApply_Click()
 
     Dim singleSerialText As String

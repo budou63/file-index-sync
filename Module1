@@ -3621,10 +3621,10 @@ Public Sub キャビネットガイド作成_実行()
     キャビネット別第1ガイド抽出_新ファイル基準表
     MsgBox "1/2: キャビネット別第1ガイド抽出_新ファイル基準表 が完了しました。", vbInformation
 
-    currentStep = "2本目（継続ルール適用）"
-    MsgBox "2/2: キャビネット別第1ガイド抽出_継続ルール適用 を実行します。", vbInformation
-    キャビネット別第1ガイド抽出_継続ルール適用
-    MsgBox "2/2: キャビネット別第1ガイド抽出_継続ルール適用 が完了しました。", vbInformation
+    currentStep = "2本目（続きルール適用）"
+    MsgBox "2/2: キャビネット別第1ガイド抽出_続きルール適用 を実行します。", vbInformation
+    キャビネット別第1ガイド抽出_続きルール適用
+    MsgBox "2/2: キャビネット別第1ガイド抽出_続きルール適用 が完了しました。", vbInformation
 
     MsgBox "キャビネットガイド作成が完了しました。", vbInformation
     Exit Sub
