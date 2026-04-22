@@ -7,13 +7,7 @@ Option Explicit
 '========================================================
 Private Sub btnApply_Click()
 
-    Dim wsSrc As Worksheet
-    Dim wsSeal As Worksheet
-    Dim serialIndex As Object
-    Dim headerIndex As Object
-    Dim slot As Long
-    Dim serialKey As String
-    Dim srcRow As Long
+    Dim singleSerialText As String
     Dim bulkStartText As String
     Dim bulkEndText As String
     Dim hasSingleInput As Boolean
@@ -24,33 +18,32 @@ Private Sub btnApply_Click()
 
     On Error GoTo ErrorHandler
 
+    singleSerialText = GetSingleSerialFromForm(Me)
     bulkStartText = GetBulkStartFromForm(Me)
     bulkEndText = GetBulkEndFromForm(Me)
+    hasSingleInput = (Len(singleSerialText) > 0)
     hasBulkStart = (Len(bulkStartText) > 0)
     hasBulkEnd = (Len(bulkEndText) > 0)
-    hasSingleInput = HasAnySingleInput(Me)
 
-    ' 単発入力 + 大量欄のいずれか入力はエラー（同時指定）
+    ' 単件 + 複数の同時入力はエラー
     If hasSingleInput And (hasBulkStart Or hasBulkEnd) Then
-        MsgBox "単発入力または大量出力のいずれか一方を入力してください。", vbExclamation
+        MsgBox "単件用と複数用の両方に入力されています。どちらか一方だけ入力してください。", vbExclamation
         Exit Sub
     End If
 
-    ' 大量欄の片側のみ入力はエラー
-    If (Not hasSingleInput) And (hasBulkStart Xor hasBulkEnd) Then
-        MsgBox "開始番号と終了番号は両方入力してください。", vbExclamation
+    ' 複数欄の片側のみ入力はエラー
+    If hasBulkStart Xor hasBulkEnd Then
+        MsgBox "複数転記を行う場合は、開始番号と終了番号の両方を入力してください。", vbExclamation
         Exit Sub
     End If
 
-    ' 大量出力モード
-    If (Not hasSingleInput) And hasBulkStart And hasBulkEnd Then
-        If Not IsNumeric(bulkStartText) Or Not IsNumeric(bulkEndText) Then
+    ' 複数反映モード
+    If hasBulkStart And hasBulkEnd Then
+        If (Not TryParseLongStrict(bulkStartText, startNo)) Or (Not TryParseLongStrict(bulkEndText, endNo)) Then
             MsgBox "開始番号と終了番号は数値で入力してください。", vbExclamation
             Exit Sub
         End If
 
-        startNo = CLng(Val(bulkStartText))
-        endNo = CLng(Val(bulkEndText))
         If startNo > endNo Then
             MsgBox "開始番号は終了番号以下にしてください。", vbExclamation
             Exit Sub
@@ -60,55 +53,65 @@ Private Sub btnApply_Click()
         Exit Sub
     End If
 
-    ' 単発出力モード
-    If hasSingleInput And (Not hasBulkStart) And (Not hasBulkEnd) Then
-        ' 既存ロジックへ継続
-    Else
-        MsgBox "単発入力または大量出力のいずれか一方を入力してください。", vbExclamation
+    ' 単件反映モード
+    If hasSingleInput Then
+        If Not TryParseLongStrict(singleSerialText, startNo) Then
+            MsgBox "通し番号は数値で入力してください。", vbExclamation
+            Exit Sub
+        End If
+        ApplyBySerial_NewSpec CStr(startNo)
+        MsgBox "個別フォルダシールへ反映しました。", vbInformation
         Exit Sub
     End If
 
-    Set wsSrc = FindSheetByCandidates(ThisWorkbook, Array("新ファイル基準表"))
-    Set wsSeal = FindSheetByCandidates(ThisWorkbook, Array("個別フォルダシール", "個別フォルダーシール", "フォルダシール"))
-
-    If wsSrc Is Nothing Then Err.Raise vbObjectError + 2201, , "転記元シート（新ファイル基準表）が見つかりません。"
-    If wsSeal Is Nothing Then Err.Raise vbObjectError + 2202, , "転記先シート（個別フォルダシール）が見つかりません。"
-
-    BuildIndexes_NewSpec wsSrc, serialIndex, headerIndex
-
-    If serialIndex Is Nothing Or headerIndex Is Nothing Then
-        Err.Raise vbObjectError + 2203, , "見出しインデックスの作成に失敗しました。"
-    End If
-    If CLng(headerIndex("通し番号")) = 0 Then
-        Err.Raise vbObjectError + 2204, , "見出し「通し番号」が見つかりません。"
-    End If
-
-    For slot = 1 To 12
-        serialKey = GetSerialBySlot(Me, slot)
-
-        If Len(serialKey) = 0 Then
-            ClearOneSealSlot wsSeal, slot
-        ElseIf serialIndex.Exists(serialKey) Then
-            srcRow = CLng(serialIndex(serialKey))
-            WriteOneSeal_NewSpec _
-                wsSrc, srcRow, wsSeal, slot, _
-                CLng(headerIndex("タイトル")), _
-                CLng(headerIndex("分類名2")), _
-                CLng(headerIndex("分類名3")), _
-                CLng(headerIndex("年度和暦")), _
-                CLng(headerIndex("保存期間"))
-        Else
-            ClearOneSealSlot wsSeal, slot
-        End If
-    Next slot
-
-    MsgBox "個別フォルダシールへ反映しました。", vbInformation
+    MsgBox "通し番号、または開始番号・終了番号を入力してください。", vbExclamation
     Exit Sub
 
 ErrorHandler:
     MsgBox "反映処理でエラーが発生しました: " & Err.Description, vbExclamation
 
 End Sub
+
+Private Function GetSingleSerialFromForm(ByVal frm As Object) As String
+
+    Dim candidates As Variant
+    Dim i As Long
+    Dim v As String
+
+    candidates = Array("txtSerialSingle", "txtSerial", "tbID1")
+
+    On Error Resume Next
+    For i = LBound(candidates) To UBound(candidates)
+        v = Trim$(CStr(frm.Controls(CStr(candidates(i))).Value))
+        If Len(v) > 0 Then
+            GetSingleSerialFromForm = v
+            On Error GoTo 0
+            Exit Function
+        End If
+    Next i
+    On Error GoTo 0
+
+    GetSingleSerialFromForm = ""
+
+End Function
+
+Private Function TryParseLongStrict(ByVal textValue As String, ByRef outValue As Long) As Boolean
+
+    Dim normalized As String
+    Dim d As Double
+
+    normalized = Trim$(textValue)
+    If Len(normalized) = 0 Then Exit Function
+    If Not IsNumeric(normalized) Then Exit Function
+
+    d = CDbl(normalized)
+    If d <> Fix(d) Then Exit Function
+    If d < -2147483648# Or d > 2147483647# Then Exit Function
+
+    outValue = CLng(d)
+    TryParseLongStrict = True
+
+End Function
 
 Private Sub btnClear_Click()
 
