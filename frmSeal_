@@ -41,6 +41,12 @@ Private Sub CommandButton6_Click()
 
 End Sub
 
+Private Sub CommandButton7_Click()
+
+    新ファイル基準表_通し番号_手動再採番
+
+End Sub
+
 Private Sub btnApply_Click()
 
     Dim bulkStartText As String

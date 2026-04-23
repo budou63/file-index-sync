@@ -1357,38 +1357,16 @@ End Function
 
 Public Sub 通し番号_再採番_新ファイル基準表()
 
-    On Error GoTo ErrorHandler
-
-    ReindexSerial_NewFileStandard ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
-    MsgBox "新ファイル基準表の通し番号を再採番しました。", vbInformation
-    Exit Sub
-
-ErrorHandler:
-    MsgBox "通し番号の再採番中にエラーが発生しました: " & Err.Description, vbExclamation
+    新ファイル基準表_通し番号_手動再採番
 
 End Sub
 
 Public Sub ReindexSerial_NewFileStandard(Optional ByVal ws As Worksheet)
 
     Dim targetWs As Worksheet
-    Dim lastCol As Long
-    Dim lastRow As Long
-    Dim serialCol As Long
-    Dim titleCol As Long
-    Dim nextSerial As Long
-    Dim rowNo As Long
-    Dim titles As Variant
-    Dim serials As Variant
-    Dim titleValue As String
-    Dim prevEnableEvents As Boolean
-    Dim prevScreenUpdating As Boolean
+    Dim dummy As Long
 
     On Error GoTo SafeExit
-
-    prevEnableEvents = Application.EnableEvents
-    prevScreenUpdating = Application.ScreenUpdating
-    Application.EnableEvents = False
-    Application.ScreenUpdating = False
 
     If ws Is Nothing Then
         Set targetWs = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
@@ -1396,40 +1374,176 @@ Public Sub ReindexSerial_NewFileStandard(Optional ByVal ws As Worksheet)
         Set targetWs = ws
     End If
 
-    lastCol = GetLastUsedCol(targetWs)
-    If lastCol <= 0 Then Exit Sub
+    dummy = ReindexSerial_NewFileStandardCore(targetWs)
 
-    serialCol = FindHeaderColumn(targetWs, lastCol, Array("通し番号"))
-    titleCol = FindHeaderColumn(targetWs, lastCol, Array("タイトル"))
+SafeExit:
+
+End Sub
+
+Public Sub 新ファイル基準表_通し番号_手動再採番()
+
+    Dim targetWs As Worksheet
+    Dim assignedCount As Long
+
+    On Error GoTo ErrorHandler
+
+    Set targetWs = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    assignedCount = ReindexSerial_NewFileStandardCore(targetWs)
+
+    MsgBox "「新ファイル基準表」の通し番号を再採番しました。" & vbCrLf & _
+           "採番件数: " & assignedCount & " 件", vbInformation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "通し番号の再採番中にエラーが発生しました: " & Err.Description, vbExclamation
+
+End Sub
+
+Private Function ReindexSerial_NewFileStandardCore(ByVal targetWs As Worksheet) As Long
+
+    Dim lastCol As Long
+    Dim lastRow As Long
+    Dim serialCol As Long
+    Dim titleCol As Long
+    Dim category2Col As Long
+    Dim category3Col As Long
+    Dim warekiCol As Long
+    Dim nextSerial As Long
+    Dim rowNo As Long
+    Dim serials As Variant
+    Dim prevEnableEvents As Boolean
+    Dim prevScreenUpdating As Boolean
+    Dim prevCalculation As XlCalculation
+    Dim errNo As Long
+    Dim errDesc As String
+    Const HEADER_ROW As Long = 1
+    Const DATA_START_ROW As Long = 2
+
+    On Error GoTo ErrorHandler
+
+    If targetWs Is Nothing Then
+        Set targetWs = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    End If
+
+    prevCalculation = Application.Calculation
+    prevEnableEvents = Application.EnableEvents
+    prevScreenUpdating = Application.ScreenUpdating
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+
+    lastCol = targetWs.Cells(HEADER_ROW, targetWs.Columns.Count).End(xlToLeft).Column
+    If lastCol <= 0 Then Exit Function
+
+    serialCol = FindHeaderColumnByCandidatesAtRow(targetWs, HEADER_ROW, lastCol, Array("通し番号"))
+    titleCol = FindHeaderColumnByCandidatesAtRow(targetWs, HEADER_ROW, lastCol, Array("タイトル"))
+    category2Col = FindHeaderColumnByCandidatesAtRow(targetWs, HEADER_ROW, lastCol, Array("分類名２", "分類名2"))
+    category3Col = FindHeaderColumnByCandidatesAtRow(targetWs, HEADER_ROW, lastCol, Array("分類名３", "分類名3"))
+    warekiCol = FindHeaderColumnByCandidatesAtRow(targetWs, HEADER_ROW, lastCol, Array("年度（和暦）", "年度(和暦)"))
 
     If serialCol = 0 Then Err.Raise vbObjectError + 2101, , "通し番号 列が見つかりません。"
-    If titleCol = 0 Then Err.Raise vbObjectError + 2102, , "タイトル 列が見つかりません。"
 
     lastRow = GetLastUsedRow(targetWs)
-    If lastRow < 2 Then Exit Sub
+    If lastRow < DATA_START_ROW Then Exit Function
 
-    ' 高速化対応: タイトル列を配列で読み込み、通し番号列を一括書き戻し
-    titles = targetWs.Range(targetWs.Cells(2, titleCol), targetWs.Cells(lastRow, titleCol)).Value2
-    ReDim serials(1 To UBound(titles, 1), 1 To 1)
+    ' 既存の通し番号を一旦クリアしてから再採番
+    targetWs.Range(targetWs.Cells(DATA_START_ROW, serialCol), targetWs.Cells(lastRow, serialCol)).ClearContents
+    ReDim serials(1 To lastRow - DATA_START_ROW + 1, 1 To 1)
 
     nextSerial = 0
-    For rowNo = 1 To UBound(titles, 1)
-        titleValue = Trim$(CStr(titles(rowNo, 1)))
-        If titleValue <> "" Then
+    For rowNo = DATA_START_ROW To lastRow
+        If ShouldAssignSerialByRow(targetWs, rowNo, titleCol, category2Col, category3Col, warekiCol) Then
             nextSerial = nextSerial + 1
-            serials(rowNo, 1) = nextSerial
+            serials(rowNo - DATA_START_ROW + 1, 1) = nextSerial
         Else
-            serials(rowNo, 1) = vbNullString
+            serials(rowNo - DATA_START_ROW + 1, 1) = vbNullString
         End If
     Next rowNo
 
-    targetWs.Range(targetWs.Cells(2, serialCol), targetWs.Cells(lastRow, serialCol)).Value = serials
+    targetWs.Range(targetWs.Cells(DATA_START_ROW, serialCol), targetWs.Cells(lastRow, serialCol)).Value = serials
+    ReindexSerial_NewFileStandardCore = nextSerial
 
 SafeExit:
+    Application.Calculation = prevCalculation
     Application.EnableEvents = prevEnableEvents
     Application.ScreenUpdating = prevScreenUpdating
+    Exit Function
+
+ErrorHandler:
+    errNo = Err.Number
+    errDesc = Err.Description
+    RestoreAppState prevCalculation, prevEnableEvents, prevScreenUpdating
+    Err.Raise errNo, "ReindexSerial_NewFileStandardCore", errDesc
+
+End Function
+
+Private Sub RestoreAppState(ByVal calcMode As XlCalculation, ByVal enableEvents As Boolean, ByVal screenUpdating As Boolean)
+
+    On Error Resume Next
+    Application.Calculation = calcMode
+    Application.EnableEvents = enableEvents
+    Application.ScreenUpdating = screenUpdating
+    On Error GoTo 0
 
 End Sub
+
+Private Function ShouldAssignSerialByRow( _
+    ByVal ws As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal titleCol As Long, _
+    ByVal category2Col As Long, _
+    ByVal category3Col As Long, _
+    ByVal warekiCol As Long) As Boolean
+
+    If ws Is Nothing Then Exit Function
+
+    If titleCol > 0 Then
+        ShouldAssignSerialByRow = (Trim$(CStr(ws.Cells(rowNo, titleCol).Value)) <> "")
+        Exit Function
+    End If
+
+    ShouldAssignSerialByRow = _
+        HasValueInColumn(ws, rowNo, category2Col) Or _
+        HasValueInColumn(ws, rowNo, category3Col) Or _
+        HasValueInColumn(ws, rowNo, warekiCol)
+
+End Function
+
+Private Function HasValueInColumn(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As Boolean
+
+    If ws Is Nothing Then Exit Function
+    If colNo <= 0 Then Exit Function
+
+    HasValueInColumn = (Trim$(CStr(ws.Cells(rowNo, colNo).Value)) <> "")
+
+End Function
+
+Private Function FindHeaderColumnByCandidatesAtRow( _
+    ByVal ws As Worksheet, _
+    ByVal headerRow As Long, _
+    ByVal lastCol As Long, _
+    ByVal candidates As Variant) As Long
+
+    Dim c As Long
+    Dim i As Long
+    Dim headerValue As String
+
+    FindHeaderColumnByCandidatesAtRow = 0
+    If ws Is Nothing Then Exit Function
+    If headerRow <= 0 Then Exit Function
+    If lastCol <= 0 Then Exit Function
+
+    For c = 1 To lastCol
+        headerValue = Trim$(CStr(ws.Cells(headerRow, c).Value))
+        For i = LBound(candidates) To UBound(candidates)
+            If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+                FindHeaderColumnByCandidatesAtRow = c
+                Exit Function
+            End If
+        Next i
+    Next c
+
+End Function
 
 Private Sub BuildHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal headerMap As Object)
 
