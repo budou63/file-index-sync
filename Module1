@@ -1384,18 +1384,24 @@ Public Sub 新ファイル基準表_通し番号_手動再採番()
 
     Dim targetWs As Worksheet
     Dim assignedCount As Long
+    Dim haikiUpdatedCount As Long
 
     On Error GoTo ErrorHandler
 
     Set targetWs = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
-    assignedCount = ReindexSerial_NewFileStandardCore(targetWs)
 
-    MsgBox "「新ファイル基準表」の通し番号を再採番しました。" & vbCrLf & _
-           "採番件数: " & assignedCount & " 件", vbInformation
+    ' 1. 通し番号の全体再採番
+    assignedCount = ReindexSerial_NewFileStandardCore(targetWs)
+    ' 2. 廃棄年月日の全体再計算
+    haikiUpdatedCount = RecalculateHaikiDateAllRows_NewFileStandard(targetWs)
+
+    MsgBox "通し番号再採番・廃棄年月日再計算が完了しました。" & vbCrLf & _
+           "通し番号採番件数: " & assignedCount & " 件" & vbCrLf & _
+           "廃棄年月日再計算件数: " & haikiUpdatedCount & " 件", vbInformation
     Exit Sub
 
 ErrorHandler:
-    MsgBox "通し番号の再採番中にエラーが発生しました: " & Err.Description, vbExclamation
+    MsgBox "通し番号再採番・廃棄年月日再計算でエラーが発生しました: " & Err.Description, vbExclamation
 
 End Sub
 
@@ -2917,16 +2923,10 @@ Public Sub 新ファイル基準表_廃棄年月日自動計算(ByVal Target As 
     Dim wsEdit As Worksheet
     Dim warekiCol As Long
     Dim saveTermCol As Long
-    Dim haikiCol As Long
     Dim monitorRange As Range
     Dim workRange As Range
     Dim changedCell As Range
     Dim rowMap As Object
-    Dim key As Variant
-    Dim rowNo As Long
-    Dim warekiText As String
-    Dim saveTermText As String
-    Dim calcResult As String
     Dim prevEnableEvents As Boolean
 
     If Target Is Nothing Then Exit Sub
@@ -2940,9 +2940,8 @@ Public Sub 新ファイル基準表_廃棄年月日自動計算(ByVal Target As 
 
     warekiCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates("年度（和暦）"))
     saveTermCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates("保存期間"))
-    haikiCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), Array("廃棄年月日"))
 
-    If warekiCol <= 0 Or saveTermCol <= 0 Or haikiCol <= 0 Then Exit Sub
+    If warekiCol <= 0 Or saveTermCol <= 0 Then Exit Sub
 
     ' 監視対象（年度（和暦）列 / 保存期間列）のみを処理
     Set monitorRange = Union( _
@@ -2958,7 +2957,84 @@ Public Sub 新ファイル基準表_廃棄年月日自動計算(ByVal Target As 
         End If
     Next changedCell
 
+    Call RecalculateHaikiDateByRowMap(wsEdit, rowMap)
+
+SafeExit:
+    Application.EnableEvents = prevEnableEvents
+
+End Sub
+
+Public Sub 新ファイル基準表_廃棄年月日全体再計算()
+
+    On Error GoTo ErrorHandler
+
+    Call RecalculateHaikiDateAllRows_NewFileStandard(ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD))
+    MsgBox "「新ファイル基準表」の廃棄年月日を全体再計算しました。", vbInformation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "廃棄年月日の全体再計算でエラーが発生しました: " & Err.Description, vbExclamation
+
+End Sub
+
+Private Function RecalculateHaikiDateAllRows_NewFileStandard(ByVal wsEdit As Worksheet) As Long
+
+    Dim rowMap As Object
+    Dim lastRow As Long
+    Dim rowNo As Long
+
+    If wsEdit Is Nothing Then
+        Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    End If
+
+    lastRow = GetLastUsedRow(wsEdit)
+    If lastRow < 2 Then Exit Function
+
+    Set rowMap = CreateObject("Scripting.Dictionary")
+    For rowNo = 2 To lastRow
+        rowMap.Add CStr(rowNo), rowNo
+    Next rowNo
+
+    RecalculateHaikiDateAllRows_NewFileStandard = RecalculateHaikiDateByRowMap(wsEdit, rowMap)
+
+End Function
+
+Private Function RecalculateHaikiDateByRowMap(ByVal wsEdit As Worksheet, ByVal rowMap As Object) As Long
+
+    Dim warekiCol As Long
+    Dim saveTermCol As Long
+    Dim haikiCol As Long
+    Dim key As Variant
+    Dim rowNo As Long
+    Dim warekiText As String
+    Dim saveTermText As String
+    Dim calcResult As String
+    Dim prevEnableEvents As Boolean
+    Dim prevScreenUpdating As Boolean
+    Dim prevCalculation As XlCalculation
+    Dim errNo As Long
+    Dim errDesc As String
+
+    On Error GoTo ErrorHandler
+
+    If wsEdit Is Nothing Then Exit Function
+    If rowMap Is Nothing Then Exit Function
+    If rowMap.Count = 0 Then Exit Function
+
+    warekiCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates("年度（和暦）"))
+    saveTermCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates("保存期間"))
+    haikiCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), Array("廃棄年月日"))
+
+    If warekiCol <= 0 Or saveTermCol <= 0 Or haikiCol <= 0 Then
+        Err.Raise vbObjectError + 2121, , "年度（和暦）/保存期間/廃棄年月日 の見出しが見つかりません。"
+    End If
+
+    prevCalculation = Application.Calculation
+    prevEnableEvents = Application.EnableEvents
+    prevScreenUpdating = Application.ScreenUpdating
+    Application.Calculation = xlCalculationManual
     Application.EnableEvents = False
+    Application.ScreenUpdating = False
 
     For Each key In rowMap.Keys
         rowNo = CLng(rowMap(CStr(key)))
@@ -2967,12 +3043,22 @@ Public Sub 新ファイル基準表_廃棄年月日自動計算(ByVal Target As 
 
         calcResult = CalculateHaikiDateText(warekiText, saveTermText)
         wsEdit.Cells(rowNo, haikiCol).Value = calcResult
+        RecalculateHaikiDateByRowMap = RecalculateHaikiDateByRowMap + 1
     Next key
 
 SafeExit:
+    Application.Calculation = prevCalculation
     Application.EnableEvents = prevEnableEvents
+    Application.ScreenUpdating = prevScreenUpdating
+    Exit Function
 
-End Sub
+ErrorHandler:
+    errNo = Err.Number
+    errDesc = Err.Description
+    RestoreAppState prevCalculation, prevEnableEvents, prevScreenUpdating
+    Err.Raise errNo, "RecalculateHaikiDateByRowMap", errDesc
+
+End Function
 
 '--------------------------------------------------------
 ' 廃棄年月日（R8.4.1 のような文字列）を計算して返す
