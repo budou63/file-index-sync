@@ -4526,15 +4526,43 @@ End Sub
 
 Public Sub ClearAllSeals_NewSpec()
 
-    Dim wsSeal As Worksheet
+    Const MULTI_SHEET_NAME As String = "個別フォルダシール（複数）"
+    Const PAGE_ROWS As Long = 20
+
+    Dim wsSingle As Worksheet
+    Dim wsMulti As Worksheet
     Dim slot As Long
+    Dim generatedBlocks As Long
+    Dim pageNo As Long
+    Dim clearedSingle As Boolean
+    Dim clearedMulti As Boolean
 
-    Set wsSeal = ResolveWorksheetByCandidates(ThisWorkbook, Array("個別フォルダシール", "個別フォルダーシール", "フォルダシール"))
-    If wsSeal Is Nothing Then Exit Sub
+    Set wsSingle = ResolveWorksheetByCandidates(ThisWorkbook, Array("個別フォルダシール", "個別フォルダーシール", "フォルダシール"))
+    If Not wsSingle Is Nothing Then
+        For slot = 1 To 12
+            ClearOneSealSlot wsSingle, slot
+        Next slot
+        clearedSingle = True
+    End If
 
-    For slot = 1 To 12
-        ClearOneSealSlot wsSeal, slot
-    Next slot
+    Set wsMulti = ResolveWorksheetByCandidates(ThisWorkbook, Array(MULTI_SHEET_NAME))
+    If Not wsMulti Is Nothing Then
+        generatedBlocks = GetGeneratedSealBlockCount(wsMulti, PAGE_ROWS)
+        For pageNo = 1 To generatedBlocks
+            For slot = 1 To 12
+                ClearOneSealSlot_WithRowOffset wsMulti, slot, (pageNo - 1) * PAGE_ROWS
+            Next slot
+        Next pageNo
+        clearedMulti = True
+    End If
+
+    If clearedSingle And clearedMulti Then
+        MsgBox "単発用シートと複数用シートをクリアしました。", vbInformation
+    ElseIf clearedSingle Then
+        MsgBox "単発用シートをクリアしました。", vbInformation
+    ElseIf clearedMulti Then
+        MsgBox "複数用シートをクリアしました。", vbInformation
+    End If
 
 End Sub
 
