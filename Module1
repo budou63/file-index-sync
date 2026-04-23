@@ -13,32 +13,35 @@ Public Sub 新ファイル基準表生成()
 
     Dim oldScreenUpdating As Boolean
     Dim oldEnableEvents As Boolean
-    Dim oldDisplayAlerts As Boolean
+    Dim oldCalculation As XlCalculation
 
     On Error GoTo ErrorHandler
 
+    ' 実行前のExcel設定を退避
     oldScreenUpdating = Application.ScreenUpdating
     oldEnableEvents = Application.EnableEvents
-    oldDisplayAlerts = Application.DisplayAlerts
+    oldCalculation = Application.Calculation
 
+    ' 実行高速化のため一時的に設定変更
     Application.ScreenUpdating = False
     Application.EnableEvents = False
-    Application.DisplayAlerts = False
+    Application.Calculation = xlCalculationManual
 
-    Call CSV取込_シンプル版
+    ' 手順2 -> 手順3 の順で既存マクロをそのまま呼び出す
     Call 手順2_新ファイル基準表を作成する
     Call 手順3_コード管理CSVを作成する
 
-    MsgBox "完了しました"
+    MsgBox "新ファイル基準表とコード管理CSVの作成が完了しました。", vbInformation
     GoTo Cleanup
 
 ErrorHandler:
     MsgBox "エラーが発生しました: " & Err.Description, vbExclamation
 
 Cleanup:
+    ' 例外時を含め、必ず元の設定へ戻す
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
-    Application.DisplayAlerts = oldDisplayAlerts
+    Application.Calculation = oldCalculation
 
 End Sub
 
