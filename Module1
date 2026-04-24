@@ -65,6 +65,8 @@ Public Sub CSV取込_シンプル版()
     Dim dstWarekiCol As Long
     Dim targetFiscalYear As String
     Dim rowYear As String
+    Dim annualFixChangedCount As Long
+    Dim annualFixReviewCount As Long
 
     On Error GoTo ErrorHandler
 
@@ -157,6 +159,9 @@ Public Sub CSV取込_シンプル版()
     Next srcRow
     
     wbCSV.Close False
+
+    ' 取込後補正: 「毎年作成」行のみ年度表現を安全に補正
+    ApplyAnnualFolderNameCorrections ws, annualFixChangedCount, annualFixReviewCount
     
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
@@ -165,7 +170,9 @@ Public Sub CSV取込_シンプル版()
            "対象年度: " & targetFiscalYear & vbCrLf & _
            "削除件数: " & deletedCount & " 件" & vbCrLf & _
            "取込件数: " & appendedCount & " 件" & vbCrLf & _
-           "年度空欄スキップ件数: " & skippedBlankYearCount & " 件", vbInformation
+           "年度空欄スキップ件数: " & skippedBlankYearCount & " 件" & vbCrLf & _
+           "年度表現補正件数: " & annualFixChangedCount & " 件" & vbCrLf & _
+           "年度表現要確認件数: " & annualFixReviewCount & " 件", vbInformation
     Exit Sub
 
 ErrorHandler:
@@ -177,6 +184,384 @@ ErrorHandler:
     MsgBox "CSV取込中にエラーが発生しました: " & Err.Description, vbExclamation
 
 End Sub
+
+'========================================================
+' CSV取込後補正: 「毎年作成」行の年度表現のみ安全に補正
+'========================================================
+Private Sub ApplyAnnualFolderNameCorrections( _
+    ByVal ws As Worksheet, _
+    ByRef changedCount As Long, _
+    ByRef reviewCount As Long)
+
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim rowNo As Long
+    Dim fiscalCol As Long
+    Dim annualUseCol As Long
+    Dim reviewCol As Long
+    Dim targetCols As Variant
+    Dim i As Long
+    Dim colNo As Long
+    Dim fiscalYear As String
+    Dim annualUseVal As String
+    Dim originalValue As String
+    Dim correctedValue As String
+    Dim rowChanged As Boolean
+    Dim rowNeedsReview As Boolean
+    Dim corrected As Boolean
+    Dim needsReview As Boolean
+    Dim reason As String
+    Dim reviewReasons As String
+
+    If ws Is Nothing Then Exit Sub
+
+    lastCol = GetLastUsedCol(ws)
+    lastRow = GetLastUsedRow(ws)
+    If lastCol <= 0 Or lastRow < 2 Then Exit Sub
+
+    fiscalCol = FindHeaderColumn(ws, lastCol, Array("年度（和暦）", "年度(和暦)", "年度"))
+    annualUseCol = FindHeaderColumn(ws, lastCol, Array("毎年度利用区分", "毎年度利用区分1:毎年作成 2:単年のみ"))
+    If fiscalCol <= 0 Or annualUseCol <= 0 Then Exit Sub
+
+    targetCols = ResolveAnnualCorrectionTargetColumns(ws, lastCol)
+    If IsEmpty(targetCols) Then Exit Sub
+
+    reviewCol = EnsureHeaderColumn(ws, "年度補正確認")
+
+    For rowNo = 2 To lastRow
+        annualUseVal = GetTrimmedCell(ws, rowNo, annualUseCol)
+        If Not IsAnnualCreationCategory(annualUseVal) Then GoTo ContinueNextRow
+
+        fiscalYear = GetTrimmedCell(ws, rowNo, fiscalCol)
+        rowChanged = False
+        rowNeedsReview = False
+        reviewReasons = ""
+
+        For i = LBound(targetCols) To UBound(targetCols)
+            colNo = CLng(targetCols(i))
+            originalValue = CStr(ws.Cells(rowNo, colNo).Value)
+            correctedValue = NormalizeAnnualFolderName(originalValue, fiscalYear, corrected, needsReview, reason)
+
+            If corrected Then
+                ws.Cells(rowNo, colNo).Value = correctedValue
+                rowChanged = True
+            End If
+
+            If needsReview Then
+                rowNeedsReview = True
+                If Len(reason) > 0 Then
+                    If Len(reviewReasons) > 0 Then reviewReasons = reviewReasons & " / "
+                    reviewReasons = reviewReasons & ws.Cells(1, colNo).Value & ":" & reason
+                End If
+            End If
+        Next i
+
+        If rowChanged Then changedCount = changedCount + 1
+        If rowNeedsReview Then
+            reviewCount = reviewCount + 1
+            ws.Cells(rowNo, reviewCol).Value = "要確認" & IIf(Len(reviewReasons) > 0, "（" & reviewReasons & "）", "")
+        ElseIf rowChanged Then
+            ws.Cells(rowNo, reviewCol).Value = "補正済"
+        Else
+            ws.Cells(rowNo, reviewCol).ClearContents
+        End If
+
+ContinueNextRow:
+    Next rowNo
+
+End Sub
+
+Private Function ResolveAnnualCorrectionTargetColumns(ByVal ws As Worksheet, ByVal lastCol As Long) As Variant
+
+    ' 補正対象列は配列で定義（将来追加しやすい）
+    ' まずは「フォルダ名相当」としてタイトル列のみを対象
+    Dim targetHeaderCandidates As Variant
+    Dim resultCols() As Long
+    Dim i As Long
+    Dim colNo As Long
+    Dim count As Long
+
+    targetHeaderCandidates = Array(Array("タイトル"))
+
+    ReDim resultCols(0 To 0)
+    count = 0
+
+    For i = LBound(targetHeaderCandidates) To UBound(targetHeaderCandidates)
+        colNo = FindHeaderColumn(ws, lastCol, targetHeaderCandidates(i))
+        If colNo > 0 Then
+            If count > 0 Then ReDim Preserve resultCols(0 To count)
+            resultCols(count) = colNo
+            count = count + 1
+        End If
+    Next i
+
+    If count = 0 Then
+        ResolveAnnualCorrectionTargetColumns = Empty
+    Else
+        ResolveAnnualCorrectionTargetColumns = resultCols
+    End If
+
+End Function
+
+Private Function EnsureHeaderColumn(ByVal ws As Worksheet, ByVal headerName As String) As Long
+
+    Dim lastCol As Long
+    Dim colNo As Long
+
+    lastCol = GetLastUsedCol(ws)
+    colNo = FindHeaderColumn(ws, lastCol, Array(headerName))
+    If colNo > 0 Then
+        EnsureHeaderColumn = colNo
+        Exit Function
+    End If
+
+    colNo = lastCol + 1
+    ws.Cells(1, colNo).Value = headerName
+    EnsureHeaderColumn = colNo
+
+End Function
+
+Private Function IsAnnualCreationCategory(ByVal categoryText As String) As Boolean
+
+    Dim s As String
+
+    s = NormalizeBasicText(categoryText)
+    IsAnnualCreationCategory = (InStr(1, s, "毎年作成", vbTextCompare) > 0 Or s = "1")
+
+End Function
+
+' 年度補正メイン
+' - 補正する: 遷移表現（A→B）/ 単独年度表現（令和N年度, RN, N年度）
+' - 補正しない: 曖昧な数字、号数・様式番号など年度断定不可なもの
+Private Function NormalizeAnnualFolderName( _
+    ByVal folderName As String, _
+    ByVal fiscalYear As String, _
+    ByRef wasCorrected As Boolean, _
+    ByRef needsReview As Boolean, _
+    Optional ByRef reason As String = "") As String
+
+    Dim s As String
+    Dim changedTransition As Boolean
+    Dim changedSingle As Boolean
+    Dim reviewTransition As Boolean
+    Dim reviewSingle As Boolean
+    Dim transitionReason As String
+    Dim singleReason As String
+
+    s = CStr(folderName)
+    If Len(s) = 0 Then
+        NormalizeAnnualFolderName = s
+        Exit Function
+    End If
+
+    ' 優先1: 遷移表現（例: 7→8 / R8→9 / 令和8年度→令和9年度）を先に+1
+    s = ShiftYearTransitionExpression(s, changedTransition, reviewTransition, transitionReason)
+
+    ' 優先2: 単独年度表現（例: 令和8年度 / R8 / 8年度）を行年度へ合わせる
+    s = ReplaceSingleYearExpression(s, fiscalYear, changedSingle, reviewSingle, singleReason)
+
+    wasCorrected = (changedTransition Or changedSingle)
+    needsReview = (reviewTransition Or reviewSingle)
+
+    If needsReview Then
+        reason = ""
+        If Len(transitionReason) > 0 Then reason = transitionReason
+        If Len(singleReason) > 0 Then
+            If Len(reason) > 0 Then reason = reason & ", "
+            reason = reason & singleReason
+        End If
+    End If
+
+    NormalizeAnnualFolderName = s
+
+End Function
+
+Private Function ShiftYearTransitionExpression( _
+    ByVal s As String, _
+    ByRef changed As Boolean, _
+    ByRef needsReview As Boolean, _
+    Optional ByRef reason As String = "") As String
+
+    Dim re As Object
+    Dim matches As Object
+    Dim m As Object
+    Dim idx As Long
+    Dim leftNum As Long
+    Dim rightNum As Long
+    Dim leftEra As String
+    Dim rightEra As String
+    Dim leftSuffix As String
+    Dim rightSuffix As String
+    Dim replacement As String
+    Dim outText As String
+
+    outText = s
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = True
+    re.IgnoreCase = True
+    re.Pattern = "(令和|[Rr])?\s*(\d{1,2})\s*(年度|年)?\s*→\s*(令和|[Rr])?\s*(\d{1,2})\s*(年度|年)?"
+
+    Set matches = re.Execute(outText)
+    If matches.Count = 0 Then
+        ShiftYearTransitionExpression = outText
+        Exit Function
+    End If
+
+    For idx = matches.Count - 1 To 0 Step -1
+        Set m = matches(idx)
+        leftEra = NzString(m.SubMatches(0))
+        leftNum = CLng(m.SubMatches(1))
+        leftSuffix = NzString(m.SubMatches(2))
+        rightEra = NzString(m.SubMatches(3))
+        rightNum = CLng(m.SubMatches(4))
+        rightSuffix = NzString(m.SubMatches(5))
+
+        If rightNum <> leftNum + 1 Then
+            needsReview = True
+            reason = "遷移年が連番ではない"
+            GoTo ContinueNextMatch
+        End If
+
+        replacement = BuildYearToken(leftEra, leftNum + 1, leftSuffix) & "→" & _
+                      BuildYearToken(rightEra, rightNum + 1, rightSuffix)
+        outText = Left$(outText, m.FirstIndex) & replacement & Mid$(outText, m.FirstIndex + m.Length + 1)
+        changed = True
+
+ContinueNextMatch:
+    Next idx
+
+    ShiftYearTransitionExpression = outText
+
+End Function
+
+Private Function ReplaceSingleYearExpression( _
+    ByVal s As String, _
+    ByVal fiscalYear As String, _
+    ByRef changed As Boolean, _
+    ByRef needsReview As Boolean, _
+    Optional ByRef reason As String = "") As String
+
+    Dim targetYear As Long
+    Dim countReiwa As Long
+    Dim countR As Long
+    Dim countNen As Long
+    Dim total As Long
+    Dim outText As String
+
+    outText = s
+    targetYear = ParseReiwaYearNumber(fiscalYear)
+    If targetYear <= 0 Then
+        If Len(outText) > 0 Then
+            needsReview = True
+            reason = "行の年度を解釈できない"
+        End If
+        ReplaceSingleYearExpression = outText
+        Exit Function
+    End If
+
+    ' 矢印遷移は優先1で処理済みのため、単独補正では触らない
+    If InStr(outText, "→") > 0 Then
+        ReplaceSingleYearExpression = outText
+        Exit Function
+    End If
+
+    outText = ReplacePatternToFixedYear(outText, "(令和)\s*(\d{1,2})\s*(年度)", "令和", "年度", targetYear, countReiwa)
+    outText = ReplacePatternToFixedYear(outText, "\b([Rr])\s*(\d{1,2})\b", "R", "", targetYear, countR)
+    outText = ReplacePatternToFixedYear(outText, "(\d{1,2})\s*(年度)", "", "年度", targetYear, countNen)
+
+    total = countReiwa + countR + countNen
+    If total = 0 Then
+        ReplaceSingleYearExpression = outText
+        Exit Function
+    End If
+
+    If total > 1 Then
+        needsReview = True
+        reason = "単独年度候補が複数ある"
+        ' 曖昧なため、単独補正は適用せず元文字列を返す
+        ReplaceSingleYearExpression = s
+        Exit Function
+    End If
+
+    changed = (outText <> s)
+    ReplaceSingleYearExpression = outText
+
+End Function
+
+Private Function ReplacePatternToFixedYear( _
+    ByVal s As String, _
+    ByVal patternText As String, _
+    ByVal prefix As String, _
+    ByVal suffix As String, _
+    ByVal targetYear As Long, _
+    ByRef matchCount As Long) As String
+
+    Dim re As Object
+    Dim matches As Object
+    Dim m As Object
+    Dim idx As Long
+    Dim outText As String
+    Dim replacement As String
+
+    outText = s
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = True
+    re.IgnoreCase = True
+    re.Pattern = patternText
+    Set matches = re.Execute(outText)
+    matchCount = matches.Count
+
+    For idx = matches.Count - 1 To 0 Step -1
+        Set m = matches(idx)
+        replacement = prefix & CStr(targetYear) & suffix
+        outText = Left$(outText, m.FirstIndex) & replacement & Mid$(outText, m.FirstIndex + m.Length + 1)
+    Next idx
+
+    ReplacePatternToFixedYear = outText
+
+End Function
+
+Private Function BuildYearToken(ByVal eraText As String, ByVal y As Long, ByVal suffixText As String) As String
+
+    Dim normalizedEra As String
+
+    normalizedEra = Trim$(eraText)
+    If normalizedEra = "" Then
+        BuildYearToken = CStr(y) & suffixText
+    ElseIf UCase$(normalizedEra) = "R" Then
+        BuildYearToken = "R" & CStr(y) & suffixText
+    ElseIf normalizedEra = "令和" Then
+        BuildYearToken = "令和" & CStr(y) & suffixText
+    Else
+        BuildYearToken = normalizedEra & CStr(y) & suffixText
+    End If
+
+End Function
+
+Private Function ParseReiwaYearNumber(ByVal fiscalYear As String) As Long
+
+    Dim s As String
+    Dim re As Object
+    Dim matches As Object
+
+    s = NormalizeBasicText(fiscalYear)
+    If Len(s) = 0 Then Exit Function
+
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = False
+    re.IgnoreCase = True
+    re.Pattern = "(令和|[Rr])\s*(\d{1,2})"
+    Set matches = re.Execute(s)
+    If matches.Count > 0 Then
+        ParseReiwaYearNumber = CLng(matches(0).SubMatches(1))
+        Exit Function
+    End If
+
+    re.Pattern = "^(\d{1,2})$"
+    Set matches = re.Execute(s)
+    If matches.Count > 0 Then ParseReiwaYearNumber = CLng(matches(0).SubMatches(0))
+
+End Function
 
 Private Sub NormalizeHeaderLineBreaks(ByVal ws As Worksheet)
 
@@ -4285,7 +4670,7 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
         Err.Raise vbObjectError + 2307, , "該当するデータがありません。"
     End If
 
-    pageCount = (targetRows.Count + 11) \ 12
+    pageCount = CLng(Application.WorksheetFunction.RoundUp(CDbl(targetRows.Count) / 12#, 0))
     requiredBlocks = pageCount
     generatedBlocks = GetGeneratedSealBlockCount(wsMulti, PAGE_ROWS)
 
@@ -4298,8 +4683,8 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
         generatedBlocks = requiredBlocks
     End If
 
-    ' 12面ブロックごとに改ページを固定（既存ブロックも含めて再設定）
-    ConfigureSealPageBreaks wsMulti, PAGE_ROWS, generatedBlocks
+    ' 12面ブロックごとに改ページを固定（今回印刷する必要ページ数を基準に再設定）
+    ConfigureSealPageBreaks wsMulti, PAGE_ROWS, pageCount
 
     For pageNo = 1 To pageCount
         pageTopRow = (pageNo - 1) * PAGE_ROWS + 1
@@ -4354,6 +4739,9 @@ Private Function GetGeneratedSealBlockCount(ByVal ws As Worksheet, ByVal pageRow
     Dim areaText As String
     Dim rngPrint As Range
     Dim rowBottom As Long
+    Dim lastDataCell As Range
+    Dim dataBottom As Long
+    Dim maxBottom As Long
 
     On Error GoTo Fallback
 
@@ -4361,18 +4749,21 @@ Private Function GetGeneratedSealBlockCount(ByVal ws As Worksheet, ByVal pageRow
     If Len(areaText) > 0 Then
         Set rngPrint = ws.Range(areaText)
         rowBottom = rngPrint.Row + rngPrint.Rows.Count - 1
-        If rowBottom > 0 Then
-            GetGeneratedSealBlockCount = (rowBottom + pageRows - 1) \ pageRows
-            Exit Function
-        End If
+    End If
+
+    Set lastDataCell = ws.Range(ws.Cells(1, 1), ws.Cells(ws.Rows.Count, 21)).Find( _
+        What:="*", LookIn:=xlFormulas, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    If Not lastDataCell Is Nothing Then dataBottom = lastDataCell.Row
+
+    maxBottom = IIf(rowBottom > dataBottom, rowBottom, dataBottom)
+    If maxBottom > 0 Then
+        GetGeneratedSealBlockCount = (maxBottom + pageRows - 1) \ pageRows
+        If GetGeneratedSealBlockCount < 1 Then GetGeneratedSealBlockCount = 1
+        Exit Function
     End If
 
 Fallback:
-    If Application.WorksheetFunction.CountA(ws.Range(ws.Cells(1, 1), ws.Cells(pageRows, 1))) > 0 Then
-        GetGeneratedSealBlockCount = 1
-    Else
-        GetGeneratedSealBlockCount = 0
-    End If
+    GetGeneratedSealBlockCount = 1
 
 End Function
 
@@ -4528,6 +4919,7 @@ Public Sub ClearAllSeals_NewSpec()
 
     Const MULTI_SHEET_NAME As String = "個別フォルダシール（複数）"
     Const PAGE_ROWS As Long = 20
+    Const PAGE_LAST_COL As Long = 21
 
     Dim wsSingle As Worksheet
     Dim wsMulti As Worksheet
@@ -4553,6 +4945,9 @@ Public Sub ClearAllSeals_NewSpec()
                 ClearOneSealSlot_WithRowOffset wsMulti, slot, (pageNo - 1) * PAGE_ROWS
             Next slot
         Next pageNo
+        ' クリア後は1ページ固定に戻す（列範囲はテンプレートどおり A:U）
+        ConfigureSealPageBreaks wsMulti, PAGE_ROWS, 1
+        wsMulti.PageSetup.PrintArea = wsMulti.Range(wsMulti.Cells(1, 1), wsMulti.Cells(PAGE_ROWS, PAGE_LAST_COL)).Address
         clearedMulti = True
     End If
 
