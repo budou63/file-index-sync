@@ -4670,7 +4670,7 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
         Err.Raise vbObjectError + 2307, , "該当するデータがありません。"
     End If
 
-    pageCount = (targetRows.Count + 11) \ 12
+    pageCount = CLng(Application.WorksheetFunction.RoundUp(CDbl(targetRows.Count) / 12#, 0))
     requiredBlocks = pageCount
     generatedBlocks = GetGeneratedSealBlockCount(wsMulti, PAGE_ROWS)
 
@@ -4683,8 +4683,8 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
         generatedBlocks = requiredBlocks
     End If
 
-    ' 12面ブロックごとに改ページを固定（既存ブロックも含めて再設定）
-    ConfigureSealPageBreaks wsMulti, PAGE_ROWS, generatedBlocks
+    ' 12面ブロックごとに改ページを固定（今回印刷する必要ページ数を基準に再設定）
+    ConfigureSealPageBreaks wsMulti, PAGE_ROWS, pageCount
 
     For pageNo = 1 To pageCount
         pageTopRow = (pageNo - 1) * PAGE_ROWS + 1
@@ -4739,6 +4739,9 @@ Private Function GetGeneratedSealBlockCount(ByVal ws As Worksheet, ByVal pageRow
     Dim areaText As String
     Dim rngPrint As Range
     Dim rowBottom As Long
+    Dim lastDataCell As Range
+    Dim dataBottom As Long
+    Dim maxBottom As Long
 
     On Error GoTo Fallback
 
@@ -4746,18 +4749,21 @@ Private Function GetGeneratedSealBlockCount(ByVal ws As Worksheet, ByVal pageRow
     If Len(areaText) > 0 Then
         Set rngPrint = ws.Range(areaText)
         rowBottom = rngPrint.Row + rngPrint.Rows.Count - 1
-        If rowBottom > 0 Then
-            GetGeneratedSealBlockCount = (rowBottom + pageRows - 1) \ pageRows
-            Exit Function
-        End If
+    End If
+
+    Set lastDataCell = ws.Range(ws.Cells(1, 1), ws.Cells(ws.Rows.Count, 21)).Find( _
+        What:="*", LookIn:=xlFormulas, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    If Not lastDataCell Is Nothing Then dataBottom = lastDataCell.Row
+
+    maxBottom = IIf(rowBottom > dataBottom, rowBottom, dataBottom)
+    If maxBottom > 0 Then
+        GetGeneratedSealBlockCount = (maxBottom + pageRows - 1) \ pageRows
+        If GetGeneratedSealBlockCount < 1 Then GetGeneratedSealBlockCount = 1
+        Exit Function
     End If
 
 Fallback:
-    If Application.WorksheetFunction.CountA(ws.Range(ws.Cells(1, 1), ws.Cells(pageRows, 1))) > 0 Then
-        GetGeneratedSealBlockCount = 1
-    Else
-        GetGeneratedSealBlockCount = 0
-    End If
+    GetGeneratedSealBlockCount = 1
 
 End Function
 
@@ -4913,6 +4919,7 @@ Public Sub ClearAllSeals_NewSpec()
 
     Const MULTI_SHEET_NAME As String = "個別フォルダシール（複数）"
     Const PAGE_ROWS As Long = 20
+    Const PAGE_LAST_COL As Long = 21
 
     Dim wsSingle As Worksheet
     Dim wsMulti As Worksheet
@@ -4938,6 +4945,9 @@ Public Sub ClearAllSeals_NewSpec()
                 ClearOneSealSlot_WithRowOffset wsMulti, slot, (pageNo - 1) * PAGE_ROWS
             Next slot
         Next pageNo
+        ' クリア後は1ページ固定に戻す（列範囲はテンプレートどおり A:U）
+        ConfigureSealPageBreaks wsMulti, PAGE_ROWS, 1
+        wsMulti.PageSetup.PrintArea = wsMulti.Range(wsMulti.Cells(1, 1), wsMulti.Cells(PAGE_ROWS, PAGE_LAST_COL)).Address
         clearedMulti = True
     End If
 
