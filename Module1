@@ -442,11 +442,12 @@ Private Function ReplaceSingleYearExpression( _
     Optional ByRef reason As String = "") As String
 
     Dim targetYear As Long
-    Dim countReiwa As Long
-    Dim countR As Long
-    Dim countNen As Long
-    Dim total As Long
+    Dim tokenCount As Long
     Dim outText As String
+    Dim tokenStart As Long
+    Dim tokenLength As Long
+    Dim tokenStyle As String
+    Dim replacement As String
 
     outText = s
     targetYear = ParseReiwaYearNumber(fiscalYear)
@@ -465,17 +466,13 @@ Private Function ReplaceSingleYearExpression( _
         Exit Function
     End If
 
-    outText = ReplacePatternToFixedYear(outText, "(令和)\s*(\d{1,2})\s*(年度)", "令和", "年度", targetYear, countReiwa)
-    outText = ReplacePatternToFixedYear(outText, "\b([Rr])\s*(\d{1,2})\b", "R", "", targetYear, countR)
-    outText = ReplacePatternToFixedYear(outText, "(\d{1,2})\s*(年度)", "", "年度", targetYear, countNen)
-
-    total = countReiwa + countR + countNen
-    If total = 0 Then
+    tokenCount = FindSingleYearCandidate(outText, tokenStart, tokenLength, tokenStyle)
+    If tokenCount = 0 Then
         ReplaceSingleYearExpression = outText
         Exit Function
     End If
 
-    If total > 1 Then
+    If tokenCount > 1 Then
         needsReview = True
         reason = "単独年度候補が複数ある"
         ' 曖昧なため、単独補正は適用せず元文字列を返す
@@ -483,41 +480,111 @@ Private Function ReplaceSingleYearExpression( _
         Exit Function
     End If
 
+    replacement = BuildSingleYearReplacement(tokenStyle, targetYear)
+    outText = Left$(outText, tokenStart - 1) & replacement & Mid$(outText, tokenStart + tokenLength)
     changed = (outText <> s)
     ReplaceSingleYearExpression = outText
 
 End Function
 
-Private Function ReplacePatternToFixedYear( _
+Private Function FindSingleYearCandidate( _
     ByVal s As String, _
-    ByVal patternText As String, _
-    ByVal prefix As String, _
-    ByVal suffix As String, _
-    ByVal targetYear As Long, _
-    ByRef matchCount As Long) As String
+    ByRef tokenStart As Long, _
+    ByRef tokenLength As Long, _
+    ByRef tokenStyle As String) As Long
 
     Dim re As Object
     Dim matches As Object
     Dim m As Object
-    Dim idx As Long
-    Dim outText As String
-    Dim replacement As String
+    Dim i As Long
+    Dim candidateCount As Long
+    Dim firstStart As Long
+    Dim beforeChar As String
+    Dim mStart As Long
+    Dim mLength As Long
 
-    outText = s
+    tokenStart = 0
+    tokenLength = 0
+    tokenStyle = ""
+    firstStart = 0
+
     Set re = CreateObject("VBScript.RegExp")
     re.Global = True
     re.IgnoreCase = True
-    re.Pattern = patternText
-    Set matches = re.Execute(outText)
-    matchCount = matches.Count
 
-    For idx = matches.Count - 1 To 0 Step -1
-        Set m = matches(idx)
-        replacement = prefix & CStr(targetYear) & suffix
-        outText = Left$(outText, m.FirstIndex) & replacement & Mid$(outText, m.FirstIndex + m.Length + 1)
-    Next idx
+    ' 1) 令和N年度
+    re.Pattern = "令和\s*\d{1,2}\s*年度"
+    Set matches = re.Execute(s)
+    For i = 0 To matches.Count - 1
+        Set m = matches(i)
+        mStart = m.FirstIndex + 1
+        mLength = m.Length
+        candidateCount = candidateCount + 1
+        If firstStart = 0 Or mStart < firstStart Then
+            firstStart = mStart
+            tokenStart = mStart
+            tokenLength = mLength
+            tokenStyle = "REIWA"
+        End If
+    Next i
 
-    ReplacePatternToFixedYear = outText
+    ' 2) RN
+    re.Pattern = "\b[Rr]\s*\d{1,2}\b"
+    Set matches = re.Execute(s)
+    For i = 0 To matches.Count - 1
+        Set m = matches(i)
+        mStart = m.FirstIndex + 1
+        mLength = m.Length
+        candidateCount = candidateCount + 1
+        If firstStart = 0 Or mStart < firstStart Then
+            firstStart = mStart
+            tokenStart = mStart
+            tokenLength = mLength
+            tokenStyle = "R"
+        End If
+    Next i
+
+    ' 3) N年度（ただし令和N年度 / RN年度 の一部は除外）
+    re.Pattern = "\d{1,2}\s*年度"
+    Set matches = re.Execute(s)
+    For i = 0 To matches.Count - 1
+        Set m = matches(i)
+        mStart = m.FirstIndex + 1
+        mLength = m.Length
+
+        If mStart > 1 Then
+            beforeChar = Mid$(s, mStart - 1, 1)
+        Else
+            beforeChar = ""
+        End If
+
+        If beforeChar = "和" Or UCase$(beforeChar) = "R" Then
+            ' 令和N年度 / RN年度 の重複検出は除外
+        Else
+            candidateCount = candidateCount + 1
+            If firstStart = 0 Or mStart < firstStart Then
+                firstStart = mStart
+                tokenStart = mStart
+                tokenLength = mLength
+                tokenStyle = "NENDO"
+            End If
+        End If
+    Next i
+
+    FindSingleYearCandidate = candidateCount
+
+End Function
+
+Private Function BuildSingleYearReplacement(ByVal tokenStyle As String, ByVal targetYear As Long) As String
+
+    Select Case UCase$(tokenStyle)
+        Case "REIWA"
+            BuildSingleYearReplacement = "令和" & CStr(targetYear) & "年度"
+        Case "R"
+            BuildSingleYearReplacement = "R" & CStr(targetYear)
+        Case Else
+            BuildSingleYearReplacement = CStr(targetYear) & "年度"
+    End Select
 
 End Function
 
