@@ -212,9 +212,6 @@ Public Sub 行移動_元に戻す()
     End If
 
     insertRow = originalStart
-    If currentStart < originalStart Then
-        insertRow = originalStart - rowCount
-    End If
     If insertRow < 2 Then insertRow = 2
 
     Application.StatusBar = False
