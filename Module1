@@ -9,6 +9,25 @@ Private Const DEBUG_MODE As Boolean = False
 Private Const ENABLE_UPDATE_COMMENT As Boolean = False
 Private Const ENABLE_UPDATE_HIGHLIGHT As Boolean = False
 
+'========================================================
+' 新ファイル基準表: 行移動モード（▲/▼で挿入予定位置のみ移動）
+'========================================================
+Private gRowMoveModeActive As Boolean
+Private gRowMoveStartRow As Long
+Private gRowMoveEndRow As Long
+Private gRowMoveInsertRow As Long
+Private gRowMoveMarkerRow As Long
+Private gRowMoveMarkerLastCol As Long
+Private gRowMoveMarkerLineStyle() As Variant
+Private gRowMoveMarkerWeight() As Variant
+Private gRowMoveMarkerColor() As Variant
+Private gRowMoveMarkerColorIndex() As Variant
+Private gRowMoveUndoAvailable As Boolean
+Private gRowMoveUndoMovedStartRow As Long
+Private gRowMoveUndoMovedEndRow As Long
+Private gRowMoveUndoReturnRow As Long
+Private gRowMoveUndoRowCount As Long
+
 Public Sub 新ファイル基準表生成()
 
     Dim oldScreenUpdating As Boolean
@@ -42,6 +61,481 @@ Cleanup:
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
     Application.Calculation = oldCalculation
+
+End Sub
+
+'========================================================
+' 行移動モード開始／確定
+' - 初回実行: 現在選択行（連続行のみ）を移動対象として記憶
+' - モード中実行: 現在の挿入予定位置へ切り取り挿入して確定
+'========================================================
+Public Sub 行移動モード開始_または確定()
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim ws As Worksheet
+    Dim selectedStartRow As Long
+    Dim selectedEndRow As Long
+    Dim lastDataRow As Long
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    Set ws = GetRowMoveTargetSheet()
+    If ws Is Nothing Then GoTo SafeExit
+
+    If gRowMoveModeActive Then
+        ConfirmRowMove ws
+        GoTo SafeExit
+    End If
+
+    If Not TryGetContinuousDataRowSelection(ws, selectedStartRow, selectedEndRow) Then GoTo SafeExit
+
+    gRowMoveModeActive = True
+    gRowMoveStartRow = selectedStartRow
+    gRowMoveEndRow = selectedEndRow
+    gRowMoveInsertRow = selectedStartRow ' 初期挿入予定位置 = 選択先頭行
+
+    lastDataRow = GetLastUsedRow(ws)
+    If lastDataRow < 2 Then
+        MsgBox "データ行がありません。", vbExclamation
+        CancelRowMoveModeInternal
+        GoTo SafeExit
+    End If
+
+    DrawRowMoveInsertionMarker ws, gRowMoveInsertRow
+    UpdateRowMoveStatusBar
+
+SafeExit:
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "行移動モード開始/確定でエラーが発生しました: " & Err.Description, vbExclamation
+    CancelRowMoveModeInternal
+    Resume SafeExit
+
+End Sub
+
+'========================================================
+' ▲ 上へ（挿入予定位置のみ1行上へ）
+'========================================================
+Public Sub 行移動_上へ()
+
+    ShiftRowMoveInsertPointer -1
+
+End Sub
+
+'========================================================
+' ▼ 下へ（挿入予定位置のみ1行下へ）
+'========================================================
+Public Sub 行移動_下へ()
+
+    ShiftRowMoveInsertPointer 1
+
+End Sub
+
+'========================================================
+' 行移動キャンセル
+'========================================================
+Public Sub 行移動_キャンセル()
+
+    CancelRowMoveModeInternal
+
+End Sub
+
+Public Function IsRowMoveModeActive() As Boolean
+
+    IsRowMoveModeActive = gRowMoveModeActive
+
+End Function
+
+Public Function IsRowMoveUndoAvailable() As Boolean
+
+    IsRowMoveUndoAvailable = gRowMoveUndoAvailable
+
+End Function
+
+Public Sub 行移動_元に戻す()
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim ws As Worksheet
+    Dim rowCount As Long
+    Dim returnRow As Long
+    Dim movedStart As Long
+    Dim movedEnd As Long
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+
+    On Error GoTo ErrorHandler
+
+    If gRowMoveModeActive Then
+        MsgBox "移動モード中は元に戻せません。先に移動終了/キャンセルしてください。", vbExclamation
+        Exit Sub
+    End If
+
+    If Not gRowMoveUndoAvailable Then
+        MsgBox "元に戻せる行移動はありません。", vbInformation
+        Exit Sub
+    End If
+
+    Set ws = GetRowMoveTargetSheet()
+    If ws Is Nothing Then Exit Sub
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    movedStart = gRowMoveUndoMovedStartRow
+    movedEnd = gRowMoveUndoMovedEndRow
+    returnRow = gRowMoveUndoReturnRow
+    rowCount = gRowMoveUndoRowCount
+
+    If rowCount <= 0 Or movedStart < 2 Or movedEnd < movedStart Or returnRow < 2 Or (movedEnd - movedStart + 1) <> rowCount Then
+        ClearRowMoveUndoState
+        MsgBox "元に戻し情報が不正なため、Undo情報をクリアしました。", vbExclamation
+        GoTo SafeExit
+    End If
+
+    Application.StatusBar = False
+    Application.CutCopyMode = False
+
+    ws.Rows(movedStart & ":" & movedEnd).Cut
+    ws.Rows(returnRow).Insert Shift:=xlDown
+    Application.CutCopyMode = False
+
+    ws.Rows(returnRow & ":" & returnRow + rowCount - 1).Select
+    ClearRowMoveUndoState
+
+SafeExit:
+    Application.StatusBar = False
+    Application.CutCopyMode = False
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "行移動の元に戻す処理でエラーが発生しました: " & Err.Description, vbExclamation
+    ClearRowMoveUndoState
+    Resume SafeExit
+
+End Sub
+
+Private Sub ShiftRowMoveInsertPointer(ByVal delta As Long)
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim ws As Worksheet
+    Dim lastDataRow As Long
+    Dim nextRow As Long
+
+    On Error GoTo ErrorHandler
+
+    If Not gRowMoveModeActive Then
+        MsgBox "行移動モードが開始されていません。", vbInformation
+        Exit Sub
+    End If
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    Set ws = GetRowMoveTargetSheet()
+    If ws Is Nothing Then GoTo SafeExit
+
+    lastDataRow = GetLastUsedRow(ws)
+    If lastDataRow < 2 Then
+        MsgBox "データ行がありません。", vbExclamation
+        CancelRowMoveModeInternal
+        GoTo SafeExit
+    End If
+
+    nextRow = gRowMoveInsertRow + delta
+    If nextRow < 2 Then nextRow = 2
+    If nextRow > lastDataRow Then nextRow = lastDataRow
+
+    If nextRow <> gRowMoveInsertRow Then
+        gRowMoveInsertRow = nextRow
+        DrawRowMoveInsertionMarker ws, gRowMoveInsertRow
+        UpdateRowMoveStatusBar
+    End If
+
+SafeExit:
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "挿入予定位置の移動中にエラーが発生しました: " & Err.Description, vbExclamation
+    CancelRowMoveModeInternal
+    Resume SafeExit
+
+End Sub
+
+Private Sub ConfirmRowMove(ByVal ws As Worksheet)
+
+    Dim blockRows As Long
+    Dim destinationRow As Long
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+
+    On Error GoTo ErrorHandler
+
+    If Not gRowMoveModeActive Then Exit Sub
+    If ws Is Nothing Then Exit Sub
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    blockRows = gRowMoveEndRow - gRowMoveStartRow + 1
+    If blockRows <= 0 Then Err.Raise vbObjectError + 3101, , "移動対象行の情報が不正です。"
+
+    ' 移動対象範囲内（および直下）への挿入指定は確定不可
+    If gRowMoveInsertRow >= gRowMoveStartRow And gRowMoveInsertRow <= gRowMoveEndRow + 1 Then
+        MsgBox "移動対象範囲内には挿入できません。▲/▼で挿入予定位置を調整してください。", vbExclamation
+        GoTo SafeExit
+    End If
+
+    If gRowMoveInsertRow > gRowMoveEndRow + 1 Then
+        destinationRow = gRowMoveInsertRow - blockRows
+    Else
+        destinationRow = gRowMoveInsertRow
+    End If
+
+    If destinationRow < 2 Then destinationRow = 2
+
+    ClearRowMoveInsertionMarker ws
+
+    ' 実データ移動は確定時のみ1回実行
+    ws.Rows(gRowMoveStartRow & ":" & gRowMoveEndRow).Cut
+    ws.Rows(destinationRow).Insert Shift:=xlDown
+    Application.CutCopyMode = False
+
+    SaveRowMoveUndoState destinationRow, blockRows, gRowMoveStartRow
+
+    ws.Rows(destinationRow & ":" & destinationRow + blockRows - 1).Select
+
+    CancelRowMoveModeInternal
+    Call 後処理_行移動後
+
+SafeExit:
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Exit Sub
+
+ErrorHandler:
+    Application.CutCopyMode = False
+    MsgBox "行移動の確定中にエラーが発生しました: " & Err.Description, vbExclamation
+    CancelRowMoveModeInternal
+    Resume SafeExit
+
+End Sub
+
+Private Function TryGetContinuousDataRowSelection( _
+    ByVal ws As Worksheet, _
+    ByRef startRow As Long, _
+    ByRef endRow As Long) As Boolean
+
+    Dim sel As Range
+    Dim r As Range
+    Dim minRow As Long
+    Dim maxRow As Long
+
+    TryGetContinuousDataRowSelection = False
+    If ws Is Nothing Then Exit Function
+    If Not ws Is ActiveSheet Then
+        MsgBox "「新ファイル基準表」シートを表示してから実行してください。", vbExclamation
+        Exit Function
+    End If
+
+    If TypeName(Selection) <> "Range" Then
+        MsgBox "行を選択してから実行してください。", vbExclamation
+        Exit Function
+    End If
+
+    Set sel = Selection
+    If sel.Areas.Count <> 1 Then
+        MsgBox "飛び飛び選択には対応していません。連続した行を選択してください。", vbExclamation
+        Exit Function
+    End If
+
+    minRow = sel.Row
+    maxRow = sel.Row + sel.Rows.Count - 1
+    If minRow < 2 Then
+        MsgBox "見出し行（1行目）は移動対象にできません。2行目以降を選択してください。", vbExclamation
+        Exit Function
+    End If
+
+    For Each r In sel.Rows
+        If r.Row < minRow Then minRow = r.Row
+        If r.Row > maxRow Then maxRow = r.Row
+    Next r
+
+    startRow = minRow
+    endRow = maxRow
+    TryGetContinuousDataRowSelection = True
+
+End Function
+
+Private Function GetRowMoveTargetSheet() As Worksheet
+
+    On Error Resume Next
+    Set GetRowMoveTargetSheet = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    On Error GoTo 0
+
+    If GetRowMoveTargetSheet Is Nothing Then
+        MsgBox "「新ファイル基準表」シートが見つかりません。", vbExclamation
+    End If
+
+End Function
+
+Private Sub DrawRowMoveInsertionMarker(ByVal ws As Worksheet, ByVal markerRow As Long)
+
+    Dim lastCol As Long
+    Dim c As Long
+    Dim targetCell As Range
+    Dim edgeTop As Border
+
+    If ws Is Nothing Then Exit Sub
+    If markerRow < 2 Then Exit Sub
+
+    ClearRowMoveInsertionMarker ws
+
+    lastCol = GetLastUsedCol(ws)
+    If lastCol <= 0 Then lastCol = 1
+    gRowMoveMarkerLastCol = lastCol
+
+    ReDim gRowMoveMarkerLineStyle(1 To lastCol)
+    ReDim gRowMoveMarkerWeight(1 To lastCol)
+    ReDim gRowMoveMarkerColor(1 To lastCol)
+    ReDim gRowMoveMarkerColorIndex(1 To lastCol)
+
+    For c = 1 To lastCol
+        Set targetCell = ws.Cells(markerRow, c)
+        Set edgeTop = targetCell.Borders(xlEdgeTop)
+        gRowMoveMarkerLineStyle(c) = edgeTop.LineStyle
+        gRowMoveMarkerWeight(c) = edgeTop.Weight
+        gRowMoveMarkerColor(c) = edgeTop.Color
+        gRowMoveMarkerColorIndex(c) = edgeTop.ColorIndex
+    Next c
+
+    With ws.Range(ws.Cells(markerRow, 1), ws.Cells(markerRow, lastCol)).Borders(xlEdgeTop)
+        .LineStyle = xlContinuous
+        .Weight = xlThick
+        .Color = RGB(0, 0, 0)
+    End With
+
+    gRowMoveMarkerRow = markerRow
+
+End Sub
+
+Private Sub ClearRowMoveInsertionMarker(ByVal ws As Worksheet)
+
+    Dim c As Long
+    Dim targetCell As Range
+    Dim edgeTop As Border
+
+    If ws Is Nothing Then Exit Sub
+    If gRowMoveMarkerRow < 2 Then Exit Sub
+    If gRowMoveMarkerLastCol <= 0 Then Exit Sub
+    If Not IsArrayAllocated(gRowMoveMarkerLineStyle) Then Exit Sub
+
+    For c = 1 To gRowMoveMarkerLastCol
+        Set targetCell = ws.Cells(gRowMoveMarkerRow, c)
+        Set edgeTop = targetCell.Borders(xlEdgeTop)
+        edgeTop.LineStyle = gRowMoveMarkerLineStyle(c)
+        edgeTop.Weight = gRowMoveMarkerWeight(c)
+        edgeTop.Color = gRowMoveMarkerColor(c)
+        edgeTop.ColorIndex = gRowMoveMarkerColorIndex(c)
+    Next c
+
+    Erase gRowMoveMarkerLineStyle
+    Erase gRowMoveMarkerWeight
+    Erase gRowMoveMarkerColor
+    Erase gRowMoveMarkerColorIndex
+    gRowMoveMarkerRow = 0
+    gRowMoveMarkerLastCol = 0
+
+End Sub
+
+Private Function IsArrayAllocated(ByRef arr As Variant) As Boolean
+
+    On Error GoTo NotAllocated
+    If IsArray(arr) Then
+        Dim lb As Long
+        lb = LBound(arr)
+        IsArrayAllocated = (lb <= UBound(arr))
+    End If
+    Exit Function
+
+NotAllocated:
+    IsArrayAllocated = False
+
+End Function
+
+Private Sub UpdateRowMoveStatusBar()
+
+    If gRowMoveModeActive Then
+        Application.StatusBar = "行移動モード中: " & gRowMoveInsertRow & "行目の上へ挿入予定（対象: " & _
+                               gRowMoveStartRow & "～" & gRowMoveEndRow & "行）"
+    End If
+
+End Sub
+
+Private Sub CancelRowMoveModeInternal()
+
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = GetRowMoveTargetSheet()
+    If Not ws Is Nothing Then ClearRowMoveInsertionMarker ws
+
+    gRowMoveModeActive = False
+    gRowMoveStartRow = 0
+    gRowMoveEndRow = 0
+    gRowMoveInsertRow = 0
+    gRowMoveMarkerRow = 0
+    gRowMoveMarkerLastCol = 0
+
+    Application.StatusBar = False
+    Application.CutCopyMode = False
+    On Error GoTo 0
+
+End Sub
+
+Private Sub SaveRowMoveUndoState(ByVal movedStartRow As Long, ByVal movedRowCount As Long, ByVal returnRow As Long)
+
+    gRowMoveUndoAvailable = True
+    gRowMoveUndoMovedStartRow = movedStartRow
+    gRowMoveUndoMovedEndRow = movedStartRow + movedRowCount - 1
+    gRowMoveUndoReturnRow = returnRow
+    gRowMoveUndoRowCount = movedRowCount
+
+End Sub
+
+Private Sub ClearRowMoveUndoState()
+
+    gRowMoveUndoAvailable = False
+    gRowMoveUndoMovedStartRow = 0
+    gRowMoveUndoMovedEndRow = 0
+    gRowMoveUndoReturnRow = 0
+    gRowMoveUndoRowCount = 0
+
+End Sub
+
+' 将来の後処理差し込みポイント（通し番号再採番等）
+Public Sub 後処理_行移動後()
+
+    ' ここに将来的な後処理を追加
 
 End Sub
 
@@ -442,11 +936,12 @@ Private Function ReplaceSingleYearExpression( _
     Optional ByRef reason As String = "") As String
 
     Dim targetYear As Long
-    Dim countReiwa As Long
-    Dim countR As Long
-    Dim countNen As Long
-    Dim total As Long
+    Dim tokenCount As Long
     Dim outText As String
+    Dim tokenStart As Long
+    Dim tokenLength As Long
+    Dim tokenStyle As String
+    Dim replacement As String
 
     outText = s
     targetYear = ParseReiwaYearNumber(fiscalYear)
@@ -465,17 +960,13 @@ Private Function ReplaceSingleYearExpression( _
         Exit Function
     End If
 
-    outText = ReplacePatternToFixedYear(outText, "(令和)\s*(\d{1,2})\s*(年度)", "令和", "年度", targetYear, countReiwa)
-    outText = ReplacePatternToFixedYear(outText, "\b([Rr])\s*(\d{1,2})\b", "R", "", targetYear, countR)
-    outText = ReplacePatternToFixedYear(outText, "(\d{1,2})\s*(年度)", "", "年度", targetYear, countNen)
-
-    total = countReiwa + countR + countNen
-    If total = 0 Then
+    tokenCount = FindSingleYearCandidate(outText, tokenStart, tokenLength, tokenStyle)
+    If tokenCount = 0 Then
         ReplaceSingleYearExpression = outText
         Exit Function
     End If
 
-    If total > 1 Then
+    If tokenCount > 1 Then
         needsReview = True
         reason = "単独年度候補が複数ある"
         ' 曖昧なため、単独補正は適用せず元文字列を返す
@@ -483,41 +974,111 @@ Private Function ReplaceSingleYearExpression( _
         Exit Function
     End If
 
+    replacement = BuildSingleYearReplacement(tokenStyle, targetYear)
+    outText = Left$(outText, tokenStart - 1) & replacement & Mid$(outText, tokenStart + tokenLength)
     changed = (outText <> s)
     ReplaceSingleYearExpression = outText
 
 End Function
 
-Private Function ReplacePatternToFixedYear( _
+Private Function FindSingleYearCandidate( _
     ByVal s As String, _
-    ByVal patternText As String, _
-    ByVal prefix As String, _
-    ByVal suffix As String, _
-    ByVal targetYear As Long, _
-    ByRef matchCount As Long) As String
+    ByRef tokenStart As Long, _
+    ByRef tokenLength As Long, _
+    ByRef tokenStyle As String) As Long
 
     Dim re As Object
     Dim matches As Object
     Dim m As Object
-    Dim idx As Long
-    Dim outText As String
-    Dim replacement As String
+    Dim i As Long
+    Dim candidateCount As Long
+    Dim firstStart As Long
+    Dim beforeChar As String
+    Dim mStart As Long
+    Dim mLength As Long
 
-    outText = s
+    tokenStart = 0
+    tokenLength = 0
+    tokenStyle = ""
+    firstStart = 0
+
     Set re = CreateObject("VBScript.RegExp")
     re.Global = True
     re.IgnoreCase = True
-    re.Pattern = patternText
-    Set matches = re.Execute(outText)
-    matchCount = matches.Count
 
-    For idx = matches.Count - 1 To 0 Step -1
-        Set m = matches(idx)
-        replacement = prefix & CStr(targetYear) & suffix
-        outText = Left$(outText, m.FirstIndex) & replacement & Mid$(outText, m.FirstIndex + m.Length + 1)
-    Next idx
+    ' 1) 令和N年度
+    re.Pattern = "令和\s*\d{1,2}\s*年度"
+    Set matches = re.Execute(s)
+    For i = 0 To matches.Count - 1
+        Set m = matches(i)
+        mStart = m.FirstIndex + 1
+        mLength = m.Length
+        candidateCount = candidateCount + 1
+        If firstStart = 0 Or mStart < firstStart Then
+            firstStart = mStart
+            tokenStart = mStart
+            tokenLength = mLength
+            tokenStyle = "REIWA"
+        End If
+    Next i
 
-    ReplacePatternToFixedYear = outText
+    ' 2) RN
+    re.Pattern = "\b[Rr]\s*\d{1,2}\b"
+    Set matches = re.Execute(s)
+    For i = 0 To matches.Count - 1
+        Set m = matches(i)
+        mStart = m.FirstIndex + 1
+        mLength = m.Length
+        candidateCount = candidateCount + 1
+        If firstStart = 0 Or mStart < firstStart Then
+            firstStart = mStart
+            tokenStart = mStart
+            tokenLength = mLength
+            tokenStyle = "R"
+        End If
+    Next i
+
+    ' 3) N年度（ただし令和N年度 / RN年度 の一部は除外）
+    re.Pattern = "\d{1,2}\s*年度"
+    Set matches = re.Execute(s)
+    For i = 0 To matches.Count - 1
+        Set m = matches(i)
+        mStart = m.FirstIndex + 1
+        mLength = m.Length
+
+        If mStart > 1 Then
+            beforeChar = Mid$(s, mStart - 1, 1)
+        Else
+            beforeChar = ""
+        End If
+
+        If beforeChar = "和" Or UCase$(beforeChar) = "R" Then
+            ' 令和N年度 / RN年度 の重複検出は除外
+        Else
+            candidateCount = candidateCount + 1
+            If firstStart = 0 Or mStart < firstStart Then
+                firstStart = mStart
+                tokenStart = mStart
+                tokenLength = mLength
+                tokenStyle = "NENDO"
+            End If
+        End If
+    Next i
+
+    FindSingleYearCandidate = candidateCount
+
+End Function
+
+Private Function BuildSingleYearReplacement(ByVal tokenStyle As String, ByVal targetYear As Long) As String
+
+    Select Case UCase$(tokenStyle)
+        Case "REIWA"
+            BuildSingleYearReplacement = "令和" & CStr(targetYear) & "年度"
+        Case "R"
+            BuildSingleYearReplacement = "R" & CStr(targetYear)
+        Case Else
+            BuildSingleYearReplacement = CStr(targetYear) & "年度"
+    End Select
 
 End Function
 
