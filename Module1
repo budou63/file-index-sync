@@ -23,10 +23,13 @@ Private gRowMoveMarkerWeight() As Variant
 Private gRowMoveMarkerColor() As Variant
 Private gRowMoveMarkerColorIndex() As Variant
 Private gRowMoveUndoAvailable As Boolean
+' 移動開始時点の元位置
+Private gRowMoveUndoOriginalStartRow As Long
+Private gRowMoveUndoOriginalEndRow As Long
+Private gRowMoveUndoRowCount As Long
+' 移動確定後の現在位置
 Private gRowMoveUndoMovedStartRow As Long
 Private gRowMoveUndoMovedEndRow As Long
-Private gRowMoveUndoReturnRow As Long
-Private gRowMoveUndoRowCount As Long
 
 Public Sub 新ファイル基準表生成()
 
@@ -99,6 +102,10 @@ Public Sub 行移動モード開始_または確定()
     gRowMoveStartRow = selectedStartRow
     gRowMoveEndRow = selectedEndRow
     gRowMoveInsertRow = selectedStartRow ' 初期挿入予定位置 = 選択先頭行
+    ' Undo用: 移動開始時点の元位置を記録（この時点ではUndo有効化しない）
+    gRowMoveUndoOriginalStartRow = selectedStartRow
+    gRowMoveUndoOriginalEndRow = selectedEndRow
+    gRowMoveUndoRowCount = selectedEndRow - selectedStartRow + 1
 
     lastDataRow = GetLastUsedRow(ws)
     If lastDataRow < 2 Then
@@ -167,9 +174,10 @@ Public Sub 行移動_元に戻す()
     Dim oldEnableEvents As Boolean
     Dim ws As Worksheet
     Dim rowCount As Long
-    Dim returnRow As Long
-    Dim movedStart As Long
-    Dim movedEnd As Long
+    Dim originalStart As Long
+    Dim currentStart As Long
+    Dim currentEnd As Long
+    Dim insertRow As Long
 
     oldScreenUpdating = Application.ScreenUpdating
     oldEnableEvents = Application.EnableEvents
@@ -192,25 +200,31 @@ Public Sub 行移動_元に戻す()
     Application.ScreenUpdating = False
     Application.EnableEvents = False
 
-    movedStart = gRowMoveUndoMovedStartRow
-    movedEnd = gRowMoveUndoMovedEndRow
-    returnRow = gRowMoveUndoReturnRow
+    currentStart = gRowMoveUndoMovedStartRow
+    currentEnd = gRowMoveUndoMovedEndRow
+    originalStart = gRowMoveUndoOriginalStartRow
     rowCount = gRowMoveUndoRowCount
 
-    If rowCount <= 0 Or movedStart < 2 Or movedEnd < movedStart Or returnRow < 2 Or (movedEnd - movedStart + 1) <> rowCount Then
+    If rowCount <= 0 Or currentStart < 2 Or currentEnd < currentStart Or originalStart < 2 Or (currentEnd - currentStart + 1) <> rowCount Then
         ClearRowMoveUndoState
         MsgBox "元に戻し情報が不正なため、Undo情報をクリアしました。", vbExclamation
         GoTo SafeExit
     End If
 
+    insertRow = originalStart
+    If currentStart < originalStart Then
+        insertRow = originalStart - rowCount
+    End If
+    If insertRow < 2 Then insertRow = 2
+
     Application.StatusBar = False
     Application.CutCopyMode = False
 
-    ws.Rows(movedStart & ":" & movedEnd).Cut
-    ws.Rows(returnRow).Insert Shift:=xlDown
+    ws.Rows(currentStart & ":" & currentEnd).Cut
+    ws.Rows(insertRow).Insert Shift:=xlDown
     Application.CutCopyMode = False
 
-    ws.Rows(returnRow & ":" & returnRow + rowCount - 1).Select
+    ws.Rows(insertRow & ":" & insertRow + rowCount - 1).Select
     ClearRowMoveUndoState
 
 SafeExit:
@@ -320,7 +334,7 @@ Private Sub ConfirmRowMove(ByVal ws As Worksheet)
     ws.Rows(destinationRow).Insert Shift:=xlDown
     Application.CutCopyMode = False
 
-    SaveRowMoveUndoState destinationRow, blockRows, gRowMoveStartRow
+    SaveRowMoveUndoState destinationRow, blockRows
 
     ws.Rows(destinationRow & ":" & destinationRow + blockRows - 1).Select
 
@@ -512,23 +526,23 @@ Private Sub CancelRowMoveModeInternal()
 
 End Sub
 
-Private Sub SaveRowMoveUndoState(ByVal movedStartRow As Long, ByVal movedRowCount As Long, ByVal returnRow As Long)
+Private Sub SaveRowMoveUndoState(ByVal movedStartRow As Long, ByVal movedRowCount As Long)
 
     gRowMoveUndoAvailable = True
     gRowMoveUndoMovedStartRow = movedStartRow
     gRowMoveUndoMovedEndRow = movedStartRow + movedRowCount - 1
-    gRowMoveUndoReturnRow = returnRow
-    gRowMoveUndoRowCount = movedRowCount
+    ' gRowMoveUndoOriginalStartRow / EndRow / RowCount は移動開始時点で保持済み
 
 End Sub
 
 Private Sub ClearRowMoveUndoState()
 
     gRowMoveUndoAvailable = False
+    gRowMoveUndoOriginalStartRow = 0
+    gRowMoveUndoOriginalEndRow = 0
+    gRowMoveUndoRowCount = 0
     gRowMoveUndoMovedStartRow = 0
     gRowMoveUndoMovedEndRow = 0
-    gRowMoveUndoReturnRow = 0
-    gRowMoveUndoRowCount = 0
 
 End Sub
 
