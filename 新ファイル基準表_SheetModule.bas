@@ -1,5 +1,7 @@
 Option Explicit
 
+Private mSelectingRowFromMoveMode As Boolean
+
 '========================================================
 ' 貼り付け先:
 '   VBAProject
@@ -40,6 +42,37 @@ Private Sub Worksheet_Change(ByVal Target As Range)
 
 ExitHandler:
     Application.EnableEvents = True
+
+End Sub
+
+Private Sub Worksheet_SelectionChange(ByVal Target As Range)
+
+    Dim oldEnableEvents As Boolean
+    Dim firstRow As Long
+    Dim lastRow As Long
+
+    On Error GoTo ExitHandler
+
+    oldEnableEvents = Application.EnableEvents
+    If Target Is Nothing Then GoTo ExitHandler
+    If mSelectingRowFromMoveMode Then GoTo ExitHandler
+    If Not IsRowMoveModeActive() Then GoTo ExitHandler
+    If Target.Areas.Count <> 1 Then GoTo ExitHandler
+    If Target.Row < 2 Then GoTo ExitHandler
+
+    firstRow = Target.Row
+    lastRow = Target.Row + Target.Rows.Count - 1
+    If lastRow < firstRow Then GoTo ExitHandler
+
+    If Target.Columns.Count = Me.Columns.Count Then GoTo ExitHandler
+
+    mSelectingRowFromMoveMode = True
+    Application.EnableEvents = False
+    Me.Rows(firstRow & ":" & lastRow).Select
+
+ExitHandler:
+    Application.EnableEvents = oldEnableEvents
+    mSelectingRowFromMoveMode = False
 
 End Sub
 
