@@ -103,9 +103,11 @@ Public Sub 行移動モード開始_または確定()
     gRowMoveEndRow = selectedEndRow
     gRowMoveInsertRow = selectedStartRow ' 初期挿入予定位置 = 選択先頭行
     ' Undo用: 移動開始時点の元位置を記録（この時点ではUndo有効化しない）
-    gRowMoveUndoOriginalStartRow = selectedStartRow
-    gRowMoveUndoOriginalEndRow = selectedEndRow
-    gRowMoveUndoRowCount = selectedEndRow - selectedStartRow + 1
+    If Not gRowMoveUndoAvailable Then
+        gRowMoveUndoOriginalStartRow = selectedStartRow
+        gRowMoveUndoOriginalEndRow = selectedEndRow
+        gRowMoveUndoRowCount = selectedEndRow - selectedStartRow + 1
+    End If
 
     lastDataRow = GetLastUsedRow(ws)
     If lastDataRow < 2 Then
