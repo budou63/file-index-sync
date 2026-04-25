@@ -143,6 +143,12 @@ Public Sub 行移動_キャンセル()
 
 End Sub
 
+Public Function IsRowMoveModeActive() As Boolean
+
+    IsRowMoveModeActive = gRowMoveModeActive
+
+End Function
+
 Private Sub ShiftRowMoveInsertPointer(ByVal delta As Long)
 
     Dim oldScreenUpdating As Boolean
