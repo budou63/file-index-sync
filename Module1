@@ -30,6 +30,7 @@ Private gRowMoveUndoRowCount As Long
 ' 移動確定後の現在位置
 Private gRowMoveUndoMovedStartRow As Long
 Private gRowMoveUndoMovedEndRow As Long
+Private gRowMoveUndoMovedSerial As String
 
 Public Sub 新ファイル基準表生成()
 
@@ -222,6 +223,14 @@ Public Sub 行移動_元に戻す()
         GoTo SafeExit
     End If
 
+    currentStart = ResolveRowMoveUndoCurrentStartRow(ws, currentStart, rowCount)
+    currentEnd = currentStart + rowCount - 1
+    If currentStart < 2 Or currentEnd < currentStart Then
+        ClearRowMoveUndoState
+        MsgBox "元に戻し対象の行を特定できないため、Undo情報をクリアしました。", vbExclamation
+        GoTo SafeExit
+    End If
+
     insertRow = originalStart
     ' Cutで上側の行を抜いた場合、下側の挿入先はrowCount分だけ繰り上がるため補正
     If currentEnd < originalStart Then
@@ -309,6 +318,7 @@ Private Sub ConfirmRowMove(ByVal ws As Worksheet)
 
     Dim blockRows As Long
     Dim destinationRow As Long
+    Dim movedSerial As String
     Dim oldScreenUpdating As Boolean
     Dim oldEnableEvents As Boolean
 
@@ -346,7 +356,8 @@ Private Sub ConfirmRowMove(ByVal ws As Worksheet)
     ws.Rows(destinationRow).Insert Shift:=xlDown
     Application.CutCopyMode = False
 
-    SaveRowMoveUndoState destinationRow, blockRows
+    movedSerial = GetRowMoveUndoSerialValue(ws, destinationRow)
+    SaveRowMoveUndoState destinationRow, blockRows, movedSerial
 
     ws.Rows(destinationRow & ":" & destinationRow + blockRows - 1).Select
 
@@ -538,11 +549,12 @@ Private Sub CancelRowMoveModeInternal()
 
 End Sub
 
-Private Sub SaveRowMoveUndoState(ByVal movedStartRow As Long, ByVal movedRowCount As Long)
+Private Sub SaveRowMoveUndoState(ByVal movedStartRow As Long, ByVal movedRowCount As Long, Optional ByVal movedSerial As String = "")
 
     gRowMoveUndoAvailable = True
     gRowMoveUndoMovedStartRow = movedStartRow
     gRowMoveUndoMovedEndRow = movedStartRow + movedRowCount - 1
+    gRowMoveUndoMovedSerial = movedSerial
     ' gRowMoveUndoOriginalStartRow / EndRow / RowCount は移動開始時点で保持済み
 
 End Sub
@@ -555,8 +567,71 @@ Private Sub ClearRowMoveUndoState()
     gRowMoveUndoRowCount = 0
     gRowMoveUndoMovedStartRow = 0
     gRowMoveUndoMovedEndRow = 0
+    gRowMoveUndoMovedSerial = ""
 
 End Sub
+
+Private Function GetRowMoveUndoSerialValue(ByVal ws As Worksheet, ByVal rowNo As Long) As String
+
+    Dim lastCol As Long
+    Dim serialCol As Long
+
+    GetRowMoveUndoSerialValue = ""
+    If ws Is Nothing Then Exit Function
+    If rowNo < 2 Then Exit Function
+
+    lastCol = GetLastUsedCol(ws)
+    If lastCol <= 0 Then Exit Function
+
+    serialCol = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("通し番号"))
+    If serialCol <= 0 Then Exit Function
+
+    GetRowMoveUndoSerialValue = GetTrimmedCell(ws, rowNo, serialCol)
+
+End Function
+
+Private Function ResolveRowMoveUndoCurrentStartRow(ByVal ws As Worksheet, ByVal fallbackStart As Long, ByVal rowCount As Long) As Long
+
+    Dim lastCol As Long
+    Dim serialCol As Long
+    Dim lastRow As Long
+    Dim rowNo As Long
+    Dim bestRow As Long
+    Dim bestDistance As Long
+    Dim distance As Long
+    Dim currentSerial As String
+
+    ResolveRowMoveUndoCurrentStartRow = fallbackStart
+    If ws Is Nothing Then Exit Function
+    If rowCount <> 1 Then Exit Function
+    If Len(gRowMoveUndoMovedSerial) = 0 Then Exit Function
+
+    lastCol = GetLastUsedCol(ws)
+    If lastCol <= 0 Then Exit Function
+    serialCol = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("通し番号"))
+    If serialCol <= 0 Then Exit Function
+
+    currentSerial = GetTrimmedCell(ws, fallbackStart, serialCol)
+    If StrComp(currentSerial, gRowMoveUndoMovedSerial, vbTextCompare) = 0 Then Exit Function
+
+    lastRow = GetLastUsedRow(ws)
+    bestRow = 0
+    bestDistance = 0
+    For rowNo = 2 To lastRow
+        If StrComp(GetTrimmedCell(ws, rowNo, serialCol), gRowMoveUndoMovedSerial, vbTextCompare) = 0 Then
+            distance = Abs(rowNo - fallbackStart)
+            If bestRow = 0 Or distance < bestDistance Then
+                bestRow = rowNo
+                bestDistance = distance
+            End If
+        End If
+    Next rowNo
+
+    If bestRow > 0 Then
+        ResolveRowMoveUndoCurrentStartRow = bestRow
+    End If
+
+End Function
 
 ' 将来の後処理差し込みポイント（通し番号再採番等）
 Public Sub 後処理_行移動後()
