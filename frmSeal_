@@ -108,6 +108,19 @@ Private Sub cmdMoveCancel_Click()
 
 End Sub
 
+Private Sub cmdMoveUndo_Click()
+
+    On Error GoTo EH
+    Call 行移動_元に戻す
+    SyncMoveModeButtons
+    Exit Sub
+
+EH:
+    MsgBox "行移動の元に戻す処理でエラーが発生しました: " & Err.Description, vbExclamation
+    SyncMoveModeButtons
+
+End Sub
+
 Private Sub SyncMoveModeButtons()
 
     On Error GoTo SafeExit
@@ -121,6 +134,10 @@ Private Sub SyncMoveModeButtons()
         Me.tglMoveMode.Value = False
         Me.tglMoveMode.Caption = "移動開始"
     End If
+
+    On Error Resume Next
+    Me.Controls("cmdMoveUndo").Enabled = IsRowMoveUndoAvailable()
+    On Error GoTo SafeExit
 
 SafeExit:
     mSyncingMoveModeButtons = False
