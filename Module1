@@ -352,11 +352,11 @@ Private Sub ConfirmRowMove(ByVal ws As Worksheet)
     ClearRowMoveInsertionMarker ws
 
     ' 実データ移動は確定時のみ1回実行
+    movedSerial = GetRowMoveUndoSerialValue(ws, gRowMoveStartRow)
     ws.Rows(gRowMoveStartRow & ":" & gRowMoveEndRow).Cut
     ws.Rows(destinationRow).Insert Shift:=xlDown
     Application.CutCopyMode = False
 
-    movedSerial = GetRowMoveUndoSerialValue(ws, destinationRow)
     SaveRowMoveUndoState destinationRow, blockRows, movedSerial
 
     ws.Rows(destinationRow & ":" & destinationRow + blockRows - 1).Select
