@@ -1,5 +1,7 @@
 ﻿Option Explicit
 
+Private mSyncingMoveModeButtons As Boolean
+
 '========================================================
 ' frmSeal（新基準表対応）
 ' - UserForm の各ボタン Click から既存マクロを呼び出す
@@ -44,6 +46,101 @@ End Sub
 Private Sub CommandButton7_Click()
 
     新ファイル基準表_通し番号_手動再採番
+
+End Sub
+
+Private Sub UserForm_Initialize()
+
+    SyncMoveModeButtons
+
+End Sub
+
+Private Sub tglMoveMode_Click()
+
+    On Error GoTo EH
+    If mSyncingMoveModeButtons Then Exit Sub
+
+    Call 行移動モード開始_または確定
+    SyncMoveModeButtons
+    Exit Sub
+
+EH:
+    MsgBox "行移動モードの開始/確定でエラーが発生しました: " & Err.Description, vbExclamation
+    Call 行移動_キャンセル
+    SyncMoveModeButtons
+
+End Sub
+
+Private Sub cmdMoveUp_Click()
+
+    On Error GoTo EH
+
+    Call 行移動_上へ
+    SyncMoveModeButtons
+    Exit Sub
+
+EH:
+    MsgBox "上へ移動中にエラーが発生しました: " & Err.Description, vbExclamation
+    SyncMoveModeButtons
+
+End Sub
+
+Private Sub cmdMoveDown_Click()
+
+    On Error GoTo EH
+
+    Call 行移動_下へ
+    SyncMoveModeButtons
+    Exit Sub
+
+EH:
+    MsgBox "下へ移動中にエラーが発生しました: " & Err.Description, vbExclamation
+    SyncMoveModeButtons
+
+End Sub
+
+Private Sub cmdMoveCancel_Click()
+
+    On Error Resume Next
+    Call 行移動_キャンセル
+    SyncMoveModeButtons
+    On Error GoTo 0
+
+End Sub
+
+Private Sub cmdMoveUndo_Click()
+
+    On Error GoTo EH
+    Call 行移動_元に戻す
+    SyncMoveModeButtons
+    Exit Sub
+
+EH:
+    MsgBox "行移動の元に戻す処理でエラーが発生しました: " & Err.Description, vbExclamation
+    SyncMoveModeButtons
+
+End Sub
+
+Private Sub SyncMoveModeButtons()
+
+    On Error GoTo SafeExit
+
+    mSyncingMoveModeButtons = True
+
+    If IsRowMoveModeActive() Then
+        Me.tglMoveMode.Value = True
+        Me.tglMoveMode.Caption = "移動確定"
+    Else
+        Me.tglMoveMode.Value = False
+        Me.tglMoveMode.Caption = "移動開始"
+    End If
+
+    On Error Resume Next
+    Me.Controls("cmdMoveUndo").Enabled = IsRowMoveUndoAvailable()
+    On Error GoTo SafeExit
+
+SafeExit:
+    mSyncingMoveModeButtons = False
 
 End Sub
 
