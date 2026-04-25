@@ -31,6 +31,8 @@ Private gRowMoveUndoRowCount As Long
 Private gRowMoveUndoMovedStartRow As Long
 Private gRowMoveUndoMovedEndRow As Long
 Private gRowMoveUndoMovedSerial As String
+Private gRowMoveSelectionAssistActive As Boolean
+Private gRowMoveSelectionAnchorRow As Long
 
 Public Sub 新ファイル基準表生成()
 
@@ -111,8 +113,10 @@ Public Sub 行移動モード開始_または確定()
     gRowMoveModeActive = True
     gRowMoveStartRow = selectedStartRow
     gRowMoveEndRow = selectedEndRow
-    gRowMoveInsertRow = selectedStartRow ' 初期挿入予定位置 = 選択先頭行
-    ' Undo用: 移動開始時点の元位置を記録（この時点ではUndo有効化しない）
+    gRowMoveInsertRow = selectedStartRow ' Initial insert row = selected top row
+    gRowMoveSelectionAssistActive = True
+    gRowMoveSelectionAnchorRow = selectedStartRow
+
     If Not gRowMoveUndoAvailable Then
         gRowMoveUndoOriginalStartRow = selectedStartRow
         gRowMoveUndoOriginalEndRow = selectedEndRow
@@ -179,6 +183,60 @@ Public Function IsRowMoveUndoAvailable() As Boolean
     IsRowMoveUndoAvailable = gRowMoveUndoAvailable
 
 End Function
+
+Public Function IsRowMoveSelectionAssistActive() As Boolean
+
+    IsRowMoveSelectionAssistActive = (gRowMoveModeActive And gRowMoveSelectionAssistActive)
+
+End Function
+
+Public Function GetRowMoveSelectionAnchorRow() As Long
+
+    GetRowMoveSelectionAnchorRow = gRowMoveSelectionAnchorRow
+
+End Function
+
+Public Sub UpdateRowMoveSelectionRange(ByVal startRow As Long, ByVal endRow As Long)
+
+    Dim ws As Worksheet
+    Dim tmp As Long
+    Dim lastDataRow As Long
+
+    If Not gRowMoveModeActive Then Exit Sub
+
+    If startRow > endRow Then
+        tmp = startRow
+        startRow = endRow
+        endRow = tmp
+    End If
+
+    If startRow < 2 Then startRow = 2
+
+    Set ws = GetRowMoveTargetSheet()
+    If ws Is Nothing Then Exit Sub
+
+    lastDataRow = GetLastUsedRow(ws)
+    If lastDataRow < 2 Then Exit Sub
+    If endRow > lastDataRow Then endRow = lastDataRow
+    If endRow < startRow Then Exit Sub
+
+    gRowMoveStartRow = startRow
+    gRowMoveEndRow = endRow
+
+    If gRowMoveInsertRow < startRow Or gRowMoveInsertRow > endRow + 1 Then
+        gRowMoveInsertRow = startRow
+        DrawRowMoveInsertionMarker ws, gRowMoveInsertRow
+    End If
+
+    If Not gRowMoveUndoAvailable Then
+        gRowMoveUndoOriginalStartRow = startRow
+        gRowMoveUndoOriginalEndRow = endRow
+        gRowMoveUndoRowCount = endRow - startRow + 1
+    End If
+
+    UpdateRowMoveStatusBar
+
+End Sub
 
 Public Sub 行移動_元に戻す()
 
@@ -298,6 +356,7 @@ Private Sub ShiftRowMoveInsertPointer(ByVal delta As Long)
 
     If nextRow <> gRowMoveInsertRow Then
         gRowMoveInsertRow = nextRow
+        gRowMoveSelectionAssistActive = False
         DrawRowMoveInsertionMarker ws, gRowMoveInsertRow
         UpdateRowMoveStatusBar
     End If
@@ -540,6 +599,8 @@ Private Sub CancelRowMoveModeInternal()
     gRowMoveStartRow = 0
     gRowMoveEndRow = 0
     gRowMoveInsertRow = 0
+    gRowMoveSelectionAssistActive = False
+    gRowMoveSelectionAnchorRow = 0
     gRowMoveMarkerRow = 0
     gRowMoveMarkerLastCol = 0
 

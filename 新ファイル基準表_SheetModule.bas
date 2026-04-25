@@ -50,6 +50,9 @@ Private Sub Worksheet_SelectionChange(ByVal Target As Range)
     Dim oldEnableEvents As Boolean
     Dim firstRow As Long
     Dim lastRow As Long
+    Dim anchorRow As Long
+    Dim clickedRow As Long
+    Dim assistMode As Boolean
 
     On Error GoTo ExitHandler
 
@@ -64,7 +67,24 @@ Private Sub Worksheet_SelectionChange(ByVal Target As Range)
     lastRow = Target.Row + Target.Rows.Count - 1
     If lastRow < firstRow Then GoTo ExitHandler
 
-    If Target.Columns.Count = Me.Columns.Count Then GoTo ExitHandler
+    assistMode = IsRowMoveSelectionAssistActive()
+    If assistMode Then
+        anchorRow = GetRowMoveSelectionAnchorRow()
+        clickedRow = Target.Row
+        If anchorRow < 2 Then anchorRow = clickedRow
+
+        If clickedRow >= anchorRow Then
+            firstRow = anchorRow
+            lastRow = clickedRow
+        Else
+            firstRow = clickedRow
+            lastRow = anchorRow
+        End If
+
+        UpdateRowMoveSelectionRange firstRow, lastRow
+    End If
+
+    If (Not assistMode) And Target.Columns.Count = Me.Columns.Count Then GoTo ExitHandler
 
     mSelectingRowFromMoveMode = True
     Application.EnableEvents = False
