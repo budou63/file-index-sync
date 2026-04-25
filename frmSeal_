@@ -99,6 +99,20 @@ EH:
 
 End Sub
 
+Private Sub cmdMoveToRow_Click()
+
+    On Error GoTo EH
+
+    Call 行移動_指定行へ
+    SyncMoveModeButtons
+    Exit Sub
+
+EH:
+    MsgBox "指定行への移動中にエラーが発生しました: " & Err.Description, vbExclamation
+    SyncMoveModeButtons
+
+End Sub
+
 Private Sub cmdMoveCancel_Click()
 
     On Error Resume Next

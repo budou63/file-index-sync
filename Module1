@@ -164,6 +164,115 @@ Public Sub 行移動_下へ()
 End Sub
 
 '========================================================
+' 指定行へ移動（選択ブロックの先頭を指定行に合わせる）
+'========================================================
+Public Sub 行移動_指定行へ()
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim ws As Worksheet
+    Dim selectedStartRow As Long
+    Dim selectedEndRow As Long
+    Dim lastDataRow As Long
+    Dim blockRows As Long
+    Dim maxTargetRow As Long
+    Dim targetRowText As String
+    Dim targetRow As Long
+    Dim movedSerial As String
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+
+    Set ws = GetRowMoveTargetSheet()
+    If ws Is Nothing Then Exit Sub
+
+    If gRowMoveModeActive Then
+        selectedStartRow = gRowMoveStartRow
+        selectedEndRow = gRowMoveEndRow
+        If selectedStartRow < 2 Or selectedEndRow < selectedStartRow Then
+            If Not TryGetContinuousDataRowSelection(ws, selectedStartRow, selectedEndRow) Then Exit Sub
+        End If
+    Else
+        If Not TryGetContinuousDataRowSelection(ws, selectedStartRow, selectedEndRow) Then Exit Sub
+    End If
+
+    blockRows = selectedEndRow - selectedStartRow + 1
+    If blockRows <= 0 Then
+        MsgBox "移動対象行の情報が不正です。", vbExclamation
+        Exit Sub
+    End If
+
+    lastDataRow = GetLastUsedRow(ws)
+    If lastDataRow < 2 Then
+        MsgBox "データ行がありません。", vbExclamation
+        Exit Sub
+    End If
+
+    maxTargetRow = lastDataRow - blockRows + 1
+    If maxTargetRow < 2 Then maxTargetRow = 2
+
+    targetRowText = InputBox( _
+        Prompt:="移動先の先頭行を入力してください。（2～" & CStr(maxTargetRow) & "）", _
+        Title:="指定行へ移動", _
+        Default:=CStr(selectedStartRow))
+    If Len(Trim$(targetRowText)) = 0 Then Exit Sub
+
+    If Not TryParseRowNumber(targetRowText, targetRow) Then
+        MsgBox "行番号は整数で入力してください。", vbExclamation
+        Exit Sub
+    End If
+
+    If targetRow < 2 Or targetRow > maxTargetRow Then
+        MsgBox "移動先は 2～" & CStr(maxTargetRow) & " 行の範囲で入力してください。", vbExclamation
+        Exit Sub
+    End If
+
+    If targetRow >= selectedStartRow And targetRow <= selectedEndRow Then
+        MsgBox "移動先が現在の選択範囲内です。別の行を指定してください。", vbInformation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.StatusBar = False
+    Application.CutCopyMode = False
+
+    movedSerial = GetRowMoveUndoSerialValue(ws, selectedStartRow)
+
+    If gRowMoveModeActive Then
+        CancelRowMoveModeInternal
+    End If
+
+    gRowMoveUndoOriginalStartRow = selectedStartRow
+    gRowMoveUndoOriginalEndRow = selectedEndRow
+    gRowMoveUndoRowCount = blockRows
+
+    ws.Rows(selectedStartRow & ":" & selectedEndRow).Cut
+    ws.Rows(targetRow).Insert Shift:=xlDown
+    Application.CutCopyMode = False
+
+    SaveRowMoveUndoState targetRow, blockRows, movedSerial
+
+    ws.Rows(targetRow & ":" & targetRow + blockRows - 1).Select
+    Call 後処理_行移動後
+
+SafeExit:
+    Application.CutCopyMode = False
+    Application.StatusBar = False
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Exit Sub
+
+ErrorHandler:
+    Application.CutCopyMode = False
+    MsgBox "指定行への移動でエラーが発生しました: " & Err.Description, vbExclamation
+    Resume SafeExit
+
+End Sub
+
+'========================================================
 ' 行移動キャンセル
 '========================================================
 Public Sub 行移動_キャンセル()
@@ -479,6 +588,24 @@ Private Function TryGetContinuousDataRowSelection( _
     startRow = minRow
     endRow = maxRow
     TryGetContinuousDataRowSelection = True
+
+End Function
+
+Private Function TryParseRowNumber(ByVal textValue As String, ByRef outValue As Long) As Boolean
+
+    Dim normalized As String
+    Dim d As Double
+
+    normalized = Trim$(textValue)
+    If Len(normalized) = 0 Then Exit Function
+    If Not IsNumeric(normalized) Then Exit Function
+
+    d = CDbl(normalized)
+    If d <> Fix(d) Then Exit Function
+    If d < -2147483648# Or d > 2147483647# Then Exit Function
+
+    outValue = CLng(d)
+    TryParseRowNumber = True
 
 End Function
 
