@@ -98,6 +98,15 @@ Public Sub 行移動モード開始_または確定()
 
     If Not TryGetContinuousDataRowSelection(ws, selectedStartRow, selectedEndRow) Then GoTo SafeExit
 
+    ' Undo情報が残っている場合:
+    ' - 直前に移動した同じブロックを続けて動かすなら開始基準は維持
+    ' - それ以外の新しい移動開始なら基準をリセットして取り違えを防ぐ
+    If gRowMoveUndoAvailable Then
+        If Not (selectedStartRow = gRowMoveUndoMovedStartRow And selectedEndRow = gRowMoveUndoMovedEndRow) Then
+            ClearRowMoveUndoState
+        End If
+    End If
+
     gRowMoveModeActive = True
     gRowMoveStartRow = selectedStartRow
     gRowMoveEndRow = selectedEndRow
