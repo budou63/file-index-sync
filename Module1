@@ -234,6 +234,15 @@ Public Sub 行移動_指定行へ()
         Exit Sub
     End If
 
+    ' Undo情報が残っている場合:
+    ' - 直前に移動した同じブロックを続けて動かすなら開始基準は維持
+    ' - それ以外の新しい移動なら基準をリセット
+    If gRowMoveUndoAvailable Then
+        If Not (selectedStartRow = gRowMoveUndoMovedStartRow And selectedEndRow = gRowMoveUndoMovedEndRow) Then
+            ClearRowMoveUndoState
+        End If
+    End If
+
     Application.ScreenUpdating = False
     Application.EnableEvents = False
     Application.StatusBar = False
@@ -245,9 +254,11 @@ Public Sub 行移動_指定行へ()
         CancelRowMoveModeInternal
     End If
 
-    gRowMoveUndoOriginalStartRow = selectedStartRow
-    gRowMoveUndoOriginalEndRow = selectedEndRow
-    gRowMoveUndoRowCount = blockRows
+    If Not gRowMoveUndoAvailable Then
+        gRowMoveUndoOriginalStartRow = selectedStartRow
+        gRowMoveUndoOriginalEndRow = selectedEndRow
+        gRowMoveUndoRowCount = blockRows
+    End If
 
     ws.Rows(selectedStartRow & ":" & selectedEndRow).Cut
     ws.Rows(targetRow).Insert Shift:=xlDown
