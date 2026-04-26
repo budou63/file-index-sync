@@ -33,6 +33,9 @@ Private gRowMoveUndoMovedEndRow As Long
 Private gRowMoveUndoMovedSerial As String
 Private gRowMoveSelectionAssistActive As Boolean
 Private gRowMoveSelectionAnchorRow As Long
+Private gRowMoveClickModeActive As Boolean
+Private gRowMoveClickStartRow As Long
+Private gRowMoveClickEndRow As Long
 
 Public Sub 新ファイル基準表生成()
 
@@ -93,6 +96,10 @@ Public Sub 行移動モード開始_または確定()
 
     Set ws = GetRowMoveTargetSheet()
     If ws Is Nothing Then GoTo SafeExit
+
+    If gRowMoveClickModeActive Then
+        CancelRowMoveClickDestinationModeInternal
+    End If
 
     If gRowMoveModeActive Then
         ConfirmRowMove ws
@@ -173,14 +180,11 @@ Public Sub 行移動_指定行へ()
     Dim ws As Worksheet
     Dim selectedStartRow As Long
     Dim selectedEndRow As Long
-    Dim lastDataRow As Long
-    Dim blockRows As Long
-    Dim maxTargetRow As Long
     Dim targetRowText As String
     Dim targetRow As Long
-    Dim insertRow As Long
-    Dim movedStartRow As Long
-    Dim movedSerial As String
+    Dim maxTargetRow As Long
+    Dim blockRows As Long
+    Dim lastDataRow As Long
 
     On Error GoTo ErrorHandler
 
@@ -189,6 +193,10 @@ Public Sub 行移動_指定行へ()
 
     Set ws = GetRowMoveTargetSheet()
     If ws Is Nothing Then Exit Sub
+
+    If gRowMoveClickModeActive Then
+        CancelRowMoveClickDestinationModeInternal
+    End If
 
     If gRowMoveModeActive Then
         selectedStartRow = gRowMoveStartRow
@@ -231,52 +239,12 @@ Public Sub 行移動_指定行へ()
         Exit Sub
     End If
 
-    If targetRow >= selectedStartRow And targetRow <= selectedEndRow Then
-        MsgBox "移動先が現在の選択範囲内です。別の行を指定してください。", vbInformation
-        Exit Sub
-    End If
-
-    movedStartRow = targetRow
-    insertRow = targetRow
-    ' 下方向へ移動する場合、Cut後に行番号が詰まる分だけ挿入位置を補正
-    If targetRow > selectedEndRow Then
-        insertRow = targetRow + blockRows
-    End If
-
-    ' Undo情報が残っている場合:
-    ' - 直前に移動した同じブロックを続けて動かすなら開始基準は維持
-    ' - それ以外の新しい移動なら基準をリセット
-    If gRowMoveUndoAvailable Then
-        If Not (selectedStartRow = gRowMoveUndoMovedStartRow And selectedEndRow = gRowMoveUndoMovedEndRow) Then
-            ClearRowMoveUndoState
-        End If
-    End If
-
     Application.ScreenUpdating = False
     Application.EnableEvents = False
     Application.StatusBar = False
     Application.CutCopyMode = False
 
-    movedSerial = GetRowMoveUndoSerialValue(ws, selectedStartRow)
-
-    If gRowMoveModeActive Then
-        CancelRowMoveModeInternal
-    End If
-
-    If Not gRowMoveUndoAvailable Then
-        gRowMoveUndoOriginalStartRow = selectedStartRow
-        gRowMoveUndoOriginalEndRow = selectedEndRow
-        gRowMoveUndoRowCount = blockRows
-    End If
-
-    ws.Rows(selectedStartRow & ":" & selectedEndRow).Cut
-    ws.Rows(insertRow).Insert Shift:=xlDown
-    Application.CutCopyMode = False
-
-    SaveRowMoveUndoState movedStartRow, blockRows, movedSerial
-
-    ws.Rows(movedStartRow & ":" & movedStartRow + blockRows - 1).Select
-    Call 後処理_行移動後
+    Call ExecuteRowMoveToTargetRow(ws, selectedStartRow, selectedEndRow, targetRow, True)
 
 SafeExit:
     Application.CutCopyMode = False
@@ -293,11 +261,124 @@ ErrorHandler:
 End Sub
 
 '========================================================
+' 移動元選択 -> ボタン押下 -> 移動先クリックで確定
+'========================================================
+Public Sub 行移動_移動先クリック開始()
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim ws As Worksheet
+    Dim selectedStartRow As Long
+    Dim selectedEndRow As Long
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    Set ws = GetRowMoveTargetSheet()
+    If ws Is Nothing Then GoTo SafeExit
+
+    If gRowMoveModeActive Then
+        MsgBox "行移動モード中です。先に移動終了/キャンセルしてください。", vbExclamation
+        GoTo SafeExit
+    End If
+
+    If Not TryGetContinuousDataRowSelection(ws, selectedStartRow, selectedEndRow) Then GoTo SafeExit
+
+    If gRowMoveUndoAvailable Then
+        If Not (selectedStartRow = gRowMoveUndoMovedStartRow And selectedEndRow = gRowMoveUndoMovedEndRow) Then
+            ClearRowMoveUndoState
+        End If
+    End If
+
+    gRowMoveClickModeActive = True
+    gRowMoveClickStartRow = selectedStartRow
+    gRowMoveClickEndRow = selectedEndRow
+
+    ws.Rows(selectedStartRow & ":" & selectedEndRow).Select
+    Application.StatusBar = "移動先クリック待ち: " & selectedStartRow & "～" & selectedEndRow & "行を移動します。移動先の先頭行をクリックしてください。"
+
+SafeExit:
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "移動先クリックモード開始でエラーが発生しました: " & Err.Description, vbExclamation
+    CancelRowMoveClickDestinationModeInternal
+    Resume SafeExit
+
+End Sub
+
+Public Sub 行移動_移動先クリックで確定(ByVal targetRow As Long)
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim ws As Worksheet
+    Dim lastDataRow As Long
+    Dim maxTargetRow As Long
+    Dim blockRows As Long
+
+    On Error GoTo ErrorHandler
+
+    If Not gRowMoveClickModeActive Then Exit Sub
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+
+    Set ws = GetRowMoveTargetSheet()
+    If ws Is Nothing Then
+        CancelRowMoveClickDestinationModeInternal
+        Exit Sub
+    End If
+
+    blockRows = gRowMoveClickEndRow - gRowMoveClickStartRow + 1
+    If blockRows <= 0 Then
+        MsgBox "移動対象行の情報が不正です。", vbExclamation
+        CancelRowMoveClickDestinationModeInternal
+        Exit Sub
+    End If
+
+    lastDataRow = GetLastUsedRow(ws)
+    maxTargetRow = lastDataRow - blockRows + 1
+    If maxTargetRow < 2 Then maxTargetRow = 2
+
+    If targetRow < 2 Or targetRow > maxTargetRow Then
+        MsgBox "移動先は 2～" & CStr(maxTargetRow) & " 行の範囲でクリックしてください。", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.CutCopyMode = False
+
+    If ExecuteRowMoveToTargetRow(ws, gRowMoveClickStartRow, gRowMoveClickEndRow, targetRow, False) Then
+        CancelRowMoveClickDestinationModeInternal
+    End If
+
+SafeExit:
+    Application.CutCopyMode = False
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "移動先クリック確定でエラーが発生しました: " & Err.Description, vbExclamation
+    CancelRowMoveClickDestinationModeInternal
+    Resume SafeExit
+
+End Sub
+
+'========================================================
 ' 行移動キャンセル
 '========================================================
 Public Sub 行移動_キャンセル()
 
     CancelRowMoveModeInternal
+    CancelRowMoveClickDestinationModeInternal
 
 End Sub
 
@@ -310,6 +391,12 @@ End Function
 Public Function IsRowMoveUndoAvailable() As Boolean
 
     IsRowMoveUndoAvailable = gRowMoveUndoAvailable
+
+End Function
+
+Public Function IsRowMoveClickModeActive() As Boolean
+
+    IsRowMoveClickModeActive = gRowMoveClickModeActive
 
 End Function
 
@@ -383,7 +470,7 @@ Public Sub 行移動_元に戻す()
 
     On Error GoTo ErrorHandler
 
-    If gRowMoveModeActive Then
+    If gRowMoveModeActive Or gRowMoveClickModeActive Then
         MsgBox "移動モード中は元に戻せません。先に移動終了/キャンセルしてください。", vbExclamation
         Exit Sub
     End If
@@ -448,6 +535,76 @@ ErrorHandler:
     Resume SafeExit
 
 End Sub
+
+Private Function ExecuteRowMoveToTargetRow( _
+    ByVal ws As Worksheet, _
+    ByVal selectedStartRow As Long, _
+    ByVal selectedEndRow As Long, _
+    ByVal targetRow As Long, _
+    ByVal cancelArrowMoveMode As Boolean) As Boolean
+
+    Dim blockRows As Long
+    Dim movedStartRow As Long
+    Dim insertRow As Long
+    Dim movedSerial As String
+    Dim lastDataRow As Long
+    Dim maxTargetRow As Long
+
+    ExecuteRowMoveToTargetRow = False
+    If ws Is Nothing Then Exit Function
+    If selectedStartRow < 2 Or selectedEndRow < selectedStartRow Then Exit Function
+
+    blockRows = selectedEndRow - selectedStartRow + 1
+    If blockRows <= 0 Then Exit Function
+
+    lastDataRow = GetLastUsedRow(ws)
+    maxTargetRow = lastDataRow - blockRows + 1
+    If maxTargetRow < 2 Then maxTargetRow = 2
+    If targetRow < 2 Or targetRow > maxTargetRow Then
+        MsgBox "移動先は 2～" & CStr(maxTargetRow) & " 行の範囲で指定してください。", vbExclamation
+        Exit Function
+    End If
+
+    If targetRow >= selectedStartRow And targetRow <= selectedEndRow Then
+        MsgBox "移動先が現在の選択範囲内です。別の行を指定してください。", vbInformation
+        Exit Function
+    End If
+
+    movedStartRow = targetRow
+    insertRow = targetRow
+    If targetRow > selectedEndRow Then
+        insertRow = targetRow + blockRows
+    End If
+
+    If gRowMoveUndoAvailable Then
+        If Not (selectedStartRow = gRowMoveUndoMovedStartRow And selectedEndRow = gRowMoveUndoMovedEndRow) Then
+            ClearRowMoveUndoState
+        End If
+    End If
+
+    movedSerial = GetRowMoveUndoSerialValue(ws, selectedStartRow)
+
+    If cancelArrowMoveMode And gRowMoveModeActive Then
+        CancelRowMoveModeInternal
+    End If
+
+    If Not gRowMoveUndoAvailable Then
+        gRowMoveUndoOriginalStartRow = selectedStartRow
+        gRowMoveUndoOriginalEndRow = selectedEndRow
+        gRowMoveUndoRowCount = blockRows
+    End If
+
+    ws.Rows(selectedStartRow & ":" & selectedEndRow).Cut
+    ws.Rows(insertRow).Insert Shift:=xlDown
+    Application.CutCopyMode = False
+
+    SaveRowMoveUndoState movedStartRow, blockRows, movedSerial
+    ws.Rows(movedStartRow & ":" & movedStartRow + blockRows - 1).Select
+    Call 後処理_行移動後
+
+    ExecuteRowMoveToTargetRow = True
+
+End Function
 
 Private Sub ShiftRowMoveInsertPointer(ByVal delta As Long)
 
@@ -754,6 +911,18 @@ Private Sub CancelRowMoveModeInternal()
     Application.StatusBar = False
     Application.CutCopyMode = False
     On Error GoTo 0
+
+End Sub
+
+Private Sub CancelRowMoveClickDestinationModeInternal()
+
+    gRowMoveClickModeActive = False
+    gRowMoveClickStartRow = 0
+    gRowMoveClickEndRow = 0
+
+    If Not gRowMoveModeActive Then
+        Application.StatusBar = False
+    End If
 
 End Sub
 

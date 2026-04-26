@@ -113,6 +113,20 @@ EH:
 
 End Sub
 
+Private Sub cmdMoveByClick_Click()
+
+    On Error GoTo EH
+
+    Call 行移動_移動先クリック開始
+    SyncMoveModeButtons
+    Exit Sub
+
+EH:
+    MsgBox "移動先クリックモード開始でエラーが発生しました: " & Err.Description, vbExclamation
+    SyncMoveModeButtons
+
+End Sub
+
 Private Sub cmdMoveCancel_Click()
 
     On Error Resume Next

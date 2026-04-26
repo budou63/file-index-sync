@@ -53,15 +53,26 @@ Private Sub Worksheet_SelectionChange(ByVal Target As Range)
     Dim anchorRow As Long
     Dim clickedRow As Long
     Dim assistMode As Boolean
+    Dim clickMode As Boolean
+    Dim targetRow As Long
 
     On Error GoTo ExitHandler
 
     oldEnableEvents = Application.EnableEvents
     If Target Is Nothing Then GoTo ExitHandler
     If mSelectingRowFromMoveMode Then GoTo ExitHandler
-    If Not IsRowMoveModeActive() Then GoTo ExitHandler
+    clickMode = IsRowMoveClickModeActive()
+    If (Not IsRowMoveModeActive()) And (Not clickMode) Then GoTo ExitHandler
     If Target.Areas.Count <> 1 Then GoTo ExitHandler
     If Target.Row < 2 Then GoTo ExitHandler
+
+    If clickMode Then
+        targetRow = Target.Row
+        mSelectingRowFromMoveMode = True
+        Application.EnableEvents = False
+        行移動_移動先クリックで確定 targetRow
+        GoTo ExitHandler
+    End If
 
     firstRow = Target.Row
     lastRow = Target.Row + Target.Rows.Count - 1
