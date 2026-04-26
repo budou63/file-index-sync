@@ -178,6 +178,8 @@ Public Sub 行移動_指定行へ()
     Dim maxTargetRow As Long
     Dim targetRowText As String
     Dim targetRow As Long
+    Dim insertRow As Long
+    Dim movedStartRow As Long
     Dim movedSerial As String
 
     On Error GoTo ErrorHandler
@@ -234,6 +236,13 @@ Public Sub 行移動_指定行へ()
         Exit Sub
     End If
 
+    movedStartRow = targetRow
+    insertRow = targetRow
+    ' 下方向へ移動する場合、Cut後に行番号が詰まる分だけ挿入位置を補正
+    If targetRow > selectedEndRow Then
+        insertRow = targetRow + blockRows
+    End If
+
     ' Undo情報が残っている場合:
     ' - 直前に移動した同じブロックを続けて動かすなら開始基準は維持
     ' - それ以外の新しい移動なら基準をリセット
@@ -261,12 +270,12 @@ Public Sub 行移動_指定行へ()
     End If
 
     ws.Rows(selectedStartRow & ":" & selectedEndRow).Cut
-    ws.Rows(targetRow).Insert Shift:=xlDown
+    ws.Rows(insertRow).Insert Shift:=xlDown
     Application.CutCopyMode = False
 
-    SaveRowMoveUndoState targetRow, blockRows, movedSerial
+    SaveRowMoveUndoState movedStartRow, blockRows, movedSerial
 
-    ws.Rows(targetRow & ":" & targetRow + blockRows - 1).Select
+    ws.Rows(movedStartRow & ":" & movedStartRow + blockRows - 1).Select
     Call 後処理_行移動後
 
 SafeExit:
