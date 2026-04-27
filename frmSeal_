@@ -1,6 +1,11 @@
 ﻿Option Explicit
 
 Private mSyncingMoveModeButtons As Boolean
+Private Const FRM_SEAL_WIDTH_LARGE As Double = 740
+Private Const FRM_SEAL_HEIGHT_LARGE As Double = 520
+Private Const MOVE_MODE_ACTIVE_BACKCOLOR As Long = 14474495   ' RGB(255,220,220)
+Private Const MOVE_MODE_INACTIVE_BACKCOLOR As Long = 15790320 ' RGB(240,240,240)
+Private Const MOVE_MODE_FORECOLOR As Long = 0                 ' RGB(0,0,0)
 
 '========================================================
 ' frmSeal（新基準表対応）
@@ -51,6 +56,8 @@ End Sub
 
 Private Sub UserForm_Initialize()
 
+    Me.Width = FRM_SEAL_WIDTH_LARGE
+    Me.Height = FRM_SEAL_HEIGHT_LARGE
     SyncMoveModeButtons
 
 End Sub
@@ -158,9 +165,13 @@ Private Sub SyncMoveModeButtons()
     If IsRowMoveModeActive() Then
         Me.tglMoveMode.Value = True
         Me.tglMoveMode.Caption = "移動確定"
+        Me.tglMoveMode.BackColor = MOVE_MODE_ACTIVE_BACKCOLOR
+        Me.tglMoveMode.ForeColor = MOVE_MODE_FORECOLOR
     Else
         Me.tglMoveMode.Value = False
         Me.tglMoveMode.Caption = "移動開始"
+        Me.tglMoveMode.BackColor = MOVE_MODE_INACTIVE_BACKCOLOR
+        Me.tglMoveMode.ForeColor = MOVE_MODE_FORECOLOR
     End If
 
     On Error Resume Next
