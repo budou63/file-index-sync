@@ -470,9 +470,12 @@ Public Sub 行移動_元に戻す()
 
     On Error GoTo ErrorHandler
 
-    If gRowMoveModeActive Or gRowMoveClickModeActive Then
+    If gRowMoveModeActive Then
         MsgBox "移動モード中は元に戻せません。先に移動終了/キャンセルしてください。", vbExclamation
         Exit Sub
+    End If
+    If gRowMoveClickModeActive Then
+        CancelRowMoveClickDestinationModeInternal
     End If
 
     If Not gRowMoveUndoAvailable Then
@@ -521,6 +524,7 @@ Public Sub 行移動_元に戻す()
 
     ws.Rows(insertRow & ":" & insertRow + rowCount - 1).Select
     ClearRowMoveUndoState
+    SyncFrmSealMoveButtonsIfLoaded
 
 SafeExit:
     Application.StatusBar = False
@@ -601,6 +605,7 @@ Private Function ExecuteRowMoveToTargetRow( _
     SaveRowMoveUndoState movedStartRow, blockRows, movedSerial
     ws.Rows(movedStartRow & ":" & movedStartRow + blockRows - 1).Select
     Call 後処理_行移動後
+    SyncFrmSealMoveButtonsIfLoaded
 
     ExecuteRowMoveToTargetRow = True
 
@@ -891,6 +896,18 @@ Private Sub UpdateRowMoveStatusBar()
 
 End Sub
 
+Private Sub SyncFrmSealMoveButtonsIfLoaded()
+
+    Dim frm As Object
+
+    On Error Resume Next
+    For Each frm In VBA.UserForms
+        CallByName frm, "SyncMoveModeButtonsPublic", VbMethod
+    Next frm
+    On Error GoTo 0
+
+End Sub
+
 Private Sub CancelRowMoveModeInternal()
 
     Dim ws As Worksheet
@@ -923,6 +940,7 @@ Private Sub CancelRowMoveClickDestinationModeInternal()
     If Not gRowMoveModeActive Then
         Application.StatusBar = False
     End If
+    SyncFrmSealMoveButtonsIfLoaded
 
 End Sub
 

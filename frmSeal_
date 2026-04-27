@@ -183,6 +183,12 @@ SafeExit:
 
 End Sub
 
+Public Sub SyncMoveModeButtonsPublic()
+
+    SyncMoveModeButtons
+
+End Sub
+
 Private Sub btnApply_Click()
 
     Dim bulkStartText As String
