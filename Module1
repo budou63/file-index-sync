@@ -137,6 +137,7 @@ Public Sub 行移動モード開始_または確定()
         GoTo SafeExit
     End If
 
+    ClearRowMoveInsertionMarker ws
     DrawRowMoveInsertionMarker ws, gRowMoveInsertRow
     UpdateRowMoveStatusBar
 
@@ -440,6 +441,7 @@ Public Sub UpdateRowMoveSelectionRange(ByVal startRow As Long, ByVal endRow As L
     gRowMoveEndRow = endRow
 
     If gRowMoveInsertRow < startRow Or gRowMoveInsertRow > endRow + 1 Then
+        ClearRowMoveInsertionMarker ws
         gRowMoveInsertRow = startRow
         DrawRowMoveInsertionMarker ws, gRowMoveInsertRow
     End If
