@@ -26,6 +26,7 @@ Private gRowMoveMarkerBottomLineStyle() As Variant
 Private gRowMoveMarkerBottomWeight() As Variant
 Private gRowMoveMarkerBottomColor() As Variant
 Private gRowMoveMarkerBottomColorIndex() As Variant
+Private gRowMoveTouchedMarkerRows As Object
 Private gRowMoveUndoAvailable As Boolean
 ' 移動開始時点の元位置
 Private gRowMoveUndoOriginalStartRow As Long
@@ -384,6 +385,7 @@ Public Sub 行移動_キャンセル()
 
     CancelRowMoveModeInternal
     CancelRowMoveClickDestinationModeInternal
+    行移動_予定線を全消去
 
 End Sub
 
@@ -751,6 +753,7 @@ Private Sub ConfirmRowMove(ByVal ws As Worksheet)
     ws.Rows(gRowMoveInsertRow & ":" & gRowMoveInsertRow + blockRows - 1).Select
 
     CancelRowMoveModeInternal
+    行移動_予定線を全消去
     Call 後処理_行移動後
 
 SafeExit:
@@ -762,6 +765,7 @@ ErrorHandler:
     Application.CutCopyMode = False
     MsgBox "行移動の確定中にエラーが発生しました: " & Err.Description, vbExclamation
     CancelRowMoveModeInternal
+    行移動_予定線を全消去
     Resume SafeExit
 
 End Sub
@@ -808,6 +812,48 @@ Private Sub DebugLogRowMoveExecutionContext( _
                 " ws.FilterMode=" & ws.FilterMode & _
                 " ws.AutoFilterMode=" & ws.AutoFilterMode
 
+End Sub
+
+Public Sub 行移動_予定線を全消去()
+
+    Dim ws As Worksheet
+    Dim lastCol As Long
+    Dim key As Variant
+    Dim markerRow As Long
+
+    On Error GoTo SafeExit
+
+    Set ws = GetRowMoveTargetSheet()
+    If ws Is Nothing Then GoTo SafeExit
+    If gRowMoveTouchedMarkerRows Is Nothing Then GoTo SafeExit
+    If gRowMoveTouchedMarkerRows.Count = 0 Then GoTo SafeExit
+
+    lastCol = GetLastUsedCol(ws)
+    If lastCol <= 0 Then lastCol = 1
+
+    For Each key In gRowMoveTouchedMarkerRows.Keys
+        markerRow = CLng(key)
+        If markerRow >= 2 And markerRow <= ws.Rows.Count Then
+            With ws.Range(ws.Cells(markerRow, 1), ws.Cells(markerRow, lastCol)).Borders(xlEdgeTop)
+                .LineStyle = xlNone
+            End With
+            If markerRow > 2 Then
+                With ws.Range(ws.Cells(markerRow - 1, 1), ws.Cells(markerRow - 1, lastCol)).Borders(xlEdgeBottom)
+                    .LineStyle = xlNone
+                End With
+            End If
+        End If
+    Next key
+
+SafeExit:
+    If Not gRowMoveTouchedMarkerRows Is Nothing Then gRowMoveTouchedMarkerRows.RemoveAll
+
+End Sub
+
+Private Sub RegisterTouchedMarkerRow(ByVal markerRow As Long)
+    If markerRow < 2 Then Exit Sub
+    If gRowMoveTouchedMarkerRows Is Nothing Then Set gRowMoveTouchedMarkerRows = CreateObject("Scripting.Dictionary")
+    If Not gRowMoveTouchedMarkerRows.Exists(CStr(markerRow)) Then gRowMoveTouchedMarkerRows.Add CStr(markerRow), True
 End Sub
 
 Private Function TryGetContinuousDataRowSelection( _
@@ -935,6 +981,7 @@ Private Sub DrawRowMoveInsertionMarker(ByVal ws As Worksheet, ByVal markerRow As
     End With
 
     gRowMoveMarkerRow = markerRow
+    RegisterTouchedMarkerRow markerRow
 
 End Sub
 
@@ -1038,6 +1085,7 @@ Private Sub CancelRowMoveModeInternal()
     On Error Resume Next
     Set ws = GetRowMoveTargetSheet()
     If Not ws Is Nothing Then ClearRowMoveInsertionMarker ws
+    行移動_予定線を全消去
 
     gRowMoveModeActive = False
     gRowMoveStartRow = 0
