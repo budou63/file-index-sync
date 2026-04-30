@@ -891,10 +891,7 @@ Private Sub UpdateRowMoveStatusBar()
     Dim adjustedInsertRow As Long
 
     If gRowMoveModeActive Then
-        adjustedInsertRow = GetAdjustedDestinationRowForCutInsert(gRowMoveStartRow, gRowMoveEndRow, gRowMoveInsertRow)
-        If adjustedInsertRow < 2 Then adjustedInsertRow = 2
-        Application.StatusBar = "行移動モード中: 現在の" & gRowMoveInsertRow & "行目の上へ挿入予定 / " & _
-                               "確定後の実挿入行: " & adjustedInsertRow & "行目（対象: " & _
+        Application.StatusBar = "行移動モード中: 現在の " & gRowMoveInsertRow & " 行目の上へ挿入予定（対象: " & _
                                gRowMoveStartRow & "～" & gRowMoveEndRow & "行）"
     End If
 
@@ -905,26 +902,8 @@ Private Function GetAdjustedDestinationRowForCutInsert( _
     ByVal sourceEndRow As Long, _
     ByVal requestedInsertRow As Long) As Long
 
-    Dim blockRows As Long
-
     If requestedInsertRow < 2 Then requestedInsertRow = 2
-    If sourceStartRow < 2 Then sourceStartRow = 2
-    If sourceEndRow < sourceStartRow Then
-        GetAdjustedDestinationRowForCutInsert = requestedInsertRow
-        Exit Function
-    End If
-
-    blockRows = sourceEndRow - sourceStartRow + 1
-    If blockRows <= 0 Then
-        GetAdjustedDestinationRowForCutInsert = requestedInsertRow
-        Exit Function
-    End If
-
-    If requestedInsertRow > sourceEndRow Then
-        GetAdjustedDestinationRowForCutInsert = requestedInsertRow - blockRows
-    Else
-        GetAdjustedDestinationRowForCutInsert = requestedInsertRow
-    End If
+    GetAdjustedDestinationRowForCutInsert = requestedInsertRow
 
 End Function
 
