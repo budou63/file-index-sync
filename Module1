@@ -469,7 +469,7 @@ Public Sub 行移動_元に戻す()
     Dim originalStart As Long
     Dim currentStart As Long
     Dim currentEnd As Long
-    Dim insertRow As Long
+    Dim actualInsertRow As Long
 
     oldScreenUpdating = Application.ScreenUpdating
     oldEnableEvents = Application.EnableEvents
@@ -492,8 +492,18 @@ Public Sub 行移動_元に戻す()
     Set ws = GetRowMoveTargetSheet()
     If ws Is Nothing Then Exit Sub
 
+    If ws.ProtectContents Then
+        MsgBox "シートが保護されているため元に戻せません。", vbExclamation
+        Exit Sub
+    End If
+    If ws.FilterMode Then
+        MsgBox "現在、フィルターで絞り込み中です。絞り込みを解除してから元に戻してください。", vbExclamation
+        Exit Sub
+    End If
+
     Application.ScreenUpdating = False
     Application.EnableEvents = False
+    ClearRowMoveInsertionMarker ws
 
     currentStart = gRowMoveUndoMovedStartRow
     currentEnd = gRowMoveUndoMovedEndRow
@@ -514,21 +524,19 @@ Public Sub 行移動_元に戻す()
         GoTo SafeExit
     End If
 
-    insertRow = originalStart
-    ' Cutで上側の行を抜いた場合、下側の挿入先はrowCount分だけ繰り上がるため補正
-    If currentEnd < originalStart Then
-        insertRow = insertRow + rowCount
-    End If
-    If insertRow < 2 Then insertRow = 2
+    actualInsertRow = GetAdjustedDestinationRowForCutInsert(currentStart, currentEnd, originalStart)
+    If actualInsertRow < 2 Then actualInsertRow = 2
+
+    DebugLogRowMoveCalculation currentStart, currentEnd, rowCount, originalStart, actualInsertRow, originalStart
 
     Application.StatusBar = False
     Application.CutCopyMode = False
 
     ws.Rows(currentStart & ":" & currentEnd).Cut
-    ws.Rows(insertRow).Insert Shift:=xlDown
+    ws.Rows(actualInsertRow).Insert Shift:=xlDown
     Application.CutCopyMode = False
 
-    ws.Rows(insertRow & ":" & insertRow + rowCount - 1).Select
+    ws.Rows(originalStart & ":" & originalStart + rowCount - 1).Select
     ClearRowMoveUndoState
     SyncFrmSealMoveButtonsIfLoaded
 
