@@ -6560,22 +6560,39 @@ End Function
 Private Function NormalizeFolderCompareText_Mig(ByVal valueText As String) As String
 
     Dim s As String
+    Dim invisibleChars As Variant
+    Dim i As Long
 
     s = CStr(valueText)
+    On Error Resume Next
     s = StrConv(s, vbNarrow)
+    On Error GoTo 0
     s = Replace(s, "（", "(")
     s = Replace(s, "）", ")")
+    s = Replace(s, "・", "･")
 
     s = Replace(s, vbCrLf, " ")
     s = Replace(s, vbCr, " ")
     s = Replace(s, vbLf, " ")
     s = Replace(s, vbTab, " ")
     s = Replace(s, ChrW(&H3000), " ")
+
+    ' ゼロ幅スペース/不可視文字の除去
+    invisibleChars = Array( _
+        ChrW(&H200B), ChrW(&H200C), ChrW(&H200D), ChrW(&H2060), _
+        ChrW(&HFEFF), ChrW(&H180E), ChrW(&H00AD))
+    For i = LBound(invisibleChars) To UBound(invisibleChars)
+        s = Replace(s, CStr(invisibleChars(i)), "")
+    Next i
+
     s = Trim$(s)
 
     Do While InStr(s, "  ") > 0
         s = Replace(s, "  ", " ")
     Loop
+
+    ' 実務上の同一判定を優先し、比較キー上は空白を除去
+    s = Replace(s, " ", "")
 
     NormalizeFolderCompareText_Mig = s
 
