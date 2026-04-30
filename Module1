@@ -662,6 +662,7 @@ Private Sub ShiftRowMoveInsertPointer(ByVal delta As Long)
     If nextRow > lastDataRow Then nextRow = lastDataRow
 
     If nextRow <> gRowMoveInsertRow Then
+        ClearRowMoveInsertionMarker ws
         gRowMoveInsertRow = nextRow
         gRowMoveSelectionAssistActive = False
         DrawRowMoveInsertionMarker ws, gRowMoveInsertRow
