@@ -22,6 +22,10 @@ Private gRowMoveMarkerLineStyle() As Variant
 Private gRowMoveMarkerWeight() As Variant
 Private gRowMoveMarkerColor() As Variant
 Private gRowMoveMarkerColorIndex() As Variant
+Private gRowMoveMarkerBottomLineStyle() As Variant
+Private gRowMoveMarkerBottomWeight() As Variant
+Private gRowMoveMarkerBottomColor() As Variant
+Private gRowMoveMarkerBottomColorIndex() As Variant
 Private gRowMoveUndoAvailable As Boolean
 ' 移動開始時点の元位置
 Private gRowMoveUndoOriginalStartRow As Long
@@ -880,6 +884,7 @@ Private Sub DrawRowMoveInsertionMarker(ByVal ws As Worksheet, ByVal markerRow As
     Dim c As Long
     Dim targetCell As Range
     Dim edgeTop As Border
+    Dim edgeBottom As Border
 
     If ws Is Nothing Then Exit Sub
     If markerRow < 2 Then Exit Sub
@@ -894,6 +899,10 @@ Private Sub DrawRowMoveInsertionMarker(ByVal ws As Worksheet, ByVal markerRow As
     ReDim gRowMoveMarkerWeight(1 To lastCol)
     ReDim gRowMoveMarkerColor(1 To lastCol)
     ReDim gRowMoveMarkerColorIndex(1 To lastCol)
+    ReDim gRowMoveMarkerBottomLineStyle(1 To lastCol)
+    ReDim gRowMoveMarkerBottomWeight(1 To lastCol)
+    ReDim gRowMoveMarkerBottomColor(1 To lastCol)
+    ReDim gRowMoveMarkerBottomColorIndex(1 To lastCol)
 
     For c = 1 To lastCol
         Set targetCell = ws.Cells(markerRow, c)
@@ -902,6 +911,13 @@ Private Sub DrawRowMoveInsertionMarker(ByVal ws As Worksheet, ByVal markerRow As
         gRowMoveMarkerWeight(c) = edgeTop.Weight
         gRowMoveMarkerColor(c) = edgeTop.Color
         gRowMoveMarkerColorIndex(c) = edgeTop.ColorIndex
+
+        Set targetCell = ws.Cells(markerRow - 1, c)
+        Set edgeBottom = targetCell.Borders(xlEdgeBottom)
+        gRowMoveMarkerBottomLineStyle(c) = edgeBottom.LineStyle
+        gRowMoveMarkerBottomWeight(c) = edgeBottom.Weight
+        gRowMoveMarkerBottomColor(c) = edgeBottom.Color
+        gRowMoveMarkerBottomColorIndex(c) = edgeBottom.ColorIndex
     Next c
 
     With ws.Range(ws.Cells(markerRow, 1), ws.Cells(markerRow, lastCol)).Borders(xlEdgeTop)
@@ -919,6 +935,7 @@ Private Sub ClearRowMoveInsertionMarker(ByVal ws As Worksheet)
     Dim c As Long
     Dim targetCell As Range
     Dim edgeTop As Border
+    Dim edgeBottom As Border
 
     If ws Is Nothing Then Exit Sub
     If gRowMoveMarkerRow < 2 Then Exit Sub
@@ -932,12 +949,23 @@ Private Sub ClearRowMoveInsertionMarker(ByVal ws As Worksheet)
         edgeTop.Weight = gRowMoveMarkerWeight(c)
         edgeTop.Color = gRowMoveMarkerColor(c)
         edgeTop.ColorIndex = gRowMoveMarkerColorIndex(c)
+
+        Set targetCell = ws.Cells(gRowMoveMarkerRow - 1, c)
+        Set edgeBottom = targetCell.Borders(xlEdgeBottom)
+        edgeBottom.LineStyle = gRowMoveMarkerBottomLineStyle(c)
+        edgeBottom.Weight = gRowMoveMarkerBottomWeight(c)
+        edgeBottom.Color = gRowMoveMarkerBottomColor(c)
+        edgeBottom.ColorIndex = gRowMoveMarkerBottomColorIndex(c)
     Next c
 
     Erase gRowMoveMarkerLineStyle
     Erase gRowMoveMarkerWeight
     Erase gRowMoveMarkerColor
     Erase gRowMoveMarkerColorIndex
+    Erase gRowMoveMarkerBottomLineStyle
+    Erase gRowMoveMarkerBottomWeight
+    Erase gRowMoveMarkerBottomColor
+    Erase gRowMoveMarkerBottomColorIndex
     gRowMoveMarkerRow = 0
     gRowMoveMarkerLastCol = 0
 
@@ -974,17 +1002,8 @@ Private Function GetAdjustedDestinationRowForCutInsert( _
     ByVal sourceEndRow As Long, _
     ByVal requestedInsertRow As Long) As Long
 
-    Dim blockRows As Long
-
     If requestedInsertRow < 2 Then requestedInsertRow = 2
-    blockRows = sourceEndRow - sourceStartRow + 1
-    If blockRows < 1 Then blockRows = 1
-
-    If requestedInsertRow > sourceEndRow Then
-        GetAdjustedDestinationRowForCutInsert = requestedInsertRow + blockRows - 1
-    Else
-        GetAdjustedDestinationRowForCutInsert = requestedInsertRow
-    End If
+    GetAdjustedDestinationRowForCutInsert = requestedInsertRow
 
 End Function
 
