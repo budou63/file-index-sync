@@ -971,9 +971,14 @@ Private Function GetAdjustedDestinationRowForCutInsert( _
     ByVal sourceEndRow As Long, _
     ByVal requestedInsertRow As Long) As Long
 
+    Dim blockRows As Long
+
     If requestedInsertRow < 2 Then requestedInsertRow = 2
+    blockRows = sourceEndRow - sourceStartRow + 1
+    If blockRows < 1 Then blockRows = 1
+
     If requestedInsertRow > sourceEndRow Then
-        GetAdjustedDestinationRowForCutInsert = requestedInsertRow + (sourceEndRow - sourceStartRow + 1)
+        GetAdjustedDestinationRowForCutInsert = requestedInsertRow + blockRows - 1
     Else
         GetAdjustedDestinationRowForCutInsert = requestedInsertRow
     End If
