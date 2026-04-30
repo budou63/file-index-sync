@@ -582,7 +582,7 @@ Private Function ExecuteRowMoveToTargetRow( _
         Exit Function
     End If
 
-    movedStartRow = actualInsertRow
+    movedStartRow = targetRow
 
     If gRowMoveUndoAvailable Then
         If Not (selectedStartRow = gRowMoveUndoMovedStartRow And selectedEndRow = gRowMoveUndoMovedEndRow) Then
@@ -706,9 +706,9 @@ Private Sub ConfirmRowMove(ByVal ws As Worksheet)
     ws.Rows(destinationRow).Insert Shift:=xlDown
     Application.CutCopyMode = False
 
-    SaveRowMoveUndoState destinationRow, blockRows, movedSerial
+    SaveRowMoveUndoState gRowMoveInsertRow, blockRows, movedSerial
 
-    ws.Rows(destinationRow & ":" & destinationRow + blockRows - 1).Select
+    ws.Rows(gRowMoveInsertRow & ":" & gRowMoveInsertRow + blockRows - 1).Select
 
     CancelRowMoveModeInternal
     Call 後処理_行移動後
@@ -902,8 +902,17 @@ Private Function GetAdjustedDestinationRowForCutInsert( _
     ByVal sourceEndRow As Long, _
     ByVal requestedInsertRow As Long) As Long
 
+    Dim blockRows As Long
+
     If requestedInsertRow < 2 Then requestedInsertRow = 2
-    GetAdjustedDestinationRowForCutInsert = requestedInsertRow
+    blockRows = sourceEndRow - sourceStartRow + 1
+    If blockRows < 1 Then blockRows = 1
+
+    If requestedInsertRow > sourceEndRow Then
+        GetAdjustedDestinationRowForCutInsert = requestedInsertRow + blockRows
+    Else
+        GetAdjustedDestinationRowForCutInsert = requestedInsertRow
+    End If
 
 End Function
 
