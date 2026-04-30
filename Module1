@@ -607,8 +607,8 @@ Private Function ExecuteRowMoveToTargetRow( _
         MsgBox "シートが保護されているため行移動できません。", vbExclamation
         Exit Function
     End If
-    If ws.FilterMode Or ws.AutoFilterMode Then
-        MsgBox "フィルターが有効なため行移動できません。フィルターを解除して再実行してください。", vbExclamation
+    If ws.FilterMode Then
+        MsgBox "現在、フィルターで絞り込み中です。絞り込みを解除してから行移動してください。", vbExclamation
         Exit Function
     End If
 
@@ -720,8 +720,8 @@ Private Sub ConfirmRowMove(ByVal ws As Worksheet)
         MsgBox "シートが保護されているため行移動できません。", vbExclamation
         GoTo SafeExit
     End If
-    If ws.FilterMode Or ws.AutoFilterMode Then
-        MsgBox "フィルターが有効なため行移動できません。フィルターを解除して再実行してください。", vbExclamation
+    If ws.FilterMode Then
+        MsgBox "現在、フィルターで絞り込み中です。絞り込みを解除してから行移動してください。", vbExclamation
         GoTo SafeExit
     End If
 
