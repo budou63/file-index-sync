@@ -603,7 +603,19 @@ Private Function ExecuteRowMoveToTargetRow( _
         gRowMoveUndoRowCount = blockRows
     End If
 
-    MoveRowsByStaging ws, selectedStartRow, selectedEndRow, targetRow
+    If ws.ProtectContents Then
+        MsgBox "シートが保護されているため、行移動できません。", vbExclamation
+        Exit Function
+    End If
+    If ws.FilterMode Or ws.AutoFilterMode Then
+        MsgBox "フィルターが有効な状態では行移動できません。解除してから実行してください。", vbExclamation
+        Exit Function
+    End If
+
+    DebugLogRowMoveEnvironment ws, selectedStartRow, selectedEndRow, blockRows, targetRow, actualInsertRow, lastDataRow
+    ws.Rows(selectedStartRow & ":" & selectedEndRow).Cut
+    ws.Rows(actualInsertRow).Insert Shift:=xlDown
+    Application.CutCopyMode = False
 
     SaveRowMoveUndoState movedStartRow, blockRows, movedSerial
     ws.Rows(movedStartRow & ":" & movedStartRow + blockRows - 1).Select
@@ -702,7 +714,19 @@ Private Sub ConfirmRowMove(ByVal ws As Worksheet)
 
     ' 実データ移動は確定時のみ1回実行
     movedSerial = GetRowMoveUndoSerialValue(ws, gRowMoveStartRow)
-    MoveRowsByStaging ws, gRowMoveStartRow, gRowMoveEndRow, gRowMoveInsertRow
+    If ws.ProtectContents Then
+        MsgBox "シートが保護されているため、行移動できません。", vbExclamation
+        GoTo SafeExit
+    End If
+    If ws.FilterMode Or ws.AutoFilterMode Then
+        MsgBox "フィルターが有効な状態では行移動できません。解除してから実行してください。", vbExclamation
+        GoTo SafeExit
+    End If
+
+    DebugLogRowMoveEnvironment ws, gRowMoveStartRow, gRowMoveEndRow, blockRows, gRowMoveInsertRow, destinationRow, GetLastUsedRow(ws)
+    ws.Rows(gRowMoveStartRow & ":" & gRowMoveEndRow).Cut
+    ws.Rows(destinationRow).Insert Shift:=xlDown
+    Application.CutCopyMode = False
 
     SaveRowMoveUndoState gRowMoveInsertRow, blockRows, movedSerial
 
@@ -724,47 +748,6 @@ ErrorHandler:
 
 End Sub
 
-Private Sub MoveRowsByStaging( _
-    ByVal ws As Worksheet, _
-    ByVal sourceStartRow As Long, _
-    ByVal sourceEndRow As Long, _
-    ByVal requestedInsertRow As Long)
-
-    Dim blockRows As Long
-    Dim insertRowAfterDelete As Long
-    Dim wb As Workbook
-    Dim tempWs As Worksheet
-    Dim oldDisplayAlerts As Boolean
-
-    If ws Is Nothing Then Exit Sub
-    If requestedInsertRow < 2 Then requestedInsertRow = 2
-
-    blockRows = sourceEndRow - sourceStartRow + 1
-    If blockRows <= 0 Then Exit Sub
-
-    insertRowAfterDelete = requestedInsertRow
-    If requestedInsertRow > sourceEndRow Then
-        insertRowAfterDelete = requestedInsertRow - blockRows
-    End If
-    If insertRowAfterDelete < 2 Then insertRowAfterDelete = 2
-
-    Set wb = ws.Parent
-    Set tempWs = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
-    tempWs.Visible = xlSheetVeryHidden
-
-    ws.Rows(sourceStartRow & ":" & sourceEndRow).Copy Destination:=tempWs.Rows(1)
-    ws.Rows(sourceStartRow & ":" & sourceEndRow).Delete Shift:=xlUp
-    ws.Rows(insertRowAfterDelete & ":" & insertRowAfterDelete + blockRows - 1).Insert Shift:=xlDown
-    tempWs.Rows("1:" & blockRows).Copy Destination:=ws.Rows(insertRowAfterDelete)
-
-    oldDisplayAlerts = Application.DisplayAlerts
-    Application.DisplayAlerts = False
-    tempWs.Delete
-    Application.DisplayAlerts = oldDisplayAlerts
-    Application.CutCopyMode = False
-
-End Sub
-
 Private Sub DebugLogRowMoveCalculation( _
     ByVal sourceStartRow As Long, _
     ByVal sourceEndRow As Long, _
@@ -781,6 +764,31 @@ Private Sub DebugLogRowMoveCalculation( _
                 " requestedInsertRow=" & requestedInsertRow & _
                 " actualInsertRow=" & actualInsertRow & _
                 " movedStartRow=" & movedStartRow
+
+End Sub
+
+Private Sub DebugLogRowMoveEnvironment( _
+    ByVal ws As Worksheet, _
+    ByVal sourceStartRow As Long, _
+    ByVal sourceEndRow As Long, _
+    ByVal blockRows As Long, _
+    ByVal targetRow As Long, _
+    ByVal actualInsertRow As Long, _
+    ByVal lastDataRow As Long)
+
+    If Not DEBUG_MODE Then Exit Sub
+    If ws Is Nothing Then Exit Sub
+
+    Debug.Print "[行移動実行直前] sourceStartRow=" & sourceStartRow & _
+                " sourceEndRow=" & sourceEndRow & _
+                " blockRows=" & blockRows & _
+                " targetRow=" & targetRow & _
+                " actualInsertRow=" & actualInsertRow & _
+                " lastDataRow=" & lastDataRow & _
+                " ws.Name=" & ws.Name & _
+                " ProtectContents=" & ws.ProtectContents & _
+                " FilterMode=" & ws.FilterMode & _
+                " AutoFilterMode=" & ws.AutoFilterMode
 
 End Sub
 
@@ -960,8 +968,17 @@ Private Function GetAdjustedDestinationRowForCutInsert( _
     ByVal sourceEndRow As Long, _
     ByVal requestedInsertRow As Long) As Long
 
+    Dim blockRows As Long
+
     If requestedInsertRow < 2 Then requestedInsertRow = 2
-    GetAdjustedDestinationRowForCutInsert = requestedInsertRow
+    blockRows = sourceEndRow - sourceStartRow + 1
+    If blockRows < 1 Then blockRows = 1
+
+    If requestedInsertRow > sourceEndRow Then
+        GetAdjustedDestinationRowForCutInsert = requestedInsertRow + blockRows
+    Else
+        GetAdjustedDestinationRowForCutInsert = requestedInsertRow
+    End If
 
 End Function
 
