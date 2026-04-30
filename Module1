@@ -577,7 +577,7 @@ Private Function ExecuteRowMoveToTargetRow( _
     actualInsertRow = GetAdjustedDestinationRowForCutInsert(selectedStartRow, selectedEndRow, targetRow)
     If actualInsertRow < 2 Then actualInsertRow = 2
 
-    If actualInsertRow >= selectedStartRow And actualInsertRow <= selectedEndRow + 1 Then
+    If targetRow >= selectedStartRow And targetRow <= selectedEndRow + 1 Then
         MsgBox "移動対象範囲内（または直下）には挿入できません。別の行を指定してください。", vbInformation
         Exit Function
     End If
@@ -603,9 +603,7 @@ Private Function ExecuteRowMoveToTargetRow( _
         gRowMoveUndoRowCount = blockRows
     End If
 
-    ws.Rows(selectedStartRow & ":" & selectedEndRow).Cut
-    ws.Rows(actualInsertRow).Insert Shift:=xlDown
-    Application.CutCopyMode = False
+    MoveRowsByStaging ws, selectedStartRow, selectedEndRow, targetRow
 
     SaveRowMoveUndoState movedStartRow, blockRows, movedSerial
     ws.Rows(movedStartRow & ":" & movedStartRow + blockRows - 1).Select
@@ -704,9 +702,7 @@ Private Sub ConfirmRowMove(ByVal ws As Worksheet)
 
     ' 実データ移動は確定時のみ1回実行
     movedSerial = GetRowMoveUndoSerialValue(ws, gRowMoveStartRow)
-    ws.Rows(gRowMoveStartRow & ":" & gRowMoveEndRow).Cut
-    ws.Rows(destinationRow).Insert Shift:=xlDown
-    Application.CutCopyMode = False
+    MoveRowsByStaging ws, gRowMoveStartRow, gRowMoveEndRow, gRowMoveInsertRow
 
     SaveRowMoveUndoState gRowMoveInsertRow, blockRows, movedSerial
 
@@ -725,6 +721,47 @@ ErrorHandler:
     MsgBox "行移動の確定中にエラーが発生しました: " & Err.Description, vbExclamation
     CancelRowMoveModeInternal
     Resume SafeExit
+
+End Sub
+
+Private Sub MoveRowsByStaging( _
+    ByVal ws As Worksheet, _
+    ByVal sourceStartRow As Long, _
+    ByVal sourceEndRow As Long, _
+    ByVal requestedInsertRow As Long)
+
+    Dim blockRows As Long
+    Dim insertRowAfterDelete As Long
+    Dim wb As Workbook
+    Dim tempWs As Worksheet
+    Dim oldDisplayAlerts As Boolean
+
+    If ws Is Nothing Then Exit Sub
+    If requestedInsertRow < 2 Then requestedInsertRow = 2
+
+    blockRows = sourceEndRow - sourceStartRow + 1
+    If blockRows <= 0 Then Exit Sub
+
+    insertRowAfterDelete = requestedInsertRow
+    If requestedInsertRow > sourceEndRow Then
+        insertRowAfterDelete = requestedInsertRow - blockRows
+    End If
+    If insertRowAfterDelete < 2 Then insertRowAfterDelete = 2
+
+    Set wb = ws.Parent
+    Set tempWs = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+    tempWs.Visible = xlSheetVeryHidden
+
+    ws.Rows(sourceStartRow & ":" & sourceEndRow).Copy Destination:=tempWs.Rows(1)
+    ws.Rows(sourceStartRow & ":" & sourceEndRow).Delete Shift:=xlUp
+    ws.Rows(insertRowAfterDelete & ":" & insertRowAfterDelete + blockRows - 1).Insert Shift:=xlDown
+    tempWs.Rows("1:" & blockRows).Copy Destination:=ws.Rows(insertRowAfterDelete)
+
+    oldDisplayAlerts = Application.DisplayAlerts
+    Application.DisplayAlerts = False
+    tempWs.Delete
+    Application.DisplayAlerts = oldDisplayAlerts
+    Application.CutCopyMode = False
 
 End Sub
 
@@ -923,17 +960,8 @@ Private Function GetAdjustedDestinationRowForCutInsert( _
     ByVal sourceEndRow As Long, _
     ByVal requestedInsertRow As Long) As Long
 
-    Dim blockRows As Long
-
     If requestedInsertRow < 2 Then requestedInsertRow = 2
-    blockRows = sourceEndRow - sourceStartRow + 1
-    If blockRows < 1 Then blockRows = 1
-
-    If requestedInsertRow > sourceEndRow Then
-        GetAdjustedDestinationRowForCutInsert = requestedInsertRow + blockRows
-    Else
-        GetAdjustedDestinationRowForCutInsert = requestedInsertRow
-    End If
+    GetAdjustedDestinationRowForCutInsert = requestedInsertRow
 
 End Function
 
