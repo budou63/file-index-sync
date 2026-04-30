@@ -954,16 +954,20 @@ Private Sub ClearRowMoveInsertionMarker(ByVal ws As Worksheet)
         Set targetCell = ws.Cells(gRowMoveMarkerRow, c)
         Set edgeTop = targetCell.Borders(xlEdgeTop)
         edgeTop.LineStyle = gRowMoveMarkerLineStyle(c)
-        edgeTop.Weight = gRowMoveMarkerWeight(c)
-        edgeTop.Color = gRowMoveMarkerColor(c)
-        edgeTop.ColorIndex = gRowMoveMarkerColorIndex(c)
+        If edgeTop.LineStyle <> xlLineStyleNone Then
+            edgeTop.Weight = gRowMoveMarkerWeight(c)
+            edgeTop.Color = gRowMoveMarkerColor(c)
+            edgeTop.ColorIndex = gRowMoveMarkerColorIndex(c)
+        End If
 
         Set targetCell = ws.Cells(gRowMoveMarkerRow - 1, c)
         Set edgeBottom = targetCell.Borders(xlEdgeBottom)
         edgeBottom.LineStyle = gRowMoveMarkerBottomLineStyle(c)
-        edgeBottom.Weight = gRowMoveMarkerBottomWeight(c)
-        edgeBottom.Color = gRowMoveMarkerBottomColor(c)
-        edgeBottom.ColorIndex = gRowMoveMarkerBottomColorIndex(c)
+        If edgeBottom.LineStyle <> xlLineStyleNone Then
+            edgeBottom.Weight = gRowMoveMarkerBottomWeight(c)
+            edgeBottom.Color = gRowMoveMarkerBottomColor(c)
+            edgeBottom.ColorIndex = gRowMoveMarkerBottomColorIndex(c)
+        End If
     Next c
 
     Erase gRowMoveMarkerLineStyle
