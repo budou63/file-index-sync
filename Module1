@@ -549,7 +549,7 @@ Private Function ExecuteRowMoveToTargetRow( _
 
     Dim blockRows As Long
     Dim movedStartRow As Long
-    Dim insertRow As Long
+    Dim actualInsertRow As Long
     Dim movedSerial As String
     Dim lastDataRow As Long
     Dim maxTargetRow As Long
@@ -574,11 +574,16 @@ Private Function ExecuteRowMoveToTargetRow( _
         Exit Function
     End If
 
-    movedStartRow = targetRow
-    insertRow = targetRow
-    If targetRow > selectedEndRow Then
-        insertRow = targetRow + blockRows
+    actualInsertRow = GetAdjustedDestinationRowForCutInsert(selectedStartRow, selectedEndRow, targetRow)
+    If actualInsertRow < 2 Then actualInsertRow = 2
+
+    If targetRow >= selectedStartRow And targetRow <= selectedEndRow + 1 Then
+        MsgBox "移動対象範囲内（または直下）には挿入できません。別の行を指定してください。", vbInformation
+        Exit Function
     End If
+
+    movedStartRow = targetRow
+    DebugLogRowMoveCalculation selectedStartRow, selectedEndRow, blockRows, targetRow, actualInsertRow, movedStartRow
 
     If gRowMoveUndoAvailable Then
         If Not (selectedStartRow = gRowMoveUndoMovedStartRow And selectedEndRow = gRowMoveUndoMovedEndRow) Then
@@ -598,8 +603,19 @@ Private Function ExecuteRowMoveToTargetRow( _
         gRowMoveUndoRowCount = blockRows
     End If
 
+    If ws.ProtectContents Then
+        MsgBox "シートが保護されているため行移動できません。", vbExclamation
+        Exit Function
+    End If
+    If ws.FilterMode Then
+        MsgBox "現在、フィルターで絞り込み中です。絞り込みを解除してから行移動してください。", vbExclamation
+        Exit Function
+    End If
+
+    DebugLogRowMoveExecutionContext ws, selectedStartRow, selectedEndRow, blockRows, targetRow, actualInsertRow, lastDataRow
+
     ws.Rows(selectedStartRow & ":" & selectedEndRow).Cut
-    ws.Rows(insertRow).Insert Shift:=xlDown
+    ws.Rows(actualInsertRow).Insert Shift:=xlDown
     Application.CutCopyMode = False
 
     SaveRowMoveUndoState movedStartRow, blockRows, movedSerial
@@ -691,25 +707,33 @@ Private Sub ConfirmRowMove(ByVal ws As Worksheet)
         GoTo SafeExit
     End If
 
-    If gRowMoveInsertRow > gRowMoveEndRow + 1 Then
-        destinationRow = gRowMoveInsertRow - blockRows
-    Else
-        destinationRow = gRowMoveInsertRow
-    End If
-
+    destinationRow = GetAdjustedDestinationRowForCutInsert(gRowMoveStartRow, gRowMoveEndRow, gRowMoveInsertRow)
     If destinationRow < 2 Then destinationRow = 2
+    DebugLogRowMoveCalculation gRowMoveStartRow, gRowMoveEndRow, blockRows, gRowMoveInsertRow, destinationRow, gRowMoveInsertRow
 
     ClearRowMoveInsertionMarker ws
 
     ' 実データ移動は確定時のみ1回実行
     movedSerial = GetRowMoveUndoSerialValue(ws, gRowMoveStartRow)
+
+    If ws.ProtectContents Then
+        MsgBox "シートが保護されているため行移動できません。", vbExclamation
+        GoTo SafeExit
+    End If
+    If ws.FilterMode Then
+        MsgBox "現在、フィルターで絞り込み中です。絞り込みを解除してから行移動してください。", vbExclamation
+        GoTo SafeExit
+    End If
+
+    DebugLogRowMoveExecutionContext ws, gRowMoveStartRow, gRowMoveEndRow, blockRows, gRowMoveInsertRow, destinationRow, GetLastUsedRow(ws)
+
     ws.Rows(gRowMoveStartRow & ":" & gRowMoveEndRow).Cut
     ws.Rows(destinationRow).Insert Shift:=xlDown
     Application.CutCopyMode = False
 
-    SaveRowMoveUndoState destinationRow, blockRows, movedSerial
+    SaveRowMoveUndoState gRowMoveInsertRow, blockRows, movedSerial
 
-    ws.Rows(destinationRow & ":" & destinationRow + blockRows - 1).Select
+    ws.Rows(gRowMoveInsertRow & ":" & gRowMoveInsertRow + blockRows - 1).Select
 
     CancelRowMoveModeInternal
     Call 後処理_行移動後
@@ -724,6 +748,50 @@ ErrorHandler:
     MsgBox "行移動の確定中にエラーが発生しました: " & Err.Description, vbExclamation
     CancelRowMoveModeInternal
     Resume SafeExit
+
+End Sub
+
+Private Sub DebugLogRowMoveCalculation( _
+    ByVal sourceStartRow As Long, _
+    ByVal sourceEndRow As Long, _
+    ByVal blockRows As Long, _
+    ByVal requestedInsertRow As Long, _
+    ByVal actualInsertRow As Long, _
+    ByVal movedStartRow As Long)
+
+    If Not DEBUG_MODE Then Exit Sub
+
+    Debug.Print "[行移動計算] sourceStartRow=" & sourceStartRow & _
+                " sourceEndRow=" & sourceEndRow & _
+                " blockRows=" & blockRows & _
+                " requestedInsertRow=" & requestedInsertRow & _
+                " actualInsertRow=" & actualInsertRow & _
+                " movedStartRow=" & movedStartRow
+
+End Sub
+
+Private Sub DebugLogRowMoveExecutionContext( _
+    ByVal ws As Worksheet, _
+    ByVal sourceStartRow As Long, _
+    ByVal sourceEndRow As Long, _
+    ByVal blockRows As Long, _
+    ByVal targetRow As Long, _
+    ByVal actualInsertRow As Long, _
+    ByVal lastDataRow As Long)
+
+    If Not DEBUG_MODE Then Exit Sub
+    If ws Is Nothing Then Exit Sub
+
+    Debug.Print "[行移動実行前] sourceStartRow=" & sourceStartRow & _
+                " sourceEndRow=" & sourceEndRow & _
+                " blockRows=" & blockRows & _
+                " targetRow=" & targetRow & _
+                " actualInsertRow=" & actualInsertRow & _
+                " lastDataRow=" & lastDataRow & _
+                " ws.Name=" & ws.Name & _
+                " ws.ProtectContents=" & ws.ProtectContents & _
+                " ws.FilterMode=" & ws.FilterMode & _
+                " ws.AutoFilterMode=" & ws.AutoFilterMode
 
 End Sub
 
@@ -890,11 +958,30 @@ End Function
 Private Sub UpdateRowMoveStatusBar()
 
     If gRowMoveModeActive Then
-        Application.StatusBar = "行移動モード中: " & gRowMoveInsertRow & "行目の上へ挿入予定（対象: " & _
+        Application.StatusBar = "行移動モード中: 現在の " & gRowMoveInsertRow & " 行目の上へ挿入予定（対象: " & _
                                gRowMoveStartRow & "～" & gRowMoveEndRow & "行）"
     End If
 
 End Sub
+
+Private Function GetAdjustedDestinationRowForCutInsert( _
+    ByVal sourceStartRow As Long, _
+    ByVal sourceEndRow As Long, _
+    ByVal requestedInsertRow As Long) As Long
+
+    Dim blockRows As Long
+
+    If requestedInsertRow < 2 Then requestedInsertRow = 2
+    blockRows = sourceEndRow - sourceStartRow + 1
+    If blockRows < 1 Then blockRows = 1
+
+    If requestedInsertRow > sourceEndRow Then
+        GetAdjustedDestinationRowForCutInsert = requestedInsertRow + blockRows - 1
+    Else
+        GetAdjustedDestinationRowForCutInsert = requestedInsertRow
+    End If
+
+End Function
 
 Private Sub SyncFrmSealMoveButtonsIfLoaded()
 
@@ -6070,6 +6157,8 @@ Public Sub 旧基準表_継続文書移行()
 
     Dim i As Long
     Dim movedCount As Long
+    Dim existingFolderKeys As Object
+    Dim folderKey As String
 
     On Error GoTo ErrorHandler
 
@@ -6166,6 +6255,22 @@ Public Sub 旧基準表_継続文書移行()
     grouped.CompareMode = vbTextCompare
     Set keyOrder = New Collection
 
+    Set existingFolderKeys = CreateObject("Scripting.Dictionary")
+    existingFolderKeys.CompareMode = vbBinaryCompare
+
+    Dim newLastRow As Long
+    Dim rr As Long
+    newLastRow = wsNew.Cells(wsNew.Rows.Count, 1).End(xlUp).Row
+    For rr = newHeaderRow + 1 To newLastRow
+        folderKey = BuildFolderCompareKey_Mig( _
+            GetRawCellMerged(wsNew, rr, newColClass2), _
+            GetRawCellMerged(wsNew, rr, newColClass3), _
+            GetRawCellMerged(wsNew, rr, newColTitle))
+        If folderKey <> "||" Then
+            If Not existingFolderKeys.Exists(folderKey) Then existingFolderKeys.Add folderKey, True
+        End If
+    Next rr
+
     For i = 1 To rowCount
         If i <= 10 Then
             Debug.Print "Row=" & (oldDataStartRow + i - 1) & _
@@ -6188,9 +6293,18 @@ Public Sub 旧基準表_継続文書移行()
             ' - 年度 -> 作成年度（和暦）
             ' - 個別フォルダー -> タイトル
             ' - 媒体 -> 媒体種別
+            folderKey = BuildFolderCompareKey_Mig(CStr(oldData(i, oldColGuide1)), CStr(oldData(i, oldColGuide2)), CStr(oldData(i, oldColKobetsu)))
+            If folderKey <> "||" Then
+                If existingFolderKeys.Exists(folderKey) Then
+                    GoTo NextRowMigImport
+                End If
+                existingFolderKeys(folderKey) = True
+            End If
+
             rec = Array(CStr(oldData(i, oldColGuide1)), CStr(oldData(i, oldColColor1)), CStr(oldData(i, oldColGuide2)), CStr(oldData(i, oldColColor2)), CStr(oldData(i, oldColNendo)), CStr(oldData(i, oldColKobetsu)), Trim$(CStr(oldData(i, oldColMedia))))
             grouped(groupKey).Add rec
         End If
+NextRowMigImport:
     Next i
 
     DebugPrintNewYearSample_Mig wsNew, newHeaderRow + 1, newColWareki, 10
@@ -6401,6 +6515,37 @@ Private Function NormalizeWarekiYear_Mig(ByVal rawValue As Variant) As String
     Loop
 
     NormalizeWarekiYear_Mig = "R" & n
+
+End Function
+
+
+Private Function BuildFolderCompareKey_Mig(ByVal class2Value As String, ByVal class3Value As String, ByVal titleValue As String) As String
+    BuildFolderCompareKey_Mig = NormalizeFolderCompareText_Mig(class2Value) & "|" & _
+                              NormalizeFolderCompareText_Mig(class3Value) & "|" & _
+                              NormalizeFolderCompareText_Mig(titleValue)
+End Function
+
+Private Function NormalizeFolderCompareText_Mig(ByVal valueText As String) As String
+
+    Dim s As String
+
+    s = CStr(valueText)
+    s = StrConv(s, vbNarrow)
+    s = Replace(s, "（", "(")
+    s = Replace(s, "）", ")")
+
+    s = Replace(s, vbCrLf, " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, ChrW(&H3000), " ")
+    s = Trim$(s)
+
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+
+    NormalizeFolderCompareText_Mig = s
 
 End Function
 
