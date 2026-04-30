@@ -6070,6 +6070,8 @@ Public Sub 旧基準表_継続文書移行()
 
     Dim i As Long
     Dim movedCount As Long
+    Dim existingFolderKeys As Object
+    Dim folderKey As String
 
     On Error GoTo ErrorHandler
 
@@ -6166,6 +6168,22 @@ Public Sub 旧基準表_継続文書移行()
     grouped.CompareMode = vbTextCompare
     Set keyOrder = New Collection
 
+    Set existingFolderKeys = CreateObject("Scripting.Dictionary")
+    existingFolderKeys.CompareMode = vbBinaryCompare
+
+    Dim newLastRow As Long
+    Dim rr As Long
+    newLastRow = wsNew.Cells(wsNew.Rows.Count, 1).End(xlUp).Row
+    For rr = newHeaderRow + 1 To newLastRow
+        folderKey = BuildFolderCompareKey_Mig( _
+            GetRawCellMerged(wsNew, rr, newColClass2), _
+            GetRawCellMerged(wsNew, rr, newColClass3), _
+            GetRawCellMerged(wsNew, rr, newColTitle))
+        If folderKey <> "||" Then
+            If Not existingFolderKeys.Exists(folderKey) Then existingFolderKeys.Add folderKey, True
+        End If
+    Next rr
+
     For i = 1 To rowCount
         If i <= 10 Then
             Debug.Print "Row=" & (oldDataStartRow + i - 1) & _
@@ -6188,9 +6206,18 @@ Public Sub 旧基準表_継続文書移行()
             ' - 年度 -> 作成年度（和暦）
             ' - 個別フォルダー -> タイトル
             ' - 媒体 -> 媒体種別
+            folderKey = BuildFolderCompareKey_Mig(CStr(oldData(i, oldColGuide1)), CStr(oldData(i, oldColGuide2)), CStr(oldData(i, oldColKobetsu)))
+            If folderKey <> "||" Then
+                If existingFolderKeys.Exists(folderKey) Then
+                    GoTo NextRowMigImport
+                End If
+                existingFolderKeys(folderKey) = True
+            End If
+
             rec = Array(CStr(oldData(i, oldColGuide1)), CStr(oldData(i, oldColColor1)), CStr(oldData(i, oldColGuide2)), CStr(oldData(i, oldColColor2)), CStr(oldData(i, oldColNendo)), CStr(oldData(i, oldColKobetsu)), Trim$(CStr(oldData(i, oldColMedia))))
             grouped(groupKey).Add rec
         End If
+NextRowMigImport:
     Next i
 
     DebugPrintNewYearSample_Mig wsNew, newHeaderRow + 1, newColWareki, 10
@@ -6401,6 +6428,37 @@ Private Function NormalizeWarekiYear_Mig(ByVal rawValue As Variant) As String
     Loop
 
     NormalizeWarekiYear_Mig = "R" & n
+
+End Function
+
+
+Private Function BuildFolderCompareKey_Mig(ByVal class2Value As String, ByVal class3Value As String, ByVal titleValue As String) As String
+    BuildFolderCompareKey_Mig = NormalizeFolderCompareText_Mig(class2Value) & "|" & _
+                              NormalizeFolderCompareText_Mig(class3Value) & "|" & _
+                              NormalizeFolderCompareText_Mig(titleValue)
+End Function
+
+Private Function NormalizeFolderCompareText_Mig(ByVal valueText As String) As String
+
+    Dim s As String
+
+    s = CStr(valueText)
+    s = StrConv(s, vbNarrow)
+    s = Replace(s, "（", "(")
+    s = Replace(s, "）", ")")
+
+    s = Replace(s, vbCrLf, " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, ChrW(&H3000), " ")
+    s = Trim$(s)
+
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+
+    NormalizeFolderCompareText_Mig = s
 
 End Function
 
