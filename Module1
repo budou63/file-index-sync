@@ -583,6 +583,7 @@ Private Function ExecuteRowMoveToTargetRow( _
     End If
 
     movedStartRow = targetRow
+    DebugLogRowMoveCalculation selectedStartRow, selectedEndRow, blockRows, targetRow, actualInsertRow, movedStartRow
 
     If gRowMoveUndoAvailable Then
         If Not (selectedStartRow = gRowMoveUndoMovedStartRow And selectedEndRow = gRowMoveUndoMovedEndRow) Then
@@ -697,6 +698,7 @@ Private Sub ConfirmRowMove(ByVal ws As Worksheet)
 
     destinationRow = GetAdjustedDestinationRowForCutInsert(gRowMoveStartRow, gRowMoveEndRow, gRowMoveInsertRow)
     If destinationRow < 2 Then destinationRow = 2
+    DebugLogRowMoveCalculation gRowMoveStartRow, gRowMoveEndRow, blockRows, gRowMoveInsertRow, destinationRow, gRowMoveInsertRow
 
     ClearRowMoveInsertionMarker ws
 
@@ -723,6 +725,25 @@ ErrorHandler:
     MsgBox "行移動の確定中にエラーが発生しました: " & Err.Description, vbExclamation
     CancelRowMoveModeInternal
     Resume SafeExit
+
+End Sub
+
+Private Sub DebugLogRowMoveCalculation( _
+    ByVal sourceStartRow As Long, _
+    ByVal sourceEndRow As Long, _
+    ByVal blockRows As Long, _
+    ByVal requestedInsertRow As Long, _
+    ByVal actualInsertRow As Long, _
+    ByVal movedStartRow As Long)
+
+    If Not DEBUG_MODE Then Exit Sub
+
+    Debug.Print "[行移動計算] sourceStartRow=" & sourceStartRow & _
+                " sourceEndRow=" & sourceEndRow & _
+                " blockRows=" & blockRows & _
+                " requestedInsertRow=" & requestedInsertRow & _
+                " actualInsertRow=" & actualInsertRow & _
+                " movedStartRow=" & movedStartRow
 
 End Sub
 
