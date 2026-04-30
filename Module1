@@ -549,7 +549,7 @@ Private Function ExecuteRowMoveToTargetRow( _
 
     Dim blockRows As Long
     Dim movedStartRow As Long
-    Dim insertRow As Long
+    Dim actualInsertRow As Long
     Dim movedSerial As String
     Dim lastDataRow As Long
     Dim maxTargetRow As Long
@@ -574,11 +574,15 @@ Private Function ExecuteRowMoveToTargetRow( _
         Exit Function
     End If
 
-    movedStartRow = targetRow
-    insertRow = targetRow
-    If targetRow > selectedEndRow Then
-        insertRow = targetRow + blockRows
+    actualInsertRow = GetAdjustedDestinationRowForCutInsert(selectedStartRow, selectedEndRow, targetRow)
+    If actualInsertRow < 2 Then actualInsertRow = 2
+
+    If actualInsertRow >= selectedStartRow And actualInsertRow <= selectedEndRow + 1 Then
+        MsgBox "移動対象範囲内（または直下）には挿入できません。別の行を指定してください。", vbInformation
+        Exit Function
     End If
+
+    movedStartRow = actualInsertRow
 
     If gRowMoveUndoAvailable Then
         If Not (selectedStartRow = gRowMoveUndoMovedStartRow And selectedEndRow = gRowMoveUndoMovedEndRow) Then
@@ -599,7 +603,7 @@ Private Function ExecuteRowMoveToTargetRow( _
     End If
 
     ws.Rows(selectedStartRow & ":" & selectedEndRow).Cut
-    ws.Rows(insertRow).Insert Shift:=xlDown
+    ws.Rows(actualInsertRow).Insert Shift:=xlDown
     Application.CutCopyMode = False
 
     SaveRowMoveUndoState movedStartRow, blockRows, movedSerial
@@ -691,12 +695,7 @@ Private Sub ConfirmRowMove(ByVal ws As Worksheet)
         GoTo SafeExit
     End If
 
-    If gRowMoveInsertRow > gRowMoveEndRow + 1 Then
-        destinationRow = gRowMoveInsertRow - blockRows
-    Else
-        destinationRow = gRowMoveInsertRow
-    End If
-
+    destinationRow = GetAdjustedDestinationRowForCutInsert(gRowMoveStartRow, gRowMoveEndRow, gRowMoveInsertRow)
     If destinationRow < 2 Then destinationRow = 2
 
     ClearRowMoveInsertionMarker ws
@@ -889,12 +888,45 @@ End Function
 
 Private Sub UpdateRowMoveStatusBar()
 
+    Dim adjustedInsertRow As Long
+
     If gRowMoveModeActive Then
-        Application.StatusBar = "行移動モード中: " & gRowMoveInsertRow & "行目の上へ挿入予定（対象: " & _
+        adjustedInsertRow = GetAdjustedDestinationRowForCutInsert(gRowMoveStartRow, gRowMoveEndRow, gRowMoveInsertRow)
+        If adjustedInsertRow < 2 Then adjustedInsertRow = 2
+        Application.StatusBar = "行移動モード中: 現在の" & gRowMoveInsertRow & "行目の上へ挿入予定 / " & _
+                               "確定後の実挿入行: " & adjustedInsertRow & "行目（対象: " & _
                                gRowMoveStartRow & "～" & gRowMoveEndRow & "行）"
     End If
 
 End Sub
+
+Private Function GetAdjustedDestinationRowForCutInsert( _
+    ByVal sourceStartRow As Long, _
+    ByVal sourceEndRow As Long, _
+    ByVal requestedInsertRow As Long) As Long
+
+    Dim blockRows As Long
+
+    If requestedInsertRow < 2 Then requestedInsertRow = 2
+    If sourceStartRow < 2 Then sourceStartRow = 2
+    If sourceEndRow < sourceStartRow Then
+        GetAdjustedDestinationRowForCutInsert = requestedInsertRow
+        Exit Function
+    End If
+
+    blockRows = sourceEndRow - sourceStartRow + 1
+    If blockRows <= 0 Then
+        GetAdjustedDestinationRowForCutInsert = requestedInsertRow
+        Exit Function
+    End If
+
+    If requestedInsertRow > sourceEndRow Then
+        GetAdjustedDestinationRowForCutInsert = requestedInsertRow - blockRows
+    Else
+        GetAdjustedDestinationRowForCutInsert = requestedInsertRow
+    End If
+
+End Function
 
 Private Sub SyncFrmSealMoveButtonsIfLoaded()
 
