@@ -996,6 +996,8 @@ End Function
 
 Private Sub UpdateRowMoveStatusBar()
 
+    Dim adjustedInsertRow As Long
+
     If gRowMoveModeActive Then
         Application.StatusBar = "行移動モード中: 現在の " & gRowMoveInsertRow & " 行目の上へ挿入予定（対象: " & _
                                gRowMoveStartRow & "～" & gRowMoveEndRow & "行）"
