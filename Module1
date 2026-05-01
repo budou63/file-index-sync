@@ -1949,6 +1949,110 @@ ErrorHandler:
 
 End Sub
 
+Public Sub 重複フォルダ候補をマーキング()
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim oldCalculation As XlCalculation
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim colClass2 As Long
+    Dim colClass3 As Long
+    Dim colTitle As Long
+    Dim r As Long
+    Dim markColor As Long
+    Dim key As Variant
+    Dim rowKey As String
+    Dim dictRowsByKey As Object
+    Dim rowList As Collection
+    Dim duplicateGroupCount As Long
+    Dim markedRowCount As Long
+    Dim class2Arr As Variant
+    Dim class3Arr As Variant
+    Dim titleArr As Variant
+    Dim targetRng As Range
+    Dim cell As Range
+    Dim i As Long
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    oldCalculation = Application.Calculation
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+
+    If lastRow < 2 Or lastCol < 1 Then
+        MsgBox "新ファイル基準表に対象データがありません。", vbInformation
+        GoTo SafeExit
+    End If
+
+    colClass2 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名２"))
+    colClass3 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名３"))
+    colTitle = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("タイトル"))
+
+    If colClass2 = 0 Or colClass3 = 0 Or colTitle = 0 Then
+        Err.Raise vbObjectError + 2401, , "新ファイル基準表の必要列（分類名２/分類名３/タイトル）が見つかりません。"
+    End If
+
+    markColor = RGB(255, 242, 204) ' 薄い黄色（既存ルールと衝突しにくい色）
+
+    ' 前回このマクロで付与した色だけをクリア
+    Set targetRng = ws.Range(ws.Cells(2, colTitle), ws.Cells(lastRow, colTitle))
+    For Each cell In targetRng.Cells
+        If cell.Interior.Color = markColor Then
+            cell.Interior.Pattern = xlPatternNone
+        End If
+    Next cell
+
+    class2Arr = ws.Range(ws.Cells(2, colClass2), ws.Cells(lastRow, colClass2)).Value2
+    class3Arr = ws.Range(ws.Cells(2, colClass3), ws.Cells(lastRow, colClass3)).Value2
+    titleArr = ws.Range(ws.Cells(2, colTitle), ws.Cells(lastRow, colTitle)).Value2
+    Set dictRowsByKey = CreateObject("Scripting.Dictionary")
+
+    For r = 1 To UBound(titleArr, 1)
+        rowKey = BuildDuplicateFolderKey(class2Arr(r, 1), class3Arr(r, 1), titleArr(r, 1))
+        If Len(rowKey) > 0 Then
+            If Not dictRowsByKey.Exists(rowKey) Then
+                Set rowList = New Collection
+                dictRowsByKey.Add rowKey, rowList
+            End If
+            dictRowsByKey(rowKey).Add r + 1
+        End If
+    Next r
+
+    For Each key In dictRowsByKey.Keys
+        Set rowList = dictRowsByKey(key)
+        If rowList.Count >= 2 Then
+            duplicateGroupCount = duplicateGroupCount + 1
+            markedRowCount = markedRowCount + rowList.Count
+            For i = 1 To rowList.Count
+                ws.Cells(CLng(rowList(i)), colTitle).Interior.Color = markColor
+            Next i
+        End If
+    Next key
+
+    MsgBox "重複候補の確認が完了しました。重複グループ数：" & duplicateGroupCount & "件、対象行数：" & markedRowCount & "行", vbInformation
+
+SafeExit:
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Application.Calculation = oldCalculation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "重複フォルダ候補のマーキング中にエラーが発生しました: " & Err.Description, vbExclamation
+    Resume SafeExit
+
+End Sub
+
 Private Function EnsureCsvExtension(ByVal path As String) As String
 
     If LCase$(Right$(Trim$(path), 4)) <> ".csv" Then
@@ -1988,7 +2092,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim isKeyBlank As Boolean
     Dim bikoColEdit As Long
     Dim bikoVal As String
-    Dim skippedMacroInsertCount As Long
+    Dim excludedMacroInsertCount As Long
 
     On Error GoTo ErrorHandler
 
@@ -2095,10 +2199,10 @@ Public Sub 手順4_差分インポートCSVを作成する()
     For r = 2 To editLastRow
         ' 備考列が存在し、値が「マクロ差込」の行は差分判定対象外
         If bikoColEdit > 0 Then
-            bikoVal = Trim(CStr(wsEdit.Cells(r, bikoColEdit).Value))
+            bikoVal = NormalizeCellValue(wsEdit.Cells(r, bikoColEdit).Value)
             If bikoVal = "マクロ差込" Then
-                skippedMacroInsertCount = skippedMacroInsertCount + 1
-                Debug.Print "行" & r & " は備考=マクロ差込 のためスキップ"
+                excludedMacroInsertCount = excludedMacroInsertCount + 1
+                Debug.Print "行" & r & " は備考=マクロ差込 のため差分抽出対象外"
                 GoTo ContinueNextEditRow
             End If
         End If
@@ -2169,9 +2273,8 @@ ContinueNextEditRow:
     End With
     wsOut.Columns(1).Resize(, UBound(fixedHeaders) - LBound(fixedHeaders) + 1).EntireColumn.AutoFit
 
-    MsgBox "差分インポートCSV の作成が完了しました。" & vbCrLf & _
-           "出力件数: " & outRow - 2 & " 件" & vbCrLf & _
-           "備考=マクロ差込 のスキップ件数: " & skippedMacroInsertCount & " 件", vbInformation
+    MsgBox "差分抽出が完了しました。" & vbCrLf & _
+           "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & "件", vbInformation
 
 SafeExit:
     Application.ScreenUpdating = True
@@ -2267,6 +2370,28 @@ Private Function BuildHeaderBasedKey(ByVal yearValue As String, ByVal titleValue
 
 End Function
 
+
+Private Function NormalizeCellValue(ByVal v As Variant) As String
+
+    Dim s As String
+
+    If IsError(v) Or IsNull(v) Or IsEmpty(v) Then
+        NormalizeCellValue = ""
+        Exit Function
+    End If
+
+    s = CStr(v)
+    s = Replace(s, vbCrLf, " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, ChrW(&H3000), " ")
+    s = CollapseSpaces(s)
+
+    NormalizeCellValue = Trim$(s)
+
+End Function
+
 Private Function NormalizeForDiffCompare(ByVal v As Variant) As String
 
     Dim s As String
@@ -2305,6 +2430,82 @@ Private Function NormalizeForDiffCompare(ByVal v As Variant) As String
     s = CollapseSpaces(s)
 
     NormalizeForDiffCompare = Trim$(s)
+
+End Function
+
+Private Function BuildDuplicateFolderKey(ByVal class2Value As Variant, ByVal class3Value As Variant, ByVal titleValue As Variant) As String
+
+    Dim nClass2 As String
+    Dim nClass3 As String
+    Dim nTitle As String
+
+    nClass2 = NormalizeForDuplicateKey(class2Value)
+    nClass3 = NormalizeForDuplicateKey(class3Value)
+    nTitle = NormalizeForDuplicateKey(titleValue)
+
+    BuildDuplicateFolderKey = nClass2 & "|" & nClass3 & "|" & nTitle
+    If Replace(BuildDuplicateFolderKey, "|", "") = "" Then
+        BuildDuplicateFolderKey = ""
+    End If
+
+End Function
+
+Private Function NormalizeForDuplicateKey(ByVal v As Variant) As String
+
+    Dim s As String
+
+    If IsError(v) Or IsNull(v) Or IsEmpty(v) Then
+        NormalizeForDuplicateKey = ""
+        Exit Function
+    End If
+
+    s = CStr(v)
+    s = Application.WorksheetFunction.Clean(s)
+    s = Replace(s, vbCrLf, " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, ChrW(&H3000), " ")
+    s = Replace(s, "（", "(")
+    s = Replace(s, "）", ")")
+    s = Replace(s, "／", "/")
+    s = Replace(s, "・", "/")
+    s = NormalizeHyphenChars(s)
+
+    On Error Resume Next
+    s = StrConv(s, vbWide) ' 半角カタカナを全角へ寄せる
+    On Error GoTo 0
+
+    s = ConvertZenkakuAlnumToHankaku(s) ' 全角英数字は半角へ
+    s = LCase$(s)
+    s = CollapseSpaces(s)
+    s = Replace(s, " ", "")
+
+    NormalizeForDuplicateKey = Trim$(s)
+
+End Function
+
+Private Function ConvertZenkakuAlnumToHankaku(ByVal s As String) As String
+
+    Dim i As Long
+    Dim ch As String
+    Dim codePoint As Long
+    Dim outText As String
+
+    outText = ""
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        codePoint = AscW(ch)
+
+        Select Case codePoint
+            Case &HFF10 To &HFF19, &HFF21 To &HFF3A, &HFF41 To &HFF5A
+                outText = outText & ChrW(codePoint - &HFEE0)
+            Case Else
+                outText = outText & ch
+        End Select
+    Next i
+
+    ConvertZenkakuAlnumToHankaku = outText
 
 End Function
 
