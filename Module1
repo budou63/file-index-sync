@@ -1590,7 +1590,10 @@ Private Sub ApplyAnnualFolderNameCorrections( _
 
             If corrected Then
                 ws.Cells(rowNo, colNo).Value = correctedValue
+                ws.Cells(rowNo, colNo).Font.Color = RGB(255, 0, 0)
                 rowChanged = True
+            Else
+                ws.Cells(rowNo, colNo).Font.ColorIndex = xlColorIndexAutomatic
             End If
 
             If needsReview Then
@@ -1606,10 +1609,13 @@ Private Sub ApplyAnnualFolderNameCorrections( _
         If rowNeedsReview Then
             reviewCount = reviewCount + 1
             ws.Cells(rowNo, reviewCol).Value = "要確認" & IIf(Len(reviewReasons) > 0, "（" & reviewReasons & "）", "")
+            ws.Cells(rowNo, reviewCol).Font.Color = RGB(255, 0, 0)
         ElseIf rowChanged Then
             ws.Cells(rowNo, reviewCol).Value = "補正済"
+            ws.Cells(rowNo, reviewCol).Font.ColorIndex = xlColorIndexAutomatic
         Else
             ws.Cells(rowNo, reviewCol).ClearContents
+            ws.Cells(rowNo, reviewCol).Font.ColorIndex = xlColorIndexAutomatic
         End If
 
 ContinueNextRow:
