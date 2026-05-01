@@ -8,6 +8,10 @@ Private Const DEBUG_MODE As Boolean = False
 ' 高速化対応: 差分更新時のコメント/強調を既定で無効化
 Private Const ENABLE_UPDATE_COMMENT As Boolean = False
 Private Const ENABLE_UPDATE_HIGHLIGHT As Boolean = False
+Private Const DUP_CHECK_ORIGINAL_ORDER_HEADER As String = "重複確認用_元順序"
+Private Const DUP_CHECK_TEMP_KEY_HEADER As String = "__重複確認キー_TMP__"
+Private Const DUP_CHECK_TEMP_FLAG_HEADER As String = "__重複確認フラグ_TMP__"
+Private Const DUP_CHECK_MARK_COLOR As Long = 15925247 ' RGB(255,242,204)
 
 '========================================================
 ' 新ファイル基準表: 行移動モード（▲/▼で挿入予定位置のみ移動）
@@ -76,6 +80,200 @@ Cleanup:
     Application.EnableEvents = oldEnableEvents
     Application.Calculation = oldCalculation
 
+End Sub
+
+Public Sub 重複確認モードを開始する()
+
+    ExecuteDuplicateCheckMode True
+
+End Sub
+
+Public Sub 重複確認モードを完了する()
+
+    ExecuteDuplicateCheckMode False
+
+End Sub
+
+Private Sub ExecuteDuplicateCheckMode(ByVal isStartMode As Boolean)
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim oldCalculation As XlCalculation
+    Dim ws As Worksheet
+    Dim lastRow As Long, lastCol As Long
+    Dim colTitle As Long, colClass2 As Long, colClass3 As Long, colSerial As Long
+    Dim colOriginalOrder As Long, colTempKey As Long, colTempFlag As Long
+    Dim keyCounts As Object
+    Dim class2Arr As Variant, class3Arr As Variant, titleArr As Variant
+    Dim keyArr() As Variant, dupArr() As Variant, originalOrderArr() As Variant
+    Dim r As Long, markedRowCount As Long, duplicateGroupCount As Long
+    Dim rowKey As String, key As Variant
+    Dim prevAutoFilterMode As Boolean
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    oldCalculation = Application.Calculation
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+    If lastRow < 2 Then GoTo SafeExit
+
+    colTitle = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("タイトル"))
+    colClass2 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名２"))
+    colClass3 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名３"))
+    colSerial = FindHeaderColumn(ws, lastCol, Array("通し番号"))
+    If colTitle = 0 Or colClass2 = 0 Or colClass3 = 0 Then
+        Err.Raise vbObjectError + 2410, , "重複確認に必要な列（分類名２/分類名３/タイトル）が見つかりません。"
+    End If
+
+    colOriginalOrder = EnsureHeaderColumn(ws, DUP_CHECK_ORIGINAL_ORDER_HEADER)
+
+    If isStartMode Then
+        class2Arr = ws.Range(ws.Cells(2, colClass2), ws.Cells(lastRow, colClass2)).Value2
+        class3Arr = ws.Range(ws.Cells(2, colClass3), ws.Cells(lastRow, colClass3)).Value2
+        titleArr = ws.Range(ws.Cells(2, colTitle), ws.Cells(lastRow, colTitle)).Value2
+        ReDim keyArr(1 To UBound(titleArr, 1), 1 To 1)
+        ReDim dupArr(1 To UBound(titleArr, 1), 1 To 1)
+        ReDim originalOrderArr(1 To UBound(titleArr, 1), 1 To 1)
+        Set keyCounts = CreateObject("Scripting.Dictionary")
+
+        ClearDuplicateCheckMarkColor ws, colTitle, lastRow
+
+        For r = 1 To UBound(titleArr, 1)
+            originalOrderArr(r, 1) = r
+            rowKey = BuildDuplicateFolderKey(class2Arr(r, 1), class3Arr(r, 1), titleArr(r, 1))
+            keyArr(r, 1) = rowKey
+            If Len(rowKey) > 0 Then
+                If keyCounts.Exists(rowKey) Then
+                    keyCounts(rowKey) = CLng(keyCounts(rowKey)) + 1
+                Else
+                    keyCounts.Add rowKey, 1
+                End If
+            End If
+        Next r
+
+        For r = 1 To UBound(titleArr, 1)
+            rowKey = CStr(keyArr(r, 1))
+            If Len(rowKey) > 0 And keyCounts.Exists(rowKey) And CLng(keyCounts(rowKey)) >= 2 Then
+                dupArr(r, 1) = 1
+                ws.Cells(r + 1, colTitle).Interior.Color = DUP_CHECK_MARK_COLOR
+                markedRowCount = markedRowCount + 1
+            Else
+                dupArr(r, 1) = 0
+            End If
+        Next r
+
+        For Each key In keyCounts.Keys
+            If CLng(keyCounts(key)) >= 2 Then duplicateGroupCount = duplicateGroupCount + 1
+        Next key
+
+        colTempKey = EnsureHeaderColumn(ws, DUP_CHECK_TEMP_KEY_HEADER)
+        colTempFlag = EnsureHeaderColumn(ws, DUP_CHECK_TEMP_FLAG_HEADER)
+        ws.Range(ws.Cells(2, colOriginalOrder), ws.Cells(lastRow, colOriginalOrder)).Value = originalOrderArr
+        ws.Range(ws.Cells(2, colTempKey), ws.Cells(lastRow, colTempKey)).Value = keyArr
+        ws.Range(ws.Cells(2, colTempFlag), ws.Cells(lastRow, colTempFlag)).Value = dupArr
+
+        ReSortByDuplicateMode ws, lastRow, colTempFlag, colTempKey, colOriginalOrder
+        If colSerial > 0 Then RenumberSerialColumn ws, colSerial, lastRow
+
+        MsgBox "重複確認モードを開始しました。重複グループ数：" & duplicateGroupCount & "件、対象行数：" & markedRowCount & "行", vbInformation
+
+    Else
+        colOriginalOrder = FindHeaderColumn(ws, GetLastUsedCol(ws), Array(DUP_CHECK_ORIGINAL_ORDER_HEADER))
+        If colOriginalOrder > 0 Then
+            ReSortBySingleKey ws, lastRow, colOriginalOrder, xlAscending
+        End If
+        ClearDuplicateCheckMarkColor ws, colTitle, lastRow
+        If colSerial > 0 Then RenumberSerialColumn ws, colSerial, lastRow
+        DeleteHeaderColumnIfExists ws, DUP_CHECK_TEMP_FLAG_HEADER
+        DeleteHeaderColumnIfExists ws, DUP_CHECK_TEMP_KEY_HEADER
+        DeleteHeaderColumnIfExists ws, DUP_CHECK_ORIGINAL_ORDER_HEADER
+
+        MsgBox "重複確認モードを完了しました。", vbInformation
+    End If
+
+SafeExit:
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Application.Calculation = oldCalculation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "重複確認モード処理中にエラーが発生しました: " & Err.Description, vbExclamation
+    Resume SafeExit
+
+End Sub
+
+Private Sub ReSortByDuplicateMode(ByVal ws As Worksheet, ByVal lastRow As Long, ByVal colDupFlag As Long, ByVal colKey As Long, ByVal colOriginalOrder As Long)
+    Dim lastCol As Long
+    lastCol = GetLastUsedCol(ws)
+    If ws.FilterMode Then ws.ShowAllData
+    With ws.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, colDupFlag), ws.Cells(lastRow, colDupFlag)), SortOn:=xlSortOnValues, Order:=xlDescending, DataOption:=xlSortNormal
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, colKey), ws.Cells(lastRow, colKey)), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, colOriginalOrder), ws.Cells(lastRow, colOriginalOrder)), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SetRange ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+        .Header = xlYes
+        .MatchCase = False
+        .Orientation = xlTopToBottom
+        .Apply
+    End With
+End Sub
+
+Private Sub ReSortBySingleKey(ByVal ws As Worksheet, ByVal lastRow As Long, ByVal colKey As Long, ByVal orderType As XlSortOrder)
+    Dim lastCol As Long
+    lastCol = GetLastUsedCol(ws)
+    If ws.FilterMode Then ws.ShowAllData
+    With ws.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, colKey), ws.Cells(lastRow, colKey)), SortOn:=xlSortOnValues, Order:=orderType, DataOption:=xlSortNormal
+        .SetRange ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+        .Header = xlYes
+        .MatchCase = False
+        .Orientation = xlTopToBottom
+        .Apply
+    End With
+End Sub
+
+Private Sub RenumberSerialColumn(ByVal ws As Worksheet, ByVal colSerial As Long, ByVal lastRow As Long)
+    Dim r As Long, serialNo As Long
+    serialNo = 1
+    For r = 2 To lastRow
+        ws.Cells(r, colSerial).Value = serialNo
+        serialNo = serialNo + 1
+    Next r
+End Sub
+
+Private Sub ClearDuplicateCheckMarkColor(ByVal ws As Worksheet, ByVal colTitle As Long, ByVal lastRow As Long)
+    Dim c As Range
+    For Each c In ws.Range(ws.Cells(2, colTitle), ws.Cells(lastRow, colTitle)).Cells
+        If c.Interior.Color = DUP_CHECK_MARK_COLOR Then
+            c.Interior.Pattern = xlPatternNone
+        End If
+    Next c
+End Sub
+
+Private Function EnsureHeaderColumn(ByVal ws As Worksheet, ByVal headerName As String) As Long
+    Dim lastCol As Long
+    lastCol = GetLastUsedCol(ws)
+    EnsureHeaderColumn = FindHeaderColumn(ws, lastCol, Array(headerName))
+    If EnsureHeaderColumn = 0 Then
+        EnsureHeaderColumn = lastCol + 1
+        ws.Cells(1, EnsureHeaderColumn).Value = headerName
+    End If
+End Function
+
+Private Sub DeleteHeaderColumnIfExists(ByVal ws As Worksheet, ByVal headerName As String)
+    Dim colNo As Long
+    colNo = FindHeaderColumn(ws, GetLastUsedCol(ws), Array(headerName))
+    If colNo > 0 Then ws.Columns(colNo).Delete
 End Sub
 
 '========================================================

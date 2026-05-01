@@ -55,8 +55,33 @@ Private Sub CommandButton7_Click()
 End Sub
 
 Private Sub btnDuplicateCheck_Click()
-
+    ' 既存CommandButton互換
     Call 重複フォルダ候補をマーキングして並び替え
+End Sub
+
+Private Sub tglDuplicateCheckMode_Click()
+
+    On Error GoTo EH
+
+    If Me.tglDuplicateCheckMode.Value Then
+        Call 重複確認モードを開始する
+        Me.tglDuplicateCheckMode.Caption = "確認完了"
+    Else
+        Call 重複確認モードを完了する
+        Me.tglDuplicateCheckMode.Caption = "重複確認"
+    End If
+    Exit Sub
+
+EH:
+    On Error Resume Next
+    Me.tglDuplicateCheckMode.Value = Not Me.tglDuplicateCheckMode.Value
+    If Me.tglDuplicateCheckMode.Value Then
+        Me.tglDuplicateCheckMode.Caption = "確認完了"
+    Else
+        Me.tglDuplicateCheckMode.Caption = "重複確認"
+    End If
+    On Error GoTo 0
+    MsgBox "重複確認モードの切替中にエラーが発生しました: " & Err.Description, vbExclamation
 
 End Sub
 
@@ -64,6 +89,9 @@ Private Sub UserForm_Initialize()
 
     Me.Width = FRM_SEAL_WIDTH_LARGE
     Me.Height = FRM_SEAL_HEIGHT_LARGE
+    On Error Resume Next
+    Me.tglDuplicateCheckMode.Caption = IIf(Me.tglDuplicateCheckMode.Value, "確認完了", "重複確認")
+    On Error GoTo 0
     SyncMoveModeButtons
 
 End Sub
