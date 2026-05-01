@@ -54,6 +54,12 @@ Private Sub CommandButton7_Click()
 
 End Sub
 
+Private Sub btnDuplicateCheck_Click()
+
+    Call 重複フォルダ候補をマーキングして並び替え
+
+End Sub
+
 Private Sub UserForm_Initialize()
 
     Me.Width = FRM_SEAL_WIDTH_LARGE
