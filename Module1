@@ -260,16 +260,6 @@ Private Sub ClearDuplicateCheckMarkColor(ByVal ws As Worksheet, ByVal colTitle A
     Next c
 End Sub
 
-Private Function EnsureHeaderColumn(ByVal ws As Worksheet, ByVal headerName As String) As Long
-    Dim lastCol As Long
-    lastCol = GetLastUsedCol(ws)
-    EnsureHeaderColumn = FindHeaderColumn(ws, lastCol, Array(headerName))
-    If EnsureHeaderColumn = 0 Then
-        EnsureHeaderColumn = lastCol + 1
-        ws.Cells(1, EnsureHeaderColumn).Value = headerName
-    End If
-End Function
-
 Private Sub DeleteHeaderColumnIfExists(ByVal ws As Worksheet, ByVal headerName As String)
     Dim colNo As Long
     colNo = FindHeaderColumn(ws, GetLastUsedCol(ws), Array(headerName))
@@ -1662,7 +1652,7 @@ Private Function ResolveAnnualCorrectionTargetColumns(ByVal ws As Worksheet, ByV
 
 End Function
 
-Private Function EnsureHeaderColumn(ByVal ws As Worksheet, ByVal headerName As String) As Long
+Public Function EnsureHeaderColumn(ByVal ws As Worksheet, ByVal headerName As String) As Long
 
     Dim lastCol As Long
     Dim colNo As Long
