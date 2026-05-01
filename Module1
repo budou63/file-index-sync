@@ -1402,6 +1402,7 @@ Public Sub CSV取込_シンプル版()
     Dim srcLastRow As Long
     Dim srcLastCol As Long
     Dim appendRow As Long
+    Dim insertRow As Long
     Dim srcRow As Long
     Dim appendedCount As Long
     Dim deletedCount As Long
@@ -1487,23 +1488,41 @@ Public Sub CSV取込_シンプル版()
         deletedCount = DeleteRowsByFiscalYearBulk(ws, 2, dstLastRow, dstWarekiCol, targetFiscalYear)
 
         dstLastRow = GetLastUsedRow(ws)
-        appendRow = dstLastRow + 1
+        appendRow = FindInsertRowByYearOrder(ws, 2, dstLastRow, dstWarekiCol, targetFiscalYear)
     End If
 
-    ' データ部（2行目以降）を重複判定なしで追記
+    ' データ部（2行目以降）を年度順挿入（古い年度 -> 新しい年度）
+    Dim importRowCount As Long
+    Dim writeData() As Variant
+    Dim writeIndex As Long
+    importRowCount = 0
     For srcRow = 2 To srcLastRow
         rowYear = GetTrimmedCell(wsCSV, srcRow, srcWarekiCol)
-
         If rowYear = "" Then
             skippedBlankYearCount = skippedBlankYearCount + 1
         Else
-            ws.Range(ws.Cells(appendRow, 1), ws.Cells(appendRow, srcLastCol)).Value = _
-                wsCSV.Range(wsCSV.Cells(srcRow, 1), wsCSV.Cells(srcRow, srcLastCol)).Value
-            appendRow = appendRow + 1
-            appendedCount = appendedCount + 1
+            importRowCount = importRowCount + 1
         End If
     Next srcRow
-    
+
+    If importRowCount > 0 Then
+        ReDim writeData(1 To importRowCount, 1 To srcLastCol)
+        writeIndex = 0
+        For srcRow = 2 To srcLastRow
+            rowYear = GetTrimmedCell(wsCSV, srcRow, srcWarekiCol)
+            If rowYear <> "" Then
+                writeIndex = writeIndex + 1
+                For dstLastCol = 1 To srcLastCol
+                    writeData(writeIndex, dstLastCol) = wsCSV.Cells(srcRow, dstLastCol).Value
+                Next dstLastCol
+            End If
+        Next srcRow
+
+        ws.Rows(appendRow).Resize(importRowCount).Insert Shift:=xlDown
+        ws.Range(ws.Cells(appendRow, 1), ws.Cells(appendRow + importRowCount - 1, srcLastCol)).Value = writeData
+        appendedCount = importRowCount
+    End If
+
     wbCSV.Close False
 
     ' 取込後補正: 「毎年作成」行のみ年度表現を安全に補正
@@ -1530,6 +1549,97 @@ ErrorHandler:
     MsgBox "CSV取込中にエラーが発生しました: " & Err.Description, vbExclamation
 
 End Sub
+
+Private Function FindInsertRowByYearOrder( _
+    ByVal ws As Worksheet, _
+    ByVal dataStartRow As Long, _
+    ByVal dataEndRow As Long, _
+    ByVal yearCol As Long, _
+    ByVal targetYearText As String) As Long
+
+    Dim targetKey As Long
+    Dim r As Long
+    Dim existingKey As Long
+    Dim existingYear As String
+
+    targetKey = ConvertYearTextToSortableKey(targetYearText)
+    If dataEndRow < dataStartRow Then
+        FindInsertRowByYearOrder = dataStartRow
+        Exit Function
+    End If
+
+    For r = dataStartRow To dataEndRow
+        existingYear = GetTrimmedCell(ws, r, yearCol)
+        existingKey = ConvertYearTextToSortableKey(existingYear)
+        If existingKey > 0 And targetKey > 0 Then
+            If existingKey > targetKey Then
+                FindInsertRowByYearOrder = r
+                Exit Function
+            End If
+        End If
+    Next r
+
+    FindInsertRowByYearOrder = dataEndRow + 1
+
+End Function
+
+Private Function ConvertYearTextToSortableKey(ByVal yearText As String) As Long
+
+    Dim s As String
+    Dim n As Long
+    Dim i As Long
+    Dim ch As String
+    Dim digits As String
+
+    s = NormalizeForDiffCompare(yearText)
+    If s = "" Then Exit Function
+
+    If Left$(UCase$(s), 1) = "R" Then
+        digits = ""
+        For i = 2 To Len(s)
+            ch = Mid$(s, i, 1)
+            If ch Like "#" Then
+                digits = digits & ch
+            ElseIf Len(digits) > 0 Then
+                Exit For
+            End If
+        Next i
+        If Len(digits) > 0 Then
+            ConvertYearTextToSortableKey = CLng(digits)
+            Exit Function
+        End If
+    End If
+
+    If InStr(1, s, "令和", vbTextCompare) > 0 Then
+        digits = ""
+        For i = InStr(1, s, "令和", vbTextCompare) + 2 To Len(s)
+            ch = Mid$(s, i, 1)
+            If ch Like "#" Then
+                digits = digits & ch
+            ElseIf Len(digits) > 0 Then
+                Exit For
+            End If
+        Next i
+        If Len(digits) > 0 Then
+            ConvertYearTextToSortableKey = CLng(digits)
+            Exit Function
+        End If
+    End If
+
+    digits = ""
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If ch Like "#" Then digits = digits & ch
+    Next i
+    If Len(digits) >= 4 Then
+        n = CLng(Left$(digits, 4))
+        If n >= 1900 And n <= 2999 Then
+            ConvertYearTextToSortableKey = n
+            Exit Function
+        End If
+    End If
+
+End Function
 
 '========================================================
 ' CSV取込後補正: 「毎年作成」行の年度表現のみ安全に補正
