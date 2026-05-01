@@ -1988,7 +1988,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim isKeyBlank As Boolean
     Dim bikoColEdit As Long
     Dim bikoVal As String
-    Dim skippedMacroInsertCount As Long
+    Dim excludedMacroInsertCount As Long
 
     On Error GoTo ErrorHandler
 
@@ -2095,10 +2095,10 @@ Public Sub 手順4_差分インポートCSVを作成する()
     For r = 2 To editLastRow
         ' 備考列が存在し、値が「マクロ差込」の行は差分判定対象外
         If bikoColEdit > 0 Then
-            bikoVal = Trim(CStr(wsEdit.Cells(r, bikoColEdit).Value))
+            bikoVal = NormalizeCellValue(wsEdit.Cells(r, bikoColEdit).Value)
             If bikoVal = "マクロ差込" Then
-                skippedMacroInsertCount = skippedMacroInsertCount + 1
-                Debug.Print "行" & r & " は備考=マクロ差込 のためスキップ"
+                excludedMacroInsertCount = excludedMacroInsertCount + 1
+                Debug.Print "行" & r & " は備考=マクロ差込 のため差分抽出対象外"
                 GoTo ContinueNextEditRow
             End If
         End If
@@ -2169,9 +2169,8 @@ ContinueNextEditRow:
     End With
     wsOut.Columns(1).Resize(, UBound(fixedHeaders) - LBound(fixedHeaders) + 1).EntireColumn.AutoFit
 
-    MsgBox "差分インポートCSV の作成が完了しました。" & vbCrLf & _
-           "出力件数: " & outRow - 2 & " 件" & vbCrLf & _
-           "備考=マクロ差込 のスキップ件数: " & skippedMacroInsertCount & " 件", vbInformation
+    MsgBox "差分抽出が完了しました。" & vbCrLf & _
+           "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & "件", vbInformation
 
 SafeExit:
     Application.ScreenUpdating = True
@@ -2264,6 +2263,28 @@ Private Function BuildHeaderBasedKey(ByVal yearValue As String, ByVal titleValue
                           NormalizeForDiffCompare(category2Value) & "|" & _
                           NormalizeForDiffCompare(mediaValue) & "|" & _
                           NormalizeForDiffCompare(periodValue)
+
+End Function
+
+
+Private Function NormalizeCellValue(ByVal v As Variant) As String
+
+    Dim s As String
+
+    If IsError(v) Or IsNull(v) Or IsEmpty(v) Then
+        NormalizeCellValue = ""
+        Exit Function
+    End If
+
+    s = CStr(v)
+    s = Replace(s, vbCrLf, " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, ChrW(&H3000), " ")
+    s = CollapseSpaces(s)
+
+    NormalizeCellValue = Trim$(s)
 
 End Function
 
