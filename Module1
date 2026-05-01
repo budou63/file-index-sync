@@ -11,9 +11,6 @@ Private Const ENABLE_UPDATE_HIGHLIGHT As Boolean = False
 Private Const DUP_CHECK_ORIGINAL_ORDER_HEADER As String = "重複確認用_元順序"
 Private Const DUP_CHECK_TEMP_KEY_HEADER As String = "__重複確認キー_TMP__"
 Private Const DUP_CHECK_TEMP_FLAG_HEADER As String = "__重複確認フラグ_TMP__"
-Private Const DUP_CHECK_ORIGINAL_TITLE_COLOR_HEADER As String = "重複確認用_元タイトル色"
-Private Const DUP_CHECK_ORIGINAL_TITLE_COLOR_INDEX_HEADER As String = "重複確認用_元タイトル色Index"
-Private Const DUP_CHECK_ORIGINAL_TITLE_PATTERN_HEADER As String = "重複確認用_元タイトルPattern"
 Private Const DUP_CHECK_MARK_COLOR As Long = 65535 ' RGB(255,255,0)
 
 '========================================================
@@ -106,13 +103,11 @@ Private Sub ExecuteDuplicateCheckMode(ByVal isStartMode As Boolean)
     Dim lastRow As Long, lastCol As Long
     Dim colTitle As Long, colClass2 As Long, colClass3 As Long, colSerial As Long
     Dim colOriginalOrder As Long, colTempKey As Long, colTempFlag As Long
-    Dim colOriginalTitleColor As Long, colOriginalTitleColorIndex As Long, colOriginalTitlePattern As Long
     Dim keyCounts As Object
     Dim class2Arr As Variant, class3Arr As Variant, titleArr As Variant
     Dim keyArr() As Variant, dupArr() As Variant, originalOrderArr() As Variant
     Dim r As Long, markedRowCount As Long, duplicateGroupCount As Long
     Dim rowKey As String, key As Variant
-    Dim titleColorArr() As Variant, titleColorIndexArr() As Variant, titlePatternArr() As Variant
 
     On Error GoTo ErrorHandler
 
@@ -145,16 +140,10 @@ Private Sub ExecuteDuplicateCheckMode(ByVal isStartMode As Boolean)
         ReDim keyArr(1 To UBound(titleArr, 1), 1 To 1)
         ReDim dupArr(1 To UBound(titleArr, 1), 1 To 1)
         ReDim originalOrderArr(1 To UBound(titleArr, 1), 1 To 1)
-        ReDim titleColorArr(1 To UBound(titleArr, 1), 1 To 1)
-        ReDim titleColorIndexArr(1 To UBound(titleArr, 1), 1 To 1)
-        ReDim titlePatternArr(1 To UBound(titleArr, 1), 1 To 1)
         Set keyCounts = CreateObject("Scripting.Dictionary")
 
         For r = 1 To UBound(titleArr, 1)
             originalOrderArr(r, 1) = r
-            titleColorArr(r, 1) = ws.Cells(r + 1, colTitle).Interior.Color
-            titleColorIndexArr(r, 1) = ws.Cells(r + 1, colTitle).Interior.ColorIndex
-            titlePatternArr(r, 1) = ws.Cells(r + 1, colTitle).Interior.Pattern
             rowKey = BuildDuplicateFolderKey(class2Arr(r, 1), class3Arr(r, 1), titleArr(r, 1))
             keyArr(r, 1) = rowKey
             If Len(rowKey) > 0 Then
@@ -183,15 +172,9 @@ Private Sub ExecuteDuplicateCheckMode(ByVal isStartMode As Boolean)
 
         colTempKey = EnsureHeaderColumn(ws, DUP_CHECK_TEMP_KEY_HEADER)
         colTempFlag = EnsureHeaderColumn(ws, DUP_CHECK_TEMP_FLAG_HEADER)
-        colOriginalTitleColor = EnsureHeaderColumn(ws, DUP_CHECK_ORIGINAL_TITLE_COLOR_HEADER)
-        colOriginalTitleColorIndex = EnsureHeaderColumn(ws, DUP_CHECK_ORIGINAL_TITLE_COLOR_INDEX_HEADER)
-        colOriginalTitlePattern = EnsureHeaderColumn(ws, DUP_CHECK_ORIGINAL_TITLE_PATTERN_HEADER)
         ws.Range(ws.Cells(2, colOriginalOrder), ws.Cells(lastRow, colOriginalOrder)).Value = originalOrderArr
         ws.Range(ws.Cells(2, colTempKey), ws.Cells(lastRow, colTempKey)).Value = keyArr
         ws.Range(ws.Cells(2, colTempFlag), ws.Cells(lastRow, colTempFlag)).Value = dupArr
-        ws.Range(ws.Cells(2, colOriginalTitleColor), ws.Cells(lastRow, colOriginalTitleColor)).Value = titleColorArr
-        ws.Range(ws.Cells(2, colOriginalTitleColorIndex), ws.Cells(lastRow, colOriginalTitleColorIndex)).Value = titleColorIndexArr
-        ws.Range(ws.Cells(2, colOriginalTitlePattern), ws.Cells(lastRow, colOriginalTitlePattern)).Value = titlePatternArr
 
         ReSortByDuplicateMode ws, lastRow, colTempFlag, colTempKey, colOriginalOrder
         If colSerial > 0 Then RenumberSerialColumn ws, colSerial, lastRow
@@ -203,16 +186,8 @@ Private Sub ExecuteDuplicateCheckMode(ByVal isStartMode As Boolean)
         If colOriginalOrder > 0 Then
             ReSortBySingleKey ws, lastRow, colOriginalOrder, xlAscending
         End If
-        colOriginalTitleColor = FindHeaderColumn(ws, GetLastUsedCol(ws), Array(DUP_CHECK_ORIGINAL_TITLE_COLOR_HEADER))
-        colOriginalTitleColorIndex = FindHeaderColumn(ws, GetLastUsedCol(ws), Array(DUP_CHECK_ORIGINAL_TITLE_COLOR_INDEX_HEADER))
-        colOriginalTitlePattern = FindHeaderColumn(ws, GetLastUsedCol(ws), Array(DUP_CHECK_ORIGINAL_TITLE_PATTERN_HEADER))
-        If colOriginalTitleColor > 0 And colOriginalTitleColorIndex > 0 And colOriginalTitlePattern > 0 Then
-            RestoreTitleFillFromWorkingColumns ws, colTitle, colOriginalTitleColor, colOriginalTitleColorIndex, colOriginalTitlePattern, lastRow
-        End If
+        ws.Range(ws.Cells(2, colTitle), ws.Cells(lastRow, colTitle)).Interior.Pattern = xlNone
         If colSerial > 0 Then RenumberSerialColumn ws, colSerial, lastRow
-        DeleteHeaderColumnIfExists ws, DUP_CHECK_ORIGINAL_TITLE_PATTERN_HEADER
-        DeleteHeaderColumnIfExists ws, DUP_CHECK_ORIGINAL_TITLE_COLOR_INDEX_HEADER
-        DeleteHeaderColumnIfExists ws, DUP_CHECK_ORIGINAL_TITLE_COLOR_HEADER
         DeleteHeaderColumnIfExists ws, DUP_CHECK_TEMP_FLAG_HEADER
         DeleteHeaderColumnIfExists ws, DUP_CHECK_TEMP_KEY_HEADER
         DeleteHeaderColumnIfExists ws, DUP_CHECK_ORIGINAL_ORDER_HEADER
@@ -229,37 +204,6 @@ SafeExit:
 ErrorHandler:
     MsgBox "重複確認モード処理中にエラーが発生しました: " & Err.Description, vbExclamation
     Resume SafeExit
-
-End Sub
-
-Private Sub RestoreTitleFillFromWorkingColumns( _
-    ByVal ws As Worksheet, _
-    ByVal colTitle As Long, _
-    ByVal colColor As Long, _
-    ByVal colColorIndex As Long, _
-    ByVal colPattern As Long, _
-    ByVal lastRow As Long)
-
-    Dim r As Long
-    Dim colorValue As Variant
-    Dim colorIndexValue As Variant
-    Dim patternValue As Variant
-
-    For r = 2 To lastRow
-        colorValue = ws.Cells(r, colColor).Value
-        colorIndexValue = ws.Cells(r, colColorIndex).Value
-        patternValue = ws.Cells(r, colPattern).Value
-
-        If IsNumeric(patternValue) Then
-            ws.Cells(r, colTitle).Interior.Pattern = CLng(patternValue)
-        End If
-        If IsNumeric(colorIndexValue) Then
-            ws.Cells(r, colTitle).Interior.ColorIndex = CLng(colorIndexValue)
-        End If
-        If IsNumeric(colorValue) Then
-            ws.Cells(r, colTitle).Interior.Color = CLng(colorValue)
-        End If
-    Next r
 
 End Sub
 
