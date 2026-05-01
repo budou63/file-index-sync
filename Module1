@@ -8,6 +8,10 @@ Private Const DEBUG_MODE As Boolean = False
 ' 高速化対応: 差分更新時のコメント/強調を既定で無効化
 Private Const ENABLE_UPDATE_COMMENT As Boolean = False
 Private Const ENABLE_UPDATE_HIGHLIGHT As Boolean = False
+Private Const DUP_CHECK_ORIGINAL_ORDER_HEADER As String = "重複確認用_元順序"
+Private Const DUP_CHECK_TEMP_KEY_HEADER As String = "__重複確認キー_TMP__"
+Private Const DUP_CHECK_TEMP_FLAG_HEADER As String = "__重複確認フラグ_TMP__"
+Private Const DUP_CHECK_MARK_COLOR As Long = 65535 ' RGB(255,255,0)
 
 '========================================================
 ' 新ファイル基準表: 行移動モード（▲/▼で挿入予定位置のみ移動）
@@ -76,6 +80,187 @@ Cleanup:
     Application.EnableEvents = oldEnableEvents
     Application.Calculation = oldCalculation
 
+End Sub
+
+Public Sub 重複確認モードを開始する()
+
+    ExecuteDuplicateCheckMode True
+
+End Sub
+
+Public Sub 重複確認モードを完了する()
+
+    ExecuteDuplicateCheckMode False
+
+End Sub
+
+Private Sub ExecuteDuplicateCheckMode(ByVal isStartMode As Boolean)
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim oldCalculation As XlCalculation
+    Dim ws As Worksheet
+    Dim lastRow As Long, lastCol As Long
+    Dim colTitle As Long, colClass2 As Long, colClass3 As Long, colSerial As Long
+    Dim colOriginalOrder As Long, colTempKey As Long, colTempFlag As Long
+    Dim keyCounts As Object
+    Dim class2Arr As Variant, class3Arr As Variant, titleArr As Variant
+    Dim keyArr() As Variant, dupArr() As Variant, originalOrderArr() As Variant
+    Dim r As Long, markedRowCount As Long, duplicateGroupCount As Long
+    Dim rowKey As String, key As Variant
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    oldCalculation = Application.Calculation
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+    If lastRow < 2 Then GoTo SafeExit
+
+    colTitle = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("タイトル"))
+    colClass2 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名２"))
+    colClass3 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名３"))
+    colSerial = FindHeaderColumn(ws, lastCol, Array("通し番号"))
+    If colTitle = 0 Or colClass2 = 0 Or colClass3 = 0 Then
+        Err.Raise vbObjectError + 2410, , "重複確認に必要な列（分類名２/分類名３/タイトル）が見つかりません。"
+    End If
+
+    colOriginalOrder = EnsureHeaderColumn(ws, DUP_CHECK_ORIGINAL_ORDER_HEADER)
+
+    If isStartMode Then
+        class2Arr = ws.Range(ws.Cells(2, colClass2), ws.Cells(lastRow, colClass2)).Value2
+        class3Arr = ws.Range(ws.Cells(2, colClass3), ws.Cells(lastRow, colClass3)).Value2
+        titleArr = ws.Range(ws.Cells(2, colTitle), ws.Cells(lastRow, colTitle)).Value2
+        ReDim keyArr(1 To UBound(titleArr, 1), 1 To 1)
+        ReDim dupArr(1 To UBound(titleArr, 1), 1 To 1)
+        ReDim originalOrderArr(1 To UBound(titleArr, 1), 1 To 1)
+        Set keyCounts = CreateObject("Scripting.Dictionary")
+
+        For r = 1 To UBound(titleArr, 1)
+            originalOrderArr(r, 1) = r
+            rowKey = BuildDuplicateFolderKey(class2Arr(r, 1), class3Arr(r, 1), titleArr(r, 1))
+            keyArr(r, 1) = rowKey
+            If Len(rowKey) > 0 Then
+                If keyCounts.Exists(rowKey) Then
+                    keyCounts(rowKey) = CLng(keyCounts(rowKey)) + 1
+                Else
+                    keyCounts.Add rowKey, 1
+                End If
+            End If
+        Next r
+
+        For r = 1 To UBound(titleArr, 1)
+            rowKey = CStr(keyArr(r, 1))
+            If Len(rowKey) > 0 And keyCounts.Exists(rowKey) And CLng(keyCounts(rowKey)) >= 2 Then
+                dupArr(r, 1) = 1
+                ws.Cells(r + 1, colTitle).Interior.Color = DUP_CHECK_MARK_COLOR
+                markedRowCount = markedRowCount + 1
+            Else
+                dupArr(r, 1) = 0
+            End If
+        Next r
+
+        For Each key In keyCounts.Keys
+            If CLng(keyCounts(key)) >= 2 Then duplicateGroupCount = duplicateGroupCount + 1
+        Next key
+
+        colTempKey = EnsureHeaderColumn(ws, DUP_CHECK_TEMP_KEY_HEADER)
+        colTempFlag = EnsureHeaderColumn(ws, DUP_CHECK_TEMP_FLAG_HEADER)
+        ws.Range(ws.Cells(2, colOriginalOrder), ws.Cells(lastRow, colOriginalOrder)).Value = originalOrderArr
+        ws.Range(ws.Cells(2, colTempKey), ws.Cells(lastRow, colTempKey)).Value = keyArr
+        ws.Range(ws.Cells(2, colTempFlag), ws.Cells(lastRow, colTempFlag)).Value = dupArr
+
+        ReSortByDuplicateMode ws, lastRow, colTempFlag, colTempKey, colOriginalOrder
+        If colSerial > 0 Then RenumberSerialColumn ws, colSerial, lastRow
+
+        MsgBox "重複確認モードを開始しました。重複グループ数：" & duplicateGroupCount & "件、対象行数：" & markedRowCount & "行", vbInformation
+
+    Else
+        colOriginalOrder = FindHeaderColumn(ws, GetLastUsedCol(ws), Array(DUP_CHECK_ORIGINAL_ORDER_HEADER))
+        If colOriginalOrder > 0 Then
+            ReSortBySingleKey ws, lastRow, colOriginalOrder, xlAscending
+        End If
+        ws.Range(ws.Cells(2, colTitle), ws.Cells(lastRow, colTitle)).Interior.Pattern = xlNone
+        If colSerial > 0 Then RenumberSerialColumn ws, colSerial, lastRow
+        DeleteHeaderColumnIfExists ws, DUP_CHECK_TEMP_FLAG_HEADER
+        DeleteHeaderColumnIfExists ws, DUP_CHECK_TEMP_KEY_HEADER
+        DeleteHeaderColumnIfExists ws, DUP_CHECK_ORIGINAL_ORDER_HEADER
+
+        MsgBox "重複確認モードを完了しました。", vbInformation
+    End If
+
+SafeExit:
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Application.Calculation = oldCalculation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "重複確認モード処理中にエラーが発生しました: " & Err.Description, vbExclamation
+    Resume SafeExit
+
+End Sub
+
+Private Sub ReSortByDuplicateMode(ByVal ws As Worksheet, ByVal lastRow As Long, ByVal colDupFlag As Long, ByVal colKey As Long, ByVal colOriginalOrder As Long)
+    Dim lastCol As Long
+    lastCol = GetLastUsedCol(ws)
+    If ws.FilterMode Then ws.ShowAllData
+    With ws.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, colDupFlag), ws.Cells(lastRow, colDupFlag)), SortOn:=xlSortOnValues, Order:=xlDescending, DataOption:=xlSortNormal
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, colKey), ws.Cells(lastRow, colKey)), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, colOriginalOrder), ws.Cells(lastRow, colOriginalOrder)), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SetRange ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+        .Header = xlYes
+        .MatchCase = False
+        .Orientation = xlTopToBottom
+        .Apply
+    End With
+End Sub
+
+Private Sub ReSortBySingleKey(ByVal ws As Worksheet, ByVal lastRow As Long, ByVal colKey As Long, ByVal orderType As XlSortOrder)
+    Dim lastCol As Long
+    lastCol = GetLastUsedCol(ws)
+    If ws.FilterMode Then ws.ShowAllData
+    With ws.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, colKey), ws.Cells(lastRow, colKey)), SortOn:=xlSortOnValues, Order:=orderType, DataOption:=xlSortNormal
+        .SetRange ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+        .Header = xlYes
+        .MatchCase = False
+        .Orientation = xlTopToBottom
+        .Apply
+    End With
+End Sub
+
+Private Sub RenumberSerialColumn(ByVal ws As Worksheet, ByVal colSerial As Long, ByVal lastRow As Long)
+    Dim r As Long, serialNo As Long
+    serialNo = 1
+    For r = 2 To lastRow
+        ws.Cells(r, colSerial).Value = serialNo
+        serialNo = serialNo + 1
+    Next r
+End Sub
+
+Private Sub ClearDuplicateCheckMarkColor(ByVal ws As Worksheet, ByVal colTitle As Long, ByVal lastRow As Long)
+    Dim c As Range
+    For Each c In ws.Range(ws.Cells(2, colTitle), ws.Cells(lastRow, colTitle)).Cells
+        If c.Interior.Color = DUP_CHECK_MARK_COLOR Then
+            c.Interior.Pattern = xlPatternNone
+        End If
+    Next c
+End Sub
+
+Private Sub DeleteHeaderColumnIfExists(ByVal ws As Worksheet, ByVal headerName As String)
+    Dim colNo As Long
+    colNo = FindHeaderColumn(ws, GetLastUsedCol(ws), Array(headerName))
+    If colNo > 0 Then ws.Columns(colNo).Delete
 End Sub
 
 '========================================================
@@ -1217,6 +1402,7 @@ Public Sub CSV取込_シンプル版()
     Dim srcLastRow As Long
     Dim srcLastCol As Long
     Dim appendRow As Long
+    Dim insertRow As Long
     Dim srcRow As Long
     Dim appendedCount As Long
     Dim deletedCount As Long
@@ -1302,23 +1488,41 @@ Public Sub CSV取込_シンプル版()
         deletedCount = DeleteRowsByFiscalYearBulk(ws, 2, dstLastRow, dstWarekiCol, targetFiscalYear)
 
         dstLastRow = GetLastUsedRow(ws)
-        appendRow = dstLastRow + 1
+        appendRow = FindInsertRowByYearOrder(ws, 2, dstLastRow, dstWarekiCol, targetFiscalYear)
     End If
 
-    ' データ部（2行目以降）を重複判定なしで追記
+    ' データ部（2行目以降）を年度順挿入（古い年度 -> 新しい年度）
+    Dim importRowCount As Long
+    Dim writeData() As Variant
+    Dim writeIndex As Long
+    importRowCount = 0
     For srcRow = 2 To srcLastRow
         rowYear = GetTrimmedCell(wsCSV, srcRow, srcWarekiCol)
-
         If rowYear = "" Then
             skippedBlankYearCount = skippedBlankYearCount + 1
         Else
-            ws.Range(ws.Cells(appendRow, 1), ws.Cells(appendRow, srcLastCol)).Value = _
-                wsCSV.Range(wsCSV.Cells(srcRow, 1), wsCSV.Cells(srcRow, srcLastCol)).Value
-            appendRow = appendRow + 1
-            appendedCount = appendedCount + 1
+            importRowCount = importRowCount + 1
         End If
     Next srcRow
-    
+
+    If importRowCount > 0 Then
+        ReDim writeData(1 To importRowCount, 1 To srcLastCol)
+        writeIndex = 0
+        For srcRow = 2 To srcLastRow
+            rowYear = GetTrimmedCell(wsCSV, srcRow, srcWarekiCol)
+            If rowYear <> "" Then
+                writeIndex = writeIndex + 1
+                For dstLastCol = 1 To srcLastCol
+                    writeData(writeIndex, dstLastCol) = wsCSV.Cells(srcRow, dstLastCol).Value
+                Next dstLastCol
+            End If
+        Next srcRow
+
+        ws.Rows(appendRow).Resize(importRowCount).Insert Shift:=xlDown
+        ws.Range(ws.Cells(appendRow, 1), ws.Cells(appendRow + importRowCount - 1, srcLastCol)).Value = writeData
+        appendedCount = importRowCount
+    End If
+
     wbCSV.Close False
 
     ' 取込後補正: 「毎年作成」行のみ年度表現を安全に補正
@@ -1345,6 +1549,97 @@ ErrorHandler:
     MsgBox "CSV取込中にエラーが発生しました: " & Err.Description, vbExclamation
 
 End Sub
+
+Private Function FindInsertRowByYearOrder( _
+    ByVal ws As Worksheet, _
+    ByVal dataStartRow As Long, _
+    ByVal dataEndRow As Long, _
+    ByVal yearCol As Long, _
+    ByVal targetYearText As String) As Long
+
+    Dim targetKey As Long
+    Dim r As Long
+    Dim existingKey As Long
+    Dim existingYear As String
+
+    targetKey = ConvertYearTextToSortableKey(targetYearText)
+    If dataEndRow < dataStartRow Then
+        FindInsertRowByYearOrder = dataStartRow
+        Exit Function
+    End If
+
+    For r = dataStartRow To dataEndRow
+        existingYear = GetTrimmedCell(ws, r, yearCol)
+        existingKey = ConvertYearTextToSortableKey(existingYear)
+        If existingKey > 0 And targetKey > 0 Then
+            If existingKey > targetKey Then
+                FindInsertRowByYearOrder = r
+                Exit Function
+            End If
+        End If
+    Next r
+
+    FindInsertRowByYearOrder = dataEndRow + 1
+
+End Function
+
+Private Function ConvertYearTextToSortableKey(ByVal yearText As String) As Long
+
+    Dim s As String
+    Dim n As Long
+    Dim i As Long
+    Dim ch As String
+    Dim digits As String
+
+    s = NormalizeForDiffCompare(yearText)
+    If s = "" Then Exit Function
+
+    If Left$(UCase$(s), 1) = "R" Then
+        digits = ""
+        For i = 2 To Len(s)
+            ch = Mid$(s, i, 1)
+            If ch Like "#" Then
+                digits = digits & ch
+            ElseIf Len(digits) > 0 Then
+                Exit For
+            End If
+        Next i
+        If Len(digits) > 0 Then
+            ConvertYearTextToSortableKey = CLng(digits)
+            Exit Function
+        End If
+    End If
+
+    If InStr(1, s, "令和", vbTextCompare) > 0 Then
+        digits = ""
+        For i = InStr(1, s, "令和", vbTextCompare) + 2 To Len(s)
+            ch = Mid$(s, i, 1)
+            If ch Like "#" Then
+                digits = digits & ch
+            ElseIf Len(digits) > 0 Then
+                Exit For
+            End If
+        Next i
+        If Len(digits) > 0 Then
+            ConvertYearTextToSortableKey = CLng(digits)
+            Exit Function
+        End If
+    End If
+
+    digits = ""
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If ch Like "#" Then digits = digits & ch
+    Next i
+    If Len(digits) >= 4 Then
+        n = CLng(Left$(digits, 4))
+        If n >= 1900 And n <= 2999 Then
+            ConvertYearTextToSortableKey = n
+            Exit Function
+        End If
+    End If
+
+End Function
 
 '========================================================
 ' CSV取込後補正: 「毎年作成」行の年度表現のみ安全に補正
@@ -1405,7 +1700,10 @@ Private Sub ApplyAnnualFolderNameCorrections( _
 
             If corrected Then
                 ws.Cells(rowNo, colNo).Value = correctedValue
+                ws.Cells(rowNo, colNo).Font.Color = RGB(255, 0, 0)
                 rowChanged = True
+            Else
+                ws.Cells(rowNo, colNo).Font.ColorIndex = xlColorIndexAutomatic
             End If
 
             If needsReview Then
@@ -1421,10 +1719,13 @@ Private Sub ApplyAnnualFolderNameCorrections( _
         If rowNeedsReview Then
             reviewCount = reviewCount + 1
             ws.Cells(rowNo, reviewCol).Value = "要確認" & IIf(Len(reviewReasons) > 0, "（" & reviewReasons & "）", "")
+            ws.Cells(rowNo, reviewCol).Font.Color = RGB(255, 0, 0)
         ElseIf rowChanged Then
             ws.Cells(rowNo, reviewCol).Value = "補正済"
+            ws.Cells(rowNo, reviewCol).Font.ColorIndex = xlColorIndexAutomatic
         Else
             ws.Cells(rowNo, reviewCol).ClearContents
+            ws.Cells(rowNo, reviewCol).Font.ColorIndex = xlColorIndexAutomatic
         End If
 
 ContinueNextRow:
@@ -1464,7 +1765,7 @@ Private Function ResolveAnnualCorrectionTargetColumns(ByVal ws As Worksheet, ByV
 
 End Function
 
-Private Function EnsureHeaderColumn(ByVal ws As Worksheet, ByVal headerName As String) As Long
+Public Function EnsureHeaderColumn(ByVal ws As Worksheet, ByVal headerName As String) As Long
 
     Dim lastCol As Long
     Dim colNo As Long
@@ -1949,6 +2250,260 @@ ErrorHandler:
 
 End Sub
 
+Public Sub 重複フォルダ候補をマーキング()
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim oldCalculation As XlCalculation
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim colClass2 As Long
+    Dim colClass3 As Long
+    Dim colTitle As Long
+    Dim r As Long
+    Dim markColor As Long
+    Dim key As Variant
+    Dim rowKey As String
+    Dim dictRowsByKey As Object
+    Dim rowList As Collection
+    Dim duplicateGroupCount As Long
+    Dim markedRowCount As Long
+    Dim class2Arr As Variant
+    Dim class3Arr As Variant
+    Dim titleArr As Variant
+    Dim targetRng As Range
+    Dim cell As Range
+    Dim i As Long
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    oldCalculation = Application.Calculation
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+
+    If lastRow < 2 Or lastCol < 1 Then
+        MsgBox "新ファイル基準表に対象データがありません。", vbInformation
+        GoTo SafeExit
+    End If
+
+    colClass2 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名２"))
+    colClass3 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名３"))
+    colTitle = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("タイトル"))
+
+    If colClass2 = 0 Or colClass3 = 0 Or colTitle = 0 Then
+        Err.Raise vbObjectError + 2401, , "新ファイル基準表の必要列（分類名２/分類名３/タイトル）が見つかりません。"
+    End If
+
+    markColor = RGB(255, 242, 204) ' 薄い黄色（既存ルールと衝突しにくい色）
+
+    ' 前回このマクロで付与した色だけをクリア
+    Set targetRng = ws.Range(ws.Cells(2, colTitle), ws.Cells(lastRow, colTitle))
+    For Each cell In targetRng.Cells
+        If cell.Interior.Color = markColor Then
+            cell.Interior.Pattern = xlPatternNone
+        End If
+    Next cell
+
+    class2Arr = ws.Range(ws.Cells(2, colClass2), ws.Cells(lastRow, colClass2)).Value2
+    class3Arr = ws.Range(ws.Cells(2, colClass3), ws.Cells(lastRow, colClass3)).Value2
+    titleArr = ws.Range(ws.Cells(2, colTitle), ws.Cells(lastRow, colTitle)).Value2
+    Set dictRowsByKey = CreateObject("Scripting.Dictionary")
+
+    For r = 1 To UBound(titleArr, 1)
+        rowKey = BuildDuplicateFolderKey(class2Arr(r, 1), class3Arr(r, 1), titleArr(r, 1))
+        If Len(rowKey) > 0 Then
+            If Not dictRowsByKey.Exists(rowKey) Then
+                Set rowList = New Collection
+                dictRowsByKey.Add rowKey, rowList
+            End If
+            dictRowsByKey(rowKey).Add r + 1
+        End If
+    Next r
+
+    For Each key In dictRowsByKey.Keys
+        Set rowList = dictRowsByKey(key)
+        If rowList.Count >= 2 Then
+            duplicateGroupCount = duplicateGroupCount + 1
+            markedRowCount = markedRowCount + rowList.Count
+            For i = 1 To rowList.Count
+                ws.Cells(CLng(rowList(i)), colTitle).Interior.Color = markColor
+            Next i
+        End If
+    Next key
+
+    MsgBox "重複候補の確認が完了しました。重複グループ数：" & duplicateGroupCount & "件、対象行数：" & markedRowCount & "行", vbInformation
+
+SafeExit:
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Application.Calculation = oldCalculation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "重複フォルダ候補のマーキング中にエラーが発生しました: " & Err.Description, vbExclamation
+    Resume SafeExit
+
+End Sub
+
+Public Sub 重複フォルダ候補をマーキングして並び替え()
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim oldCalculation As XlCalculation
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim colClass2 As Long
+    Dim colClass3 As Long
+    Dim colTitle As Long
+    Dim tempColKey As Long
+    Dim tempColDupFlag As Long
+    Dim tempColOriginalRow As Long
+    Dim markColor As Long
+    Dim class2Arr As Variant
+    Dim class3Arr As Variant
+    Dim titleArr As Variant
+    Dim keyArr() As Variant
+    Dim dupArr() As Variant
+    Dim originalRowArr() As Variant
+    Dim keyCounts As Object
+    Dim key As Variant
+    Dim rowKey As String
+    Dim r As Long
+    Dim duplicateGroupCount As Long
+    Dim markedRowCount As Long
+    Dim targetRng As Range
+    Dim cell As Range
+    Dim dataRange As Range
+    Dim prevAutoFilterMode As Boolean
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    oldCalculation = Application.Calculation
+
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+    If lastRow < 2 Or lastCol < 1 Then
+        MsgBox "新ファイル基準表に対象データがありません。", vbInformation
+        GoTo SafeExit
+    End If
+
+    colClass2 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名２"))
+    colClass3 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名３"))
+    colTitle = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("タイトル"))
+    If colClass2 = 0 Or colClass3 = 0 Or colTitle = 0 Then
+        Err.Raise vbObjectError + 2402, , "新ファイル基準表の必要列（分類名２/分類名３/タイトル）が見つかりません。"
+    End If
+
+    markColor = RGB(255, 242, 204)
+    Set targetRng = ws.Range(ws.Cells(2, colTitle), ws.Cells(lastRow, colTitle))
+    For Each cell In targetRng.Cells
+        If cell.Interior.Color = markColor Then
+            cell.Interior.Pattern = xlPatternNone
+        End If
+    Next cell
+
+    class2Arr = ws.Range(ws.Cells(2, colClass2), ws.Cells(lastRow, colClass2)).Value2
+    class3Arr = ws.Range(ws.Cells(2, colClass3), ws.Cells(lastRow, colClass3)).Value2
+    titleArr = ws.Range(ws.Cells(2, colTitle), ws.Cells(lastRow, colTitle)).Value2
+    ReDim keyArr(1 To UBound(titleArr, 1), 1 To 1)
+    ReDim dupArr(1 To UBound(titleArr, 1), 1 To 1)
+    ReDim originalRowArr(1 To UBound(titleArr, 1), 1 To 1)
+    Set keyCounts = CreateObject("Scripting.Dictionary")
+
+    For r = 1 To UBound(titleArr, 1)
+        rowKey = BuildDuplicateFolderKey(class2Arr(r, 1), class3Arr(r, 1), titleArr(r, 1))
+        keyArr(r, 1) = rowKey
+        originalRowArr(r, 1) = r + 1
+        If Len(rowKey) > 0 Then
+            If keyCounts.Exists(rowKey) Then
+                keyCounts(rowKey) = CLng(keyCounts(rowKey)) + 1
+            Else
+                keyCounts.Add rowKey, 1
+            End If
+        End If
+    Next r
+
+    For r = 1 To UBound(titleArr, 1)
+        rowKey = CStr(keyArr(r, 1))
+        If Len(rowKey) > 0 And keyCounts.Exists(rowKey) And CLng(keyCounts(rowKey)) >= 2 Then
+            dupArr(r, 1) = 1
+            ws.Cells(r + 1, colTitle).Interior.Color = markColor
+            markedRowCount = markedRowCount + 1
+        Else
+            dupArr(r, 1) = 0
+        End If
+    Next r
+
+    For Each key In keyCounts.Keys
+        If CLng(keyCounts(key)) >= 2 Then duplicateGroupCount = duplicateGroupCount + 1
+    Next key
+
+    tempColKey = lastCol + 1
+    tempColDupFlag = lastCol + 2
+    tempColOriginalRow = lastCol + 3
+
+    ws.Cells(1, tempColKey).Value = "__重複判定キー_TMP__"
+    ws.Cells(1, tempColDupFlag).Value = "__重複フラグ_TMP__"
+    ws.Cells(1, tempColOriginalRow).Value = "__元行番号_TMP__"
+    ws.Range(ws.Cells(2, tempColKey), ws.Cells(lastRow, tempColKey)).Value = keyArr
+    ws.Range(ws.Cells(2, tempColDupFlag), ws.Cells(lastRow, tempColDupFlag)).Value = dupArr
+    ws.Range(ws.Cells(2, tempColOriginalRow), ws.Cells(lastRow, tempColOriginalRow)).Value = originalRowArr
+
+    prevAutoFilterMode = ws.AutoFilterMode
+    If ws.FilterMode Then ws.ShowAllData
+
+    Set dataRange = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, tempColOriginalRow))
+    With ws.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, tempColDupFlag), ws.Cells(lastRow, tempColDupFlag)), SortOn:=xlSortOnValues, Order:=xlDescending, DataOption:=xlSortNormal
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, tempColKey), ws.Cells(lastRow, tempColKey)), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SortFields.Add Key:=ws.Range(ws.Cells(2, tempColOriginalRow), ws.Cells(lastRow, tempColOriginalRow)), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SetRange dataRange
+        .Header = xlYes
+        .MatchCase = False
+        .Orientation = xlTopToBottom
+        .Apply
+    End With
+
+    ws.Columns(tempColKey).Resize(, 3).Delete
+    If prevAutoFilterMode Then ws.Rows(1).AutoFilter
+
+    MsgBox "重複候補の確認と並び替えが完了しました。重複グループ数：" & duplicateGroupCount & "件、対象行数：" & markedRowCount & "行", vbInformation
+
+SafeExit:
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Application.Calculation = oldCalculation
+    Exit Sub
+
+ErrorHandler:
+    On Error Resume Next
+    If tempColKey > 0 Then
+        ws.Columns(tempColKey).Resize(, 3).Delete
+    End If
+    On Error GoTo 0
+    MsgBox "重複フォルダ候補のマーキング・並び替え中にエラーが発生しました: " & Err.Description, vbExclamation
+    Resume SafeExit
+
+End Sub
+
 Private Function EnsureCsvExtension(ByVal path As String) As String
 
     If LCase$(Right$(Trim$(path), 4)) <> ".csv" Then
@@ -1988,7 +2543,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim isKeyBlank As Boolean
     Dim bikoColEdit As Long
     Dim bikoVal As String
-    Dim skippedMacroInsertCount As Long
+    Dim excludedMacroInsertCount As Long
 
     On Error GoTo ErrorHandler
 
@@ -2095,10 +2650,10 @@ Public Sub 手順4_差分インポートCSVを作成する()
     For r = 2 To editLastRow
         ' 備考列が存在し、値が「マクロ差込」の行は差分判定対象外
         If bikoColEdit > 0 Then
-            bikoVal = Trim(CStr(wsEdit.Cells(r, bikoColEdit).Value))
+            bikoVal = NormalizeCellValue(wsEdit.Cells(r, bikoColEdit).Value)
             If bikoVal = "マクロ差込" Then
-                skippedMacroInsertCount = skippedMacroInsertCount + 1
-                Debug.Print "行" & r & " は備考=マクロ差込 のためスキップ"
+                excludedMacroInsertCount = excludedMacroInsertCount + 1
+                Debug.Print "行" & r & " は備考=マクロ差込 のため差分抽出対象外"
                 GoTo ContinueNextEditRow
             End If
         End If
@@ -2169,9 +2724,8 @@ ContinueNextEditRow:
     End With
     wsOut.Columns(1).Resize(, UBound(fixedHeaders) - LBound(fixedHeaders) + 1).EntireColumn.AutoFit
 
-    MsgBox "差分インポートCSV の作成が完了しました。" & vbCrLf & _
-           "出力件数: " & outRow - 2 & " 件" & vbCrLf & _
-           "備考=マクロ差込 のスキップ件数: " & skippedMacroInsertCount & " 件", vbInformation
+    MsgBox "差分抽出が完了しました。" & vbCrLf & _
+           "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & "件", vbInformation
 
 SafeExit:
     Application.ScreenUpdating = True
@@ -2267,6 +2821,28 @@ Private Function BuildHeaderBasedKey(ByVal yearValue As String, ByVal titleValue
 
 End Function
 
+
+Private Function NormalizeCellValue(ByVal v As Variant) As String
+
+    Dim s As String
+
+    If IsError(v) Or IsNull(v) Or IsEmpty(v) Then
+        NormalizeCellValue = ""
+        Exit Function
+    End If
+
+    s = CStr(v)
+    s = Replace(s, vbCrLf, " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, ChrW(&H3000), " ")
+    s = CollapseSpaces(s)
+
+    NormalizeCellValue = Trim$(s)
+
+End Function
+
 Private Function NormalizeForDiffCompare(ByVal v As Variant) As String
 
     Dim s As String
@@ -2305,6 +2881,82 @@ Private Function NormalizeForDiffCompare(ByVal v As Variant) As String
     s = CollapseSpaces(s)
 
     NormalizeForDiffCompare = Trim$(s)
+
+End Function
+
+Private Function BuildDuplicateFolderKey(ByVal class2Value As Variant, ByVal class3Value As Variant, ByVal titleValue As Variant) As String
+
+    Dim nClass2 As String
+    Dim nClass3 As String
+    Dim nTitle As String
+
+    nClass2 = NormalizeForDuplicateKey(class2Value)
+    nClass3 = NormalizeForDuplicateKey(class3Value)
+    nTitle = NormalizeForDuplicateKey(titleValue)
+
+    BuildDuplicateFolderKey = nClass2 & "|" & nClass3 & "|" & nTitle
+    If Replace(BuildDuplicateFolderKey, "|", "") = "" Then
+        BuildDuplicateFolderKey = ""
+    End If
+
+End Function
+
+Private Function NormalizeForDuplicateKey(ByVal v As Variant) As String
+
+    Dim s As String
+
+    If IsError(v) Or IsNull(v) Or IsEmpty(v) Then
+        NormalizeForDuplicateKey = ""
+        Exit Function
+    End If
+
+    s = CStr(v)
+    s = Application.WorksheetFunction.Clean(s)
+    s = Replace(s, vbCrLf, " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, ChrW(&H3000), " ")
+    s = Replace(s, "（", "(")
+    s = Replace(s, "）", ")")
+    s = Replace(s, "／", "/")
+    s = Replace(s, "・", "/")
+    s = NormalizeHyphenChars(s)
+
+    On Error Resume Next
+    s = StrConv(s, vbWide) ' 半角カタカナを全角へ寄せる
+    On Error GoTo 0
+
+    s = ConvertZenkakuAlnumToHankaku(s) ' 全角英数字は半角へ
+    s = LCase$(s)
+    s = CollapseSpaces(s)
+    s = Replace(s, " ", "")
+
+    NormalizeForDuplicateKey = Trim$(s)
+
+End Function
+
+Private Function ConvertZenkakuAlnumToHankaku(ByVal s As String) As String
+
+    Dim i As Long
+    Dim ch As String
+    Dim codePoint As Long
+    Dim outText As String
+
+    outText = ""
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        codePoint = AscW(ch)
+
+        Select Case codePoint
+            Case &HFF10 To &HFF19, &HFF21 To &HFF3A, &HFF41 To &HFF5A
+                outText = outText & ChrW(codePoint - &HFEE0)
+            Case Else
+                outText = outText & ch
+        End Select
+    Next i
+
+    ConvertZenkakuAlnumToHankaku = outText
 
 End Function
 
@@ -6604,49 +7256,57 @@ End Function
 
 
 Private Function BuildFolderCompareKey_Mig(ByVal class2Value As String, ByVal class3Value As String, ByVal titleValue As String) As String
-    BuildFolderCompareKey_Mig = NormalizeFolderCompareText_Mig(class2Value) & "|" & _
-                              NormalizeFolderCompareText_Mig(class3Value) & "|" & _
-                              NormalizeFolderCompareText_Mig(titleValue)
+    BuildFolderCompareKey_Mig = NormalizeForDuplicateCheck(class2Value) & "|" & _
+                              NormalizeForDuplicateCheck(class3Value) & "|" & _
+                              NormalizeForDuplicateCheck(titleValue)
 End Function
 
 Private Function NormalizeFolderCompareText_Mig(ByVal valueText As String) As String
+    NormalizeFolderCompareText_Mig = NormalizeForDuplicateCheck(valueText)
+
+End Function
+
+Private Function NormalizeForDuplicateCheck(ByVal v As Variant) As String
 
     Dim s As String
     Dim invisibleChars As Variant
     Dim i As Long
 
-    s = CStr(valueText)
+    If IsError(v) Or IsNull(v) Or IsEmpty(v) Then
+        NormalizeForDuplicateCheck = ""
+        Exit Function
+    End If
+
+    s = CStr(v)
+    s = Replace(s, vbCr, "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, vbTab, "")
+    s = Trim$(s)
+
     On Error Resume Next
     s = StrConv(s, vbNarrow)
     On Error GoTo 0
+
+    s = Replace(s, " ", "")
+    s = Replace(s, ChrW(&H3000), "")
+
+    s = Replace(s, "・", "")
+    s = Replace(s, "/", "")
+    s = Replace(s, "／", "")
+    s = Replace(s, "-", "")
+    s = Replace(s, "－", "")
+    s = Replace(s, "―", "")
+    s = Replace(s, "ｰ", "")
+
     s = Replace(s, "（", "(")
     s = Replace(s, "）", ")")
-    s = Replace(s, "・", "･")
 
-    s = Replace(s, vbCrLf, " ")
-    s = Replace(s, vbCr, " ")
-    s = Replace(s, vbLf, " ")
-    s = Replace(s, vbTab, " ")
-    s = Replace(s, ChrW(&H3000), " ")
-
-    ' ゼロ幅スペース/不可視文字の除去
-    invisibleChars = Array( _
-        ChrW(&H200B), ChrW(&H200C), ChrW(&H200D), ChrW(&H2060), _
-        ChrW(&HFEFF), ChrW(&H180E), ChrW(&H00AD))
+    invisibleChars = Array(ChrW(&H200B), ChrW(&H200C), ChrW(&H200D), ChrW(&H2060), ChrW(&HFEFF), ChrW(&H180E), ChrW(&H00AD))
     For i = LBound(invisibleChars) To UBound(invisibleChars)
         s = Replace(s, CStr(invisibleChars(i)), "")
     Next i
 
-    s = Trim$(s)
-
-    Do While InStr(s, "  ") > 0
-        s = Replace(s, "  ", " ")
-    Loop
-
-    ' 実務上の同一判定を優先し、比較キー上は空白を除去
-    s = Replace(s, " ", "")
-
-    NormalizeFolderCompareText_Mig = s
+    NormalizeForDuplicateCheck = LCase$(s)
 
 End Function
 
