@@ -1409,9 +1409,13 @@ Public Sub CSV取込_シンプル版()
     Dim skippedBlankYearCount As Long
     Dim existingHasHeader As Boolean
     Dim srcWarekiCol As Long
+    Dim srcYearCol As Long
     Dim dstWarekiCol As Long
+    Dim dstYearCol As Long
     Dim targetFiscalYear As String
+    Dim targetFiscalYearValue As Long
     Dim rowYear As String
+    Dim rowYearValue As Long
     Dim annualFixChangedCount As Long
     Dim annualFixReviewCount As Long
 
@@ -1440,31 +1444,35 @@ Public Sub CSV取込_シンプル版()
 
     If srcLastCol <= 0 Then Err.Raise vbObjectError + 2101, , "選択したCSVの見出し行が見つかりません。"
 
-    ' 取込CSV側の「年度（和暦）」列を特定
+    ' 取込CSV側の年度列を特定（優先: 年度（和暦） -> 年度）
     srcWarekiCol = FindHeaderColumn(wsCSV, srcLastCol, Array("年度（和暦）", "年度(和暦)"))
-    If srcWarekiCol <= 0 Then
-        Err.Raise vbObjectError + 2102, , "取込CSVに「年度（和暦）」列が見つかりません。"
+    srcYearCol = FindHeaderColumn(wsCSV, srcLastCol, Array("年度"))
+    If srcWarekiCol <= 0 And srcYearCol <= 0 Then
+        Err.Raise vbObjectError + 2102, , "取込CSVに「年度（和暦）」または「年度」列が見つかりません。"
     End If
 
-    ' 2行目以降の最初の非空欄値を「今回取込対象年度」とする
+    ' 2行目以降の最初の変換可能な非空欄値を「今回取込対象年度」とする
     For srcRow = 2 To srcLastRow
-        rowYear = GetTrimmedCell(wsCSV, srcRow, srcWarekiCol)
-        If rowYear <> "" Then
+        rowYear = GetFiscalYearTextFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
+        rowYearValue = GetNormalizedYearFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
+        If rowYearValue > 0 Then
             targetFiscalYear = rowYear
+            targetFiscalYearValue = rowYearValue
             Exit For
         End If
     Next srcRow
-    If targetFiscalYear = "" Then
-        Err.Raise vbObjectError + 2103, , "取込CSVの「年度（和暦）」列から対象年度を取得できません。"
+    If targetFiscalYearValue <= 0 Then
+        Err.Raise vbObjectError + 2103, , "取込CSVの年度列から対象年度を取得できません。"
     End If
 
     ' 単年CSV前提のため、対象年度以外が混在していないか事前検証
     For srcRow = 2 To srcLastRow
-        rowYear = GetTrimmedCell(wsCSV, srcRow, srcWarekiCol)
-        If rowYear <> "" And rowYear <> targetFiscalYear Then
+        rowYear = GetFiscalYearTextFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
+        rowYearValue = GetNormalizedYearFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
+        If rowYear <> "" And rowYearValue > 0 And rowYearValue <> targetFiscalYearValue Then
             Err.Raise vbObjectError + 2104, , _
                 "取込CSVに複数年度が混在しています。行" & srcRow & _
-                " の年度（和暦）=""" & rowYear & """（対象年度: " & targetFiscalYear & "）"
+                " の年度=""" & rowYear & """（対象年度: " & targetFiscalYear & "）"
         End If
     Next srcRow
 
@@ -1478,17 +1486,18 @@ Public Sub CSV取込_シンプル版()
         ' 追記取込: 既存見出しを維持
         NormalizeHeaderLineBreaks ws
 
-        ' 目録CSVシート側の「年度（和暦）」列を特定
+        ' 目録CSVシート側の年度列を特定（優先: 年度（和暦） -> 年度）
         dstWarekiCol = FindHeaderColumn(ws, dstLastCol, Array("年度（和暦）", "年度(和暦)"))
-        If dstWarekiCol <= 0 Then
-            Err.Raise vbObjectError + 2105, , "目録CSVシートに「年度（和暦）」列が見つかりません。"
+        dstYearCol = FindHeaderColumn(ws, dstLastCol, Array("年度"))
+        If dstWarekiCol <= 0 And dstYearCol <= 0 Then
+            Err.Raise vbObjectError + 2105, , "目録CSVシートに「年度（和暦）」または「年度」列が見つかりません。"
         End If
 
         ' 高速化対応: 対象年度行を連続ブロック単位で一括削除（他年度は残す）
-        deletedCount = DeleteRowsByFiscalYearBulk(ws, 2, dstLastRow, dstWarekiCol, targetFiscalYear)
+        deletedCount = DeleteRowsByFiscalYearBulk(ws, 2, dstLastRow, dstWarekiCol, dstYearCol, targetFiscalYearValue)
 
         dstLastRow = GetLastUsedRow(ws)
-        appendRow = FindInsertRowByYearOrder(ws, 2, dstLastRow, dstWarekiCol, targetFiscalYear)
+        appendRow = FindInsertRowByYearOrder(ws, 2, dstLastRow, dstWarekiCol, dstYearCol, targetFiscalYearValue)
     End If
 
     ' データ部（2行目以降）を年度順挿入（古い年度 -> 新しい年度）
@@ -1497,8 +1506,9 @@ Public Sub CSV取込_シンプル版()
     Dim writeIndex As Long
     importRowCount = 0
     For srcRow = 2 To srcLastRow
-        rowYear = GetTrimmedCell(wsCSV, srcRow, srcWarekiCol)
-        If rowYear = "" Then
+        rowYear = GetFiscalYearTextFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
+        rowYearValue = GetNormalizedYearFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
+        If rowYear = "" Or rowYearValue <= 0 Then
             skippedBlankYearCount = skippedBlankYearCount + 1
         Else
             importRowCount = importRowCount + 1
@@ -1509,8 +1519,9 @@ Public Sub CSV取込_シンプル版()
         ReDim writeData(1 To importRowCount, 1 To srcLastCol)
         writeIndex = 0
         For srcRow = 2 To srcLastRow
-            rowYear = GetTrimmedCell(wsCSV, srcRow, srcWarekiCol)
-            If rowYear <> "" Then
+            rowYear = GetFiscalYearTextFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
+            rowYearValue = GetNormalizedYearFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
+            If rowYear <> "" And rowYearValue > 0 Then
                 writeIndex = writeIndex + 1
                 For dstLastCol = 1 To srcLastCol
                     writeData(writeIndex, dstLastCol) = wsCSV.Cells(srcRow, dstLastCol).Value
@@ -1554,25 +1565,22 @@ Private Function FindInsertRowByYearOrder( _
     ByVal ws As Worksheet, _
     ByVal dataStartRow As Long, _
     ByVal dataEndRow As Long, _
-    ByVal yearCol As Long, _
-    ByVal targetYearText As String) As Long
+    ByVal warekiYearCol As Long, _
+    ByVal westernYearCol As Long, _
+    ByVal targetYearValue As Long) As Long
 
-    Dim targetKey As Long
     Dim r As Long
     Dim existingKey As Long
-    Dim existingYear As String
 
-    targetKey = ConvertYearTextToSortableKey(targetYearText)
     If dataEndRow < dataStartRow Then
         FindInsertRowByYearOrder = dataStartRow
         Exit Function
     End If
 
     For r = dataStartRow To dataEndRow
-        existingYear = GetTrimmedCell(ws, r, yearCol)
-        existingKey = ConvertYearTextToSortableKey(existingYear)
-        If existingKey > 0 And targetKey > 0 Then
-            If existingKey > targetKey Then
+        existingKey = GetNormalizedYearFromRow(ws, r, warekiYearCol, westernYearCol)
+        If existingKey > 0 And targetYearValue > 0 Then
+            If existingKey > targetYearValue Then
                 FindInsertRowByYearOrder = r
                 Exit Function
             End If
@@ -1583,61 +1591,116 @@ Private Function FindInsertRowByYearOrder( _
 
 End Function
 
-Private Function ConvertYearTextToSortableKey(ByVal yearText As String) As Long
+'--------------------------------------------------------
+' 年度表現を内部比較用の西暦年度へ正規化する
+' 対応例: R7 / r7 / 令和7 / 令和7年度 / 2025 -> 2025
+' 変換不可・空欄時は 0 を返す（呼び出し元を停止させない）
+'--------------------------------------------------------
+Public Function NormalizeYearValue(ByVal yearValue As Variant) As Long
 
     Dim s As String
+    Dim numberPart As String
     Dim n As Long
-    Dim i As Long
-    Dim ch As String
-    Dim digits As String
+    Dim leading As String
 
-    s = NormalizeForDiffCompare(yearText)
-    If s = "" Then Exit Function
+    On Error GoTo SafeExit
 
-    If Left$(UCase$(s), 1) = "R" Then
-        digits = ""
-        For i = 2 To Len(s)
-            ch = Mid$(s, i, 1)
-            If ch Like "#" Then
-                digits = digits & ch
-            ElseIf Len(digits) > 0 Then
-                Exit For
-            End If
-        Next i
-        If Len(digits) > 0 Then
-            ConvertYearTextToSortableKey = CLng(digits)
-            Exit Function
-        End If
-    End If
+    If IsError(yearValue) Or IsNull(yearValue) Or IsEmpty(yearValue) Then GoTo SafeExit
 
-    If InStr(1, s, "令和", vbTextCompare) > 0 Then
-        digits = ""
-        For i = InStr(1, s, "令和", vbTextCompare) + 2 To Len(s)
-            ch = Mid$(s, i, 1)
-            If ch Like "#" Then
-                digits = digits & ch
-            ElseIf Len(digits) > 0 Then
-                Exit For
-            End If
-        Next i
-        If Len(digits) > 0 Then
-            ConvertYearTextToSortableKey = CLng(digits)
-            Exit Function
-        End If
-    End If
+    s = NormalizeBasicText(CStr(yearValue))
+    If Len(s) = 0 Then GoTo SafeExit
 
-    digits = ""
-    For i = 1 To Len(s)
-        ch = Mid$(s, i, 1)
-        If ch Like "#" Then digits = digits & ch
-    Next i
-    If Len(digits) >= 4 Then
-        n = CLng(Left$(digits, 4))
+    s = Replace(s, "年度", "")
+    s = Replace(s, "年", "")
+
+    If IsDigitsOnly(s) Then
+        n = CLng(s)
         If n >= 1900 And n <= 2999 Then
-            ConvertYearTextToSortableKey = n
+            NormalizeYearValue = n
+        ElseIf n >= 1 And n <= 99 Then
+            NormalizeYearValue = 2018 + n
+        End If
+        Exit Function
+    End If
+
+    If Left$(s, 2) = "令和" Then
+        numberPart = Mid$(s, 3)
+    Else
+        leading = UCase$(Left$(s, 1))
+        If leading = "R" Then
+            numberPart = Mid$(s, 2)
+        Else
+            GoTo SafeExit
+        End If
+    End If
+
+    numberPart = ExtractDigits(numberPart)
+    If Len(numberPart) = 0 Then GoTo SafeExit
+
+    n = CLng(numberPart)
+    If n <= 0 Or n > 99 Then GoTo SafeExit
+
+    NormalizeYearValue = 2018 + n
+
+SafeExit:
+    ' 変換不能時は既定値 0 のまま返す
+
+End Function
+
+Private Function GetFiscalYearTextFromRow( _
+    ByVal ws As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal warekiYearCol As Long, _
+    ByVal westernYearCol As Long) As String
+
+    Dim valueText As String
+
+    If ws Is Nothing Then Exit Function
+
+    If warekiYearCol > 0 Then
+        valueText = GetTrimmedCell(ws, rowNo, warekiYearCol)
+        If valueText <> "" And NormalizeYearValue(valueText) > 0 Then
+            GetFiscalYearTextFromRow = valueText
             Exit Function
         End If
     End If
+
+    If westernYearCol > 0 Then
+        valueText = GetTrimmedCell(ws, rowNo, westernYearCol)
+        If valueText <> "" And NormalizeYearValue(valueText) > 0 Then
+            GetFiscalYearTextFromRow = valueText
+        End If
+    End If
+
+End Function
+
+Private Function GetNormalizedYearFromRow( _
+    ByVal ws As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal warekiYearCol As Long, _
+    ByVal westernYearCol As Long) As Long
+
+    Dim normalizedValue As Long
+
+    If ws Is Nothing Then Exit Function
+
+    If warekiYearCol > 0 Then
+        normalizedValue = NormalizeYearValue(ws.Cells(rowNo, warekiYearCol).Value)
+        If normalizedValue > 0 Then
+            GetNormalizedYearFromRow = normalizedValue
+            Exit Function
+        End If
+    End If
+
+    If westernYearCol > 0 Then
+        GetNormalizedYearFromRow = NormalizeYearValue(ws.Cells(rowNo, westernYearCol).Value)
+    End If
+
+End Function
+
+Private Function ConvertYearTextToSortableKey(ByVal yearText As String) As Long
+
+    ConvertYearTextToSortableKey = NormalizeYearValue(yearText)
 
 End Function
 
@@ -1647,12 +1710,14 @@ End Function
 Private Sub ApplyAnnualFolderNameCorrections( _
     ByVal ws As Worksheet, _
     ByRef changedCount As Long, _
-    ByRef reviewCount As Long)
+    ByRef reviewCount As Long, _
+    Optional ByVal targetYearValue As Long = 0)
 
     Dim lastRow As Long
     Dim lastCol As Long
     Dim rowNo As Long
     Dim fiscalCol As Long
+    Dim westernYearCol As Long
     Dim annualUseCol As Long
     Dim reviewCol As Long
     Dim targetCols As Variant
@@ -1675,7 +1740,9 @@ Private Sub ApplyAnnualFolderNameCorrections( _
     lastRow = GetLastUsedRow(ws)
     If lastCol <= 0 Or lastRow < 2 Then Exit Sub
 
-    fiscalCol = FindHeaderColumn(ws, lastCol, Array("年度（和暦）", "年度(和暦)", "年度"))
+    fiscalCol = FindHeaderColumn(ws, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(ws, lastCol, Array("年度"))
+    If fiscalCol <= 0 Then fiscalCol = westernYearCol
     annualUseCol = FindHeaderColumn(ws, lastCol, Array("毎年度利用区分", "毎年度利用区分1:毎年作成 2:単年のみ"))
     If fiscalCol <= 0 Or annualUseCol <= 0 Then Exit Sub
 
@@ -1685,10 +1752,14 @@ Private Sub ApplyAnnualFolderNameCorrections( _
     reviewCol = EnsureHeaderColumn(ws, "年度補正確認")
 
     For rowNo = 2 To lastRow
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(ws, rowNo, fiscalCol, westernYearCol) <> targetYearValue Then GoTo ContinueNextRow
+        End If
+
         annualUseVal = GetTrimmedCell(ws, rowNo, annualUseCol)
         If Not IsAnnualCreationCategory(annualUseVal) Then GoTo ContinueNextRow
 
-        fiscalYear = GetTrimmedCell(ws, rowNo, fiscalCol)
+        fiscalYear = GetFiscalYearTextFromRow(ws, rowNo, fiscalCol, westernYearCol)
         rowChanged = False
         rowNeedsReview = False
         reviewReasons = ""
@@ -2088,7 +2159,14 @@ Private Function ParseReiwaYearNumber(ByVal fiscalYear As String) As Long
 
     re.Pattern = "^(\d{1,2})$"
     Set matches = re.Execute(s)
-    If matches.Count > 0 Then ParseReiwaYearNumber = CLng(matches(0).SubMatches(0))
+    If matches.Count > 0 Then
+        ParseReiwaYearNumber = CLng(matches(0).SubMatches(0))
+        Exit Function
+    End If
+
+    If NormalizeYearValue(s) >= 2019 Then
+        ParseReiwaYearNumber = NormalizeYearValue(s) - 2018
+    End If
 
 End Function
 
@@ -2122,8 +2200,9 @@ Private Function DeleteRowsByFiscalYearBulk( _
     ByVal ws As Worksheet, _
     ByVal startRow As Long, _
     ByVal endRow As Long, _
-    ByVal fiscalYearCol As Long, _
-    ByVal targetFiscalYear As String) As Long
+    ByVal warekiYearCol As Long, _
+    ByVal westernYearCol As Long, _
+    ByVal targetFiscalYearValue As Long) As Long
 
     Dim rowNo As Long
     Dim inBlock As Boolean
@@ -2132,9 +2211,10 @@ Private Function DeleteRowsByFiscalYearBulk( _
 
     If ws Is Nothing Then Exit Function
     If endRow < startRow Then Exit Function
+    If targetFiscalYearValue <= 0 Then Exit Function
 
     For rowNo = endRow To startRow Step -1
-        If GetTrimmedCell(ws, rowNo, fiscalYearCol) = targetFiscalYear Then
+        If GetNormalizedYearFromRow(ws, rowNo, warekiYearCol, westernYearCol) = targetFiscalYearValue Then
             If Not inBlock Then
                 inBlock = True
                 blockEnd = rowNo
@@ -2525,8 +2605,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim editLastCol As Long
     Dim r As Long
     Dim outRow As Long
-    Dim keyYearSrc As Long, keyTitleSrc As Long, keyCategory2Src As Long, keyMediaSrc As Long, keyPeriodSrc As Long
-    Dim keyYearEdit As Long, keyTitleEdit As Long, keyCategory2Edit As Long, keyMediaEdit As Long, keyPeriodEdit As Long
+    Dim keyYearSrc As Long, keyYearSrcWestern As Long, keyTitleSrc As Long, keyCategory2Src As Long, keyMediaSrc As Long, keyPeriodSrc As Long
+    Dim keyYearEdit As Long, keyYearEditWestern As Long, keyTitleEdit As Long, keyCategory2Edit As Long, keyMediaEdit As Long, keyPeriodEdit As Long
     Dim compareDefs As Variant
     Dim fixedHeaders As Variant
     Dim compareSrcCols() As Long
@@ -2564,23 +2644,25 @@ Public Sub 手順4_差分インポートCSVを作成する()
     editLastCol = GetLastUsedCol(wsEdit)
 
     keyYearSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    keyYearSrcWestern = FindHeaderColumn(wsSrc, srcLastCol, Array("年度"))
     keyTitleSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("タイトル"))
     keyCategory2Src = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名２"))
     keyMediaSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("媒体種別"))
     keyPeriodSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("保存期間"))
 
     keyYearEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    keyYearEditWestern = FindHeaderColumn(wsEdit, editLastCol, Array("年度"))
     keyTitleEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("タイトル"))
     keyCategory2Edit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名２"))
     keyMediaEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("媒体種別"))
     keyPeriodEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("保存期間"))
     bikoColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("備考"))
 
-    If keyYearSrc = 0 Or keyTitleSrc = 0 Or keyCategory2Src = 0 Or keyMediaSrc = 0 Or keyPeriodSrc = 0 Then
-        Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列（年度（和暦）/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
+    If (keyYearSrc = 0 And keyYearSrcWestern = 0) Or keyTitleSrc = 0 Or keyCategory2Src = 0 Or keyMediaSrc = 0 Or keyPeriodSrc = 0 Then
+        Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列（年度（和暦）または年度/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
     End If
-    If keyYearEdit = 0 Or keyTitleEdit = 0 Or keyCategory2Edit = 0 Or keyMediaEdit = 0 Or keyPeriodEdit = 0 Then
-        Err.Raise vbObjectError + 2302, , "新ファイル基準表 の差分キー列（年度（和暦）/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
+    If (keyYearEdit = 0 And keyYearEditWestern = 0) Or keyTitleEdit = 0 Or keyCategory2Edit = 0 Or keyMediaEdit = 0 Or keyPeriodEdit = 0 Then
+        Err.Raise vbObjectError + 2302, , "新ファイル基準表 の差分キー列（年度（和暦）または年度/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
     End If
 
     compareDefs = Array("分類名１", "分類名３", "保存期間", "媒体種別")
@@ -2621,11 +2703,11 @@ Public Sub 手順4_差分インポートCSVを作成する()
     ' 固定見出し「毎年度利用区分」は新ファイル基準表の正式見出しから取得する
     outputSourceMap.Add "毎年度利用区分", "毎年度利用区分1:毎年作成 2:単年のみ"
 
-    ' ① 目録CSVをキー（年度（和暦）+タイトル+分類名２+媒体種別+保存期間）で辞書化
-    '    年度またぎ比較を防ぐため、年度（和暦）を必ずキーに含める。
-    '    年度空欄行は比較対象外とする。
+    ' ① 目録CSVをキー（正規化年度+タイトル+分類名２+媒体種別+保存期間）で辞書化
+    '    年度またぎ比較を防ぐため、年度は西暦数値へ正規化して必ずキーに含める。
+    '    年度空欄・変換不能行は比較対象外とする。
     For r = 2 To srcLastRow
-        yearVal = GetTrimmedCell(wsSrc, r, keyYearSrc)
+        yearVal = CStr(GetNormalizedYearFromRow(wsSrc, r, keyYearSrc, keyYearSrcWestern))
         titleVal = GetTrimmedCell(wsSrc, r, keyTitleSrc)
         category2Val = GetTrimmedCell(wsSrc, r, keyCategory2Src)
         mediaVal = GetTrimmedCell(wsSrc, r, keyMediaSrc)
@@ -2633,8 +2715,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
         ' キー一意性を高めるため媒体種別・保存期間も含める
         key = BuildHeaderBasedKey(yearVal, titleVal, category2Val, mediaVal, periodVal)
 
-        isKeyBlank = (yearVal = "" And titleVal = "" And category2Val = "")
-        If Not isKeyBlank And yearVal <> "" And titleVal <> "" Then
+        isKeyBlank = ((yearVal = "" Or yearVal = "0") And titleVal = "" And category2Val = "")
+        If Not isKeyBlank And yearVal <> "" And yearVal <> "0" And titleVal <> "" Then
             AddRowToKeyBucket srcDict, key, r
         End If
     Next r
@@ -2658,18 +2740,18 @@ Public Sub 手順4_差分インポートCSVを作成する()
             End If
         End If
 
-        yearVal = GetTrimmedCell(wsEdit, r, keyYearEdit)
+        yearVal = CStr(GetNormalizedYearFromRow(wsEdit, r, keyYearEdit, keyYearEditWestern))
         titleVal = GetTrimmedCell(wsEdit, r, keyTitleEdit)
         category2Val = GetTrimmedCell(wsEdit, r, keyCategory2Edit)
         mediaVal = GetTrimmedCell(wsEdit, r, keyMediaEdit)
         periodVal = GetTrimmedCell(wsEdit, r, keyPeriodEdit)
         ' キー一意性を高めるため媒体種別・保存期間も含める
         key = BuildHeaderBasedKey(yearVal, titleVal, category2Val, mediaVal, periodVal)
-        isKeyBlank = (yearVal = "" And titleVal = "" And category2Val = "")
+        isKeyBlank = ((yearVal = "" Or yearVal = "0") And titleVal = "" And category2Val = "")
 
-        ' A. キー3項目がすべて空白 / 年度空欄 / タイトル空欄 -> 無視
-        '    同一年度内比較を徹底するため、年度空欄は比較対象外にする。
-        If isKeyBlank Or yearVal = "" Or titleVal = "" Then
+        ' A. キー3項目がすべて空白 / 年度空欄・変換不能 / タイトル空欄 -> 無視
+        '    同一年度内比較を徹底するため、年度を正規化できない行は比較対象外にする。
+        If isKeyBlank Or yearVal = "" Or yearVal = "0" Or titleVal = "" Then
             ' 何もしない
 
         ' B. キー一致する行が存在 -> 比較列に差異があれば更新行として出力
@@ -2812,8 +2894,12 @@ End Sub
 
 Private Function BuildHeaderBasedKey(ByVal yearValue As String, ByVal titleValue As String, ByVal category2Value As String, ByVal mediaValue As String, ByVal periodValue As String) As String
 
-    ' 差分キーも比較用正規化を通して、表記ゆれによる誤差分を抑制する
-    BuildHeaderBasedKey = NormalizeForDiffCompare(yearValue) & "|" & _
+    Dim normalizedYear As Long
+
+    normalizedYear = NormalizeYearValue(yearValue)
+
+    ' 差分キーの年度は西暦数値へ統一し、R7 と 2025 の表記ゆれによる誤差分を抑制する
+    BuildHeaderBasedKey = CStr(normalizedYear) & "|" & _
                           NormalizeForDiffCompare(titleValue) & "|" & _
                           NormalizeForDiffCompare(category2Value) & "|" & _
                           NormalizeForDiffCompare(mediaValue) & "|" & _
@@ -2999,6 +3085,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim sourceKeyMap As Object
     Dim srcCol As Long
     Dim dstCol As Long
+    Dim srcWarekiCol As Long
+    Dim srcYearCol As Long
     Dim headerText As String
     Dim canonical As String
     Dim i As Long
@@ -3023,8 +3111,13 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim didUpdateRows As Boolean
     Dim shouldReorderColumns As Boolean
     Dim columnOrderMap As Variant
+    Dim targetYearRaw As String
+    Dim targetYearValue As Long
+    Dim annualFixChangedCount As Long
+    Dim annualFixReviewCount As Long
 
     On Error GoTo ErrorHandler
+    previousCalculationMode = Application.Calculation
 
     Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
     Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
@@ -3037,9 +3130,17 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Set formatTemplateMap = CreateObject("Scripting.Dictionary")
     Set columnWidthMap = CreateObject("Scripting.Dictionary")
 
+    targetYearRaw = InputBox("整形対象年度を入力してください。（例: R7 / 令和7年度 / 2025）", "整形対象年度入力")
+    If StrPtr(targetYearRaw) = 0 Then Exit Sub
+
+    targetYearValue = NormalizeYearValue(targetYearRaw)
+    If targetYearValue <= 0 Then
+        MsgBox "年度の入力を解釈できませんでした。", vbExclamation
+        Exit Sub
+    End If
+
     Application.ScreenUpdating = False
     Application.EnableEvents = False
-    previousCalculationMode = Application.Calculation
     Application.Calculation = xlCalculationManual
 
     srcLastCol = GetLastUsedCol(wsSrc)
@@ -3068,6 +3169,12 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     ' 3) 目録CSVの見出し辞書を作成し、CSV由来列の転記マップを組み立てる
     BuildSourceHeaderMap wsSrc, srcLastCol, srcHeaderMap
+    srcWarekiCol = FindHeaderColumn(wsSrc, srcLastCol, Array("年度（和暦）", "年度(和暦)"))
+    srcYearCol = FindHeaderColumn(wsSrc, srcLastCol, Array("年度"))
+    If srcWarekiCol <= 0 And srcYearCol <= 0 Then
+        Err.Raise vbObjectError + 2002, , "目録CSV に「年度（和暦）」または「年度」列が見つかりません。"
+    End If
+
     For srcCol = 1 To srcLastCol
         headerText = Trim$(CStr(wsSrc.Cells(1, srcCol).Value))
         If headerText <> "" Then
@@ -3087,11 +3194,15 @@ Public Sub 手順2_新ファイル基準表を作成する()
     appendRow = dstLastRow + 1
 
     ' 高速化対応: 重複呼び出しを削除（1回のみ）
-    BuildExistingRowMap wsDst, dstLastRow, existingRowMap
+    BuildExistingRowMap wsDst, dstLastRow, existingRowMap, targetYearValue
 
     ' 目録CSVの対象年度行件数を先に確認
     If srcLastRow >= 2 Then
         For srcRow = 2 To srcLastRow
+            If GetNormalizedYearFromRow(wsSrc, srcRow, srcWarekiCol, srcYearCol) <> targetYearValue Then
+                GoTo ContinueNextSourceRow
+            End If
+
             key = BuildFileKeyFromSheetRow(wsSrc, srcRow, srcHeaderMap)
 
             If key = "" Then
@@ -3143,18 +3254,14 @@ ContinueNextSourceRow:
     End If
 
     ' 6) 同期状態列を更新（現行 / 削除候補 / 未登録）
-    UpdateSyncStatusColumn wsDst, sourceKeyMap
+    UpdateSyncStatusColumn wsDst, sourceKeyMap, targetYearValue
 
-    ' 7) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
-    If didUpdateRows Then
-        ConvertAnnualUseDivisionValues wsDst, updateEndRow, updateStartRow
-        SyncSecondColorNameFromColor wsDst, updateStartRow, updateEndRow
-    End If
+    ' 7) 「毎年度利用区分」表示値変換と2色名同期は指定年度行だけに限定する
+    ConvertAnnualUseDivisionValuesByYear wsDst, targetYearValue
+    SyncSecondColorNameFromColorByYear wsDst, targetYearValue
 
-    If appendRow > dstLastRow + 1 Then
-        ConvertAnnualUseDivisionValues wsDst, appendRow - 1, dstLastRow + 1
-        SyncSecondColorNameFromColor wsDst, dstLastRow + 1, appendRow - 1
-    End If
+    ' 年度表現補正も、指定年度の行だけに限定する
+    ApplyAnnualFolderNameCorrections wsDst, annualFixChangedCount, annualFixReviewCount, targetYearValue
 
     ' 8) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
     If leftFixedCount > 0 Then
@@ -3171,7 +3278,10 @@ ContinueNextSourceRow:
     ' 9) 左側固定対象の不足見出しを通知用に収集（列の表示状態は変更しない）
     HideKeyColumnsForStep2 wsDst, displayHeaders, missingHeadersText
 
-    ' 10) タイトルがある行だけ通し番号を再採番
+    ' 10) 新ファイル基準表全体を年度順（古い年度 -> 新しい年度）へ並べる
+    SortNewFileStandardByYear wsDst
+
+    ' 11) タイトルがある行だけ通し番号を再採番
     ReindexSerial_NewFileStandard wsDst
 
     ' 11) 高速化対応: 実際に列順変更があった場合のみ再適用
@@ -3182,17 +3292,23 @@ ContinueNextSourceRow:
 
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
+               "対象年度: " & CStr(targetYearValue) & vbCrLf & _
                "更新件数: " & updatedCount & " 件" & vbCrLf & _
                "追加件数: " & appendedCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
+               "年度表現補正件数: " & annualFixChangedCount & " 件" & vbCrLf & _
+               "年度表現要確認件数: " & annualFixReviewCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
                "以下の見出しが見つからないため、左側固定対象から除外しました:" & vbCrLf & _
                missingHeadersText, vbExclamation
     Else
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
+               "対象年度: " & CStr(targetYearValue) & vbCrLf & _
                "更新件数: " & updatedCount & " 件" & vbCrLf & _
                "追加件数: " & appendedCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
+               "年度表現補正件数: " & annualFixChangedCount & " 件" & vbCrLf & _
+               "年度表現要確認件数: " & annualFixReviewCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
     End If
 
@@ -3261,6 +3377,45 @@ Public Sub SyncSecondColorNameFromColor( _
         colorName = GetTrimmedCell(wsDst, rowNo, colorCol)
         SetCellColorByName wsDst.Cells(rowNo, colorCol), colorName
         SetCellColorByName wsDst.Cells(rowNo, color2Col), colorName
+    Next rowNo
+
+End Sub
+
+Private Sub SyncSecondColorNameFromColorByYear(ByVal wsDst As Worksheet, ByVal targetYearValue As Long)
+
+    Dim lastCol As Long
+    Dim colorCol As Long
+    Dim color2Col As Long
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+    Dim lastRow As Long
+    Dim rowNo As Long
+    Dim colorName As String
+
+    If wsDst Is Nothing Then Exit Sub
+    If targetYearValue <= 0 Then Exit Sub
+
+    lastCol = GetLastUsedCol(wsDst)
+    If lastCol <= 0 Then Exit Sub
+
+    colorCol = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates("色名"))
+    color2Col = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates("2色名"))
+    If colorCol = 0 Or color2Col = 0 Then Exit Sub
+
+    warekiYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度"))
+    If warekiYearCol <= 0 And westernYearCol <= 0 Then Exit Sub
+
+    lastRow = GetLastUsedRow(wsDst)
+    If lastRow < 2 Then Exit Sub
+
+    For rowNo = 2 To lastRow
+        If GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol) = targetYearValue Then
+            wsDst.Cells(rowNo, color2Col).Value = wsDst.Cells(rowNo, colorCol).Value
+            colorName = GetTrimmedCell(wsDst, rowNo, colorCol)
+            SetCellColorByName wsDst.Cells(rowNo, colorCol), colorName
+            SetCellColorByName wsDst.Cells(rowNo, color2Col), colorName
+        End If
     Next rowNo
 
 End Sub
@@ -4026,11 +4181,13 @@ Private Function IsUserManagedHeader( _
 
 End Function
 
-Private Sub BuildExistingRowMap(ByVal wsDst As Worksheet, ByVal dstLastRow As Long, ByVal existingRowMap As Object)
+Private Sub BuildExistingRowMap(ByVal wsDst As Worksheet, ByVal dstLastRow As Long, ByVal existingRowMap As Object, Optional ByVal targetYearValue As Long = 0)
 
     Dim headerMap As Object
     Dim rowNo As Long
     Dim key As String
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
 
     existingRowMap.RemoveAll
     Set headerMap = CreateObject("Scripting.Dictionary")
@@ -4042,13 +4199,21 @@ Private Sub BuildExistingRowMap(ByVal wsDst As Worksheet, ByVal dstLastRow As Lo
         Err.Raise vbObjectError + 2201, , "新ファイル基準表にキー列（ファイルID/ファイル番号/バーコード番号）が見つかりません。"
     End If
 
+    warekiYearCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("年度"))
+
     For rowNo = 2 To dstLastRow
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol) <> targetYearValue Then GoTo ContinueNextExistingRow
+        End If
+
         key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
         If key <> "" Then
             If Not existingRowMap.Exists(key) Then
                 existingRowMap.Add key, rowNo
             End If
         End If
+ContinueNextExistingRow:
     Next rowNo
 
 End Sub
@@ -4270,13 +4435,15 @@ End Function
 ' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
 ' - 未登録: ID系すべて空欄
 '--------------------------------------------------------
-Private Sub UpdateSyncStatusColumn(ByVal wsDst As Worksheet, ByVal sourceKeyMap As Object)
+Private Sub UpdateSyncStatusColumn(ByVal wsDst As Worksheet, ByVal sourceKeyMap As Object, Optional ByVal targetYearValue As Long = 0)
 
     Dim headerMap As Object
     Dim lastRow As Long
     Dim rowNo As Long
     Dim syncCol As Long
     Dim key As String
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
 
     If wsDst Is Nothing Then Exit Sub
     If sourceKeyMap Is Nothing Then Exit Sub
@@ -4290,7 +4457,14 @@ Private Sub UpdateSyncStatusColumn(ByVal wsDst As Worksheet, ByVal sourceKeyMap 
     lastRow = GetLastUsedRow(wsDst)
     If lastRow < 2 Then Exit Sub
 
+    warekiYearCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("年度"))
+
     For rowNo = 2 To lastRow
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol) <> targetYearValue Then GoTo ContinueNextSyncRow
+        End If
+
         key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
 
         If key <> "" And sourceKeyMap.Exists(key) Then
@@ -4300,6 +4474,7 @@ Private Sub UpdateSyncStatusColumn(ByVal wsDst As Worksheet, ByVal sourceKeyMap 
         Else
             wsDst.Cells(rowNo, syncCol).Value = "未登録"
         End If
+ContinueNextSyncRow:
     Next rowNo
 
 End Sub
@@ -4806,6 +4981,103 @@ Private Sub ConvertAnnualUseDivisionValues(ByVal wsDst As Worksheet, ByVal lastR
                 ' 空白または定義外はそのまま
         End Select
     Next r
+
+End Sub
+
+Private Sub ConvertAnnualUseDivisionValuesByYear(ByVal wsDst As Worksheet, ByVal targetYearValue As Long)
+
+    Dim lastCol As Long
+    Dim targetCol As Long
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+    Dim lastRow As Long
+    Dim rowNo As Long
+    Dim cellValue As String
+
+    If wsDst Is Nothing Then Exit Sub
+    If targetYearValue <= 0 Then Exit Sub
+
+    lastCol = GetLastUsedCol(wsDst)
+    If lastCol <= 0 Then Exit Sub
+
+    targetCol = FindHeaderColumn(wsDst, lastCol, Array("毎年度利用区分1:毎年作成 2:単年のみ"))
+    If targetCol = 0 Then Exit Sub
+
+    warekiYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度"))
+    If warekiYearCol <= 0 And westernYearCol <= 0 Then Exit Sub
+
+    lastRow = GetLastUsedRow(wsDst)
+    If lastRow < 2 Then Exit Sub
+
+    For rowNo = 2 To lastRow
+        If GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol) = targetYearValue Then
+            cellValue = Trim(CStr(wsDst.Cells(rowNo, targetCol).Value))
+            Select Case cellValue
+                Case "1"
+                    wsDst.Cells(rowNo, targetCol).Value = "毎年作成"
+                Case "2"
+                    wsDst.Cells(rowNo, targetCol).Value = "単年のみ"
+                Case Else
+                    ' 空白または定義外はそのまま
+            End Select
+        End If
+    Next rowNo
+
+End Sub
+
+Private Sub SortNewFileStandardByYear(ByVal wsDst As Worksheet)
+
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+    Dim tempYearCol As Long
+    Dim tempOrderCol As Long
+    Dim rowNo As Long
+    Dim normalizedYear As Long
+    Dim prevAutoFilterMode As Boolean
+    Dim dataRange As Range
+
+    If wsDst Is Nothing Then Exit Sub
+
+    lastRow = GetLastUsedRow(wsDst)
+    lastCol = GetLastUsedCol(wsDst)
+    If lastRow < 2 Or lastCol <= 0 Then Exit Sub
+
+    warekiYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度"))
+    If warekiYearCol <= 0 And westernYearCol <= 0 Then Exit Sub
+
+    tempYearCol = lastCol + 1
+    tempOrderCol = lastCol + 2
+    wsDst.Cells(1, tempYearCol).Value = "__年度ソートキー_TMP__"
+    wsDst.Cells(1, tempOrderCol).Value = "__元行順_TMP__"
+
+    For rowNo = 2 To lastRow
+        normalizedYear = GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol)
+        If normalizedYear <= 0 Then normalizedYear = 999999
+        wsDst.Cells(rowNo, tempYearCol).Value = normalizedYear
+        wsDst.Cells(rowNo, tempOrderCol).Value = rowNo
+    Next rowNo
+
+    prevAutoFilterMode = wsDst.AutoFilterMode
+    If wsDst.FilterMode Then wsDst.ShowAllData
+
+    Set dataRange = wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(lastRow, tempOrderCol))
+    With wsDst.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=wsDst.Range(wsDst.Cells(2, tempYearCol), wsDst.Cells(lastRow, tempYearCol)), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SortFields.Add Key:=wsDst.Range(wsDst.Cells(2, tempOrderCol), wsDst.Cells(lastRow, tempOrderCol)), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SetRange dataRange
+        .Header = xlYes
+        .MatchCase = False
+        .Orientation = xlTopToBottom
+        .Apply
+    End With
+
+    wsDst.Columns(tempYearCol).Resize(, 2).Delete
+    If prevAutoFilterMode Then wsDst.Rows(1).AutoFilter
 
 End Sub
 
@@ -5604,7 +5876,21 @@ Private Function ParseWarekiYear( _
             eraName = leading
             numberPart = Mid$(s, 2)
         ElseIf IsDigitsOnly(s) Then
-            ' 数字のみ入力は令和として解釈
+            If CLng(s) >= 1900 And CLng(s) <= 2999 Then
+                westernYear = CLng(s)
+                If westernYear >= 2019 Then
+                    eraName = "R"
+                    eraYear = westernYear - 2018
+                ElseIf westernYear >= 1989 Then
+                    eraName = "H"
+                    eraYear = westernYear - 1988
+                Else
+                    Exit Function
+                End If
+                ParseWarekiYear = True
+                Exit Function
+            End If
+            ' 1～2桁の数字のみ入力は従来互換で令和として解釈
             eraName = "R"
             numberPart = s
         Else
@@ -6900,11 +7186,11 @@ Public Sub 旧基準表_継続文書移行()
 
     If MsgBox("旧ファイル基準表から新ファイル基準表へ継続文書を移行します。実行しますか？", vbYesNo + vbQuestion) <> vbYes Then Exit Sub
 
-    targetYearRaw = InputBox("対象年度（和暦）を入力してください。（例: R8 / 令和8）", "対象年度入力")
+    targetYearRaw = InputBox("対象年度を入力してください。（例: R8 / 令和8 / 2026）", "対象年度入力")
     targetYearNorm = NormalizeWarekiYear_Mig(targetYearRaw)
     DebugLog "[年度入力] raw=[" & targetYearRaw & "] normalized=[" & targetYearNorm & "]"
     If targetYearNorm = "" Then
-        MsgBox "年度（和暦）の入力を解釈できませんでした", vbExclamation
+        MsgBox "年度の入力を解釈できませんでした", vbExclamation
         Exit Sub
     End If
 
@@ -7217,40 +7503,12 @@ End Function
 
 Private Function NormalizeWarekiYear_Mig(ByVal rawValue As Variant) As String
 
-    Dim s As String
-    Dim i As Long
-    Dim ch As String
-    Dim n As String
+    Dim westernYear As Long
 
-    s = NormalizeTextForMatch(CStr(rawValue))
-    If s = "" Then Exit Function
-
-    On Error Resume Next
-    s = StrConv(s, vbNarrow)
-    On Error GoTo 0
-
-    s = UCase$(s)
-    s = Replace(s, " ", "")
-
-    If Left$(s, 2) = "令和" Then s = "R" & Mid$(s, 3)
-    If Left$(s, 1) = "Ｒ" Then s = "R" & Mid$(s, 2)
-    If Left$(s, 1) <> "R" Then Exit Function
-
-    For i = 2 To Len(s)
-        ch = Mid$(s, i, 1)
-        If ch Like "[0-9]" Then
-            n = n & ch
-        Else
-            Exit Function
-        End If
-    Next i
-
-    If n = "" Then Exit Function
-    Do While Len(n) > 1 And Left$(n, 1) = "0"
-        n = Mid$(n, 2)
-    Loop
-
-    NormalizeWarekiYear_Mig = "R" & n
+    westernYear = NormalizeYearValue(rawValue)
+    If westernYear >= 2019 Then
+        NormalizeWarekiYear_Mig = "R" & CStr(westernYear - 2018)
+    End If
 
 End Function
 
