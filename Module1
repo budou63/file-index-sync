@@ -6850,8 +6850,10 @@ Private Sub ConfigureMultiSealFixedPrintLayout( _
     If printLastCol <= 0 Then printLastCol = GetSealPrintAreaLastColumn(ws, 21)
     printLastRow = requiredPages * pageRows
 
-    ConfigureSealPageBreaks ws, pageRows, requiredPages
+    ' 既存のPageSetup（Zoom/FitToPagesWide/FitToPagesTall等）は変更せず、
+    ' 印刷範囲を20行単位で固定してから手動改ページだけを再作成する。
     ws.PageSetup.PrintArea = ws.Range(ws.Cells(1, 1), ws.Cells(printLastRow, printLastCol)).Address
+    ConfigureSealPageBreaks ws, pageRows, requiredPages
 
 End Sub
 
@@ -6929,14 +6931,20 @@ Private Sub ConfigureSealPageBreaks(ByVal ws As Worksheet, ByVal pageRows As Lon
     Dim pageNo As Long
     Dim pageTopRow As Long
 
+    ' ResetAllPageBreaks後は、20行単位（21行目、41行目、61行目…の前）の
+    ' 手動水平改ページだけを追加する。PageSetupの拡大縮小設定は触らない。
     ws.ResetAllPageBreaks
 
-    If blockCount <= 1 Then Exit Sub
+    If blockCount > 1 Then
+        For pageNo = 2 To blockCount
+            pageTopRow = (pageNo - 1) * pageRows + 1
+            ws.HPageBreaks.Add Before:=ws.Cells(pageTopRow, 1)
+        Next pageNo
+    End If
 
-    For pageNo = 2 To blockCount
-        pageTopRow = (pageNo - 1) * pageRows + 1
-        ws.HPageBreaks.Add Before:=ws.Cells(pageTopRow, 1)
-    Next pageNo
+    ' Excelが計算した途中行（例: 16行目前後）の青い点線を画面上に残さない。
+    ' 印刷制御は上記のPrintAreaと手動HPageBreaksで固定する。
+    ws.DisplayPageBreaks = False
 
 End Sub
 
