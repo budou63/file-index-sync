@@ -1537,7 +1537,7 @@ Public Sub CSV取込_シンプル版()
     wbCSV.Close False
 
     ' 取込後補正: 「毎年作成」行のみ年度表現を安全に補正
-    ApplyAnnualFolderNameCorrections ws, annualFixChangedCount, annualFixReviewCount
+    ApplyAnnualFolderNameCorrections ws, annualFixChangedCount, annualFixReviewCount, targetFiscalYearValue
     
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
@@ -1590,6 +1590,45 @@ Private Function FindInsertRowByYearOrder( _
     FindInsertRowByYearOrder = dataEndRow + 1
 
 End Function
+
+Private Sub SortNewFileStandardByFiscalYear(ByVal wsDst As Worksheet)
+
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+    Dim tempYearCol As Long
+    Dim rowNo As Long
+
+    If wsDst Is Nothing Then Exit Sub
+
+    lastRow = GetLastUsedRow(wsDst)
+    lastCol = GetLastUsedCol(wsDst)
+    If lastRow < 2 Or lastCol <= 0 Then Exit Sub
+
+    warekiYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度"))
+    If warekiYearCol <= 0 And westernYearCol <= 0 Then Exit Sub
+
+    tempYearCol = EnsureHeaderColumn(wsDst, "__年度順_TMP__")
+    For rowNo = 2 To lastRow
+        wsDst.Cells(rowNo, tempYearCol).Value = GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol)
+    Next rowNo
+
+    If wsDst.FilterMode Then wsDst.ShowAllData
+    With wsDst.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=wsDst.Range(wsDst.Cells(2, tempYearCol), wsDst.Cells(lastRow, tempYearCol)), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
+        .SetRange wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(lastRow, tempYearCol))
+        .Header = xlYes
+        .MatchCase = False
+        .Orientation = xlTopToBottom
+        .Apply
+    End With
+
+    DeleteHeaderColumnIfExists wsDst, "__年度順_TMP__"
+
+End Sub
 
 '--------------------------------------------------------
 ' 年度表現を内部比較用の西暦年度へ正規化する
@@ -1710,12 +1749,14 @@ End Function
 Private Sub ApplyAnnualFolderNameCorrections( _
     ByVal ws As Worksheet, _
     ByRef changedCount As Long, _
-    ByRef reviewCount As Long)
+    ByRef reviewCount As Long, _
+    Optional ByVal targetYearValue As Long = 0)
 
     Dim lastRow As Long
     Dim lastCol As Long
     Dim rowNo As Long
-    Dim fiscalCol As Long
+    Dim fiscalWarekiCol As Long
+    Dim fiscalWesternCol As Long
     Dim annualUseCol As Long
     Dim reviewCol As Long
     Dim targetCols As Variant
@@ -1738,10 +1779,10 @@ Private Sub ApplyAnnualFolderNameCorrections( _
     lastRow = GetLastUsedRow(ws)
     If lastCol <= 0 Or lastRow < 2 Then Exit Sub
 
-    fiscalCol = FindHeaderColumn(ws, lastCol, Array("年度（和暦）", "年度(和暦)"))
-    If fiscalCol <= 0 Then fiscalCol = FindHeaderColumn(ws, lastCol, Array("年度"))
+    fiscalWarekiCol = FindHeaderColumn(ws, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    fiscalWesternCol = FindHeaderColumn(ws, lastCol, Array("年度"))
     annualUseCol = FindHeaderColumn(ws, lastCol, Array("毎年度利用区分", "毎年度利用区分1:毎年作成 2:単年のみ"))
-    If fiscalCol <= 0 Or annualUseCol <= 0 Then Exit Sub
+    If (fiscalWarekiCol <= 0 And fiscalWesternCol <= 0) Or annualUseCol <= 0 Then Exit Sub
 
     targetCols = ResolveAnnualCorrectionTargetColumns(ws, lastCol)
     If IsEmpty(targetCols) Then Exit Sub
@@ -1749,10 +1790,14 @@ Private Sub ApplyAnnualFolderNameCorrections( _
     reviewCol = EnsureHeaderColumn(ws, "年度補正確認")
 
     For rowNo = 2 To lastRow
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(ws, rowNo, fiscalWarekiCol, fiscalWesternCol) <> targetYearValue Then GoTo ContinueNextRow
+        End If
+
         annualUseVal = GetTrimmedCell(ws, rowNo, annualUseCol)
         If Not IsAnnualCreationCategory(annualUseVal) Then GoTo ContinueNextRow
 
-        fiscalYear = GetTrimmedCell(ws, rowNo, fiscalCol)
+        fiscalYear = GetFiscalYearTextFromRow(ws, rowNo, fiscalWarekiCol, fiscalWesternCol)
         rowChanged = False
         rowNeedsReview = False
         reviewReasons = ""
@@ -3076,6 +3121,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim existingDstHeaders As Object
     Dim existingRowMap As Object
     Dim sourceKeyMap As Object
+    Dim touchedTargetRowMap As Object
     Dim srcCol As Long
     Dim dstCol As Long
     Dim headerText As String
@@ -3102,6 +3148,14 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim didUpdateRows As Boolean
     Dim shouldReorderColumns As Boolean
     Dim columnOrderMap As Variant
+    Dim targetYearRaw As String
+    Dim targetYearValue As Long
+    Dim srcWarekiCol As Long
+    Dim srcYearCol As Long
+    Dim srcRowYearValue As Long
+    Dim skippedOtherYearCount As Long
+    Dim annualFixChangedCount As Long
+    Dim annualFixReviewCount As Long
 
     On Error GoTo ErrorHandler
 
@@ -3112,6 +3166,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Set existingDstHeaders = CreateObject("Scripting.Dictionary")
     Set existingRowMap = CreateObject("Scripting.Dictionary")
     Set sourceKeyMap = CreateObject("Scripting.Dictionary")
+    Set touchedTargetRowMap = CreateObject("Scripting.Dictionary")
     Set validationTemplateMap = CreateObject("Scripting.Dictionary")
     Set formatTemplateMap = CreateObject("Scripting.Dictionary")
     Set columnWidthMap = CreateObject("Scripting.Dictionary")
@@ -3126,6 +3181,20 @@ Public Sub 手順2_新ファイル基準表を作成する()
     dstLastCol = GetLastUsedCol(wsDst)
 
     If srcLastCol <= 0 Then Err.Raise vbObjectError + 2001, , "目録CSV の見出し行が見つかりません。"
+
+    targetYearRaw = InputBox("整形対象年度を入力してください。（例: R7 / 令和7年度 / 2025）", "整形対象年度指定")
+    If StrPtr(targetYearRaw) = 0 Then GoTo SafeExit
+
+    targetYearValue = NormalizeYearValue(targetYearRaw)
+    If targetYearValue <= 0 Then
+        Err.Raise vbObjectError + 2002, , "整形対象年度を解釈できません。例: R7 / 令和7年度 / 2025"
+    End If
+
+    srcWarekiCol = FindHeaderColumn(wsSrc, srcLastCol, Array("年度（和暦）", "年度(和暦)"))
+    srcYearCol = FindHeaderColumn(wsSrc, srcLastCol, Array("年度"))
+    If srcWarekiCol <= 0 And srcYearCol <= 0 Then
+        Err.Raise vbObjectError + 2003, , "目録CSVに「年度（和暦）」または「年度」列が見つかりません。"
+    End If
 
     ' 主要表示列（左側に寄せる列）
     ' 差し替えポイント: 列順定義は専用関数で一元管理
@@ -3166,11 +3235,17 @@ Public Sub 手順2_新ファイル基準表を作成する()
     appendRow = dstLastRow + 1
 
     ' 高速化対応: 重複呼び出しを削除（1回のみ）
-    BuildExistingRowMap wsDst, dstLastRow, existingRowMap
+    BuildExistingRowMap wsDst, dstLastRow, existingRowMap, targetYearValue
 
-    ' 目録CSVの対象年度行件数を先に確認
+    ' 目録CSVのうち、指定年度に一致する行だけを反映する
     If srcLastRow >= 2 Then
         For srcRow = 2 To srcLastRow
+            srcRowYearValue = GetNormalizedYearFromRow(wsSrc, srcRow, srcWarekiCol, srcYearCol)
+            If srcRowYearValue <> targetYearValue Then
+                skippedOtherYearCount = skippedOtherYearCount + 1
+                GoTo ContinueNextSourceRow
+            End If
+
             key = BuildFileKeyFromSheetRow(wsSrc, srcRow, srcHeaderMap)
 
             If key = "" Then
@@ -3188,6 +3263,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                 targetRow = CLng(existingRowMap(key))
                 UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap
                 updatedCount = updatedCount + 1
+                If Not touchedTargetRowMap.Exists(CStr(targetRow)) Then touchedTargetRowMap.Add CStr(targetRow), targetRow
 
                 If Not didUpdateRows Then
                     updateStartRow = targetRow
@@ -3201,6 +3277,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                 AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
                 existingRowMap.Add key, appendRow
                 appendedCount = appendedCount + 1
+                If Not touchedTargetRowMap.Exists(CStr(appendRow)) Then touchedTargetRowMap.Add CStr(appendRow), appendRow
                 appendRow = appendRow + 1
             End If
 
@@ -3222,18 +3299,13 @@ ContinueNextSourceRow:
     End If
 
     ' 6) 同期状態列を更新（現行 / 削除候補 / 未登録）
-    UpdateSyncStatusColumn wsDst, sourceKeyMap
+    UpdateSyncStatusColumn wsDst, sourceKeyMap, targetYearValue
 
     ' 7) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
-    If didUpdateRows Then
-        ConvertAnnualUseDivisionValues wsDst, updateEndRow, updateStartRow
-        SyncSecondColorNameFromColor wsDst, updateStartRow, updateEndRow
-    End If
+    ApplyStep2PostProcessToTouchedRows wsDst, touchedTargetRowMap
 
-    If appendRow > dstLastRow + 1 Then
-        ConvertAnnualUseDivisionValues wsDst, appendRow - 1, dstLastRow + 1
-        SyncSecondColorNameFromColor wsDst, dstLastRow + 1, appendRow - 1
-    End If
+    ' 7-2) 年度表現補正は指定年度の行だけに限定する
+    ApplyAnnualFolderNameCorrections wsDst, annualFixChangedCount, annualFixReviewCount, targetYearValue
 
     ' 8) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
     If leftFixedCount > 0 Then
@@ -3244,14 +3316,15 @@ ContinueNextSourceRow:
         wsDst.Range(wsDst.Columns(1), wsDst.Columns(leftFixedCount)).EntireColumn.AutoFit
     End If
 
+    SortNewFileStandardByFiscalYear wsDst
+
     srcLastCol = GetLastUsedCol(wsDst)
     wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol)).AutoFilter
 
     ' 9) 左側固定対象の不足見出しを通知用に収集（列の表示状態は変更しない）
     HideKeyColumnsForStep2 wsDst, displayHeaders, missingHeadersText
 
-    ' 10) タイトルがある行だけ通し番号を再採番
-    ReindexSerial_NewFileStandard wsDst
+    ' 10) 他年度の既存データを保護するため、通し番号の全体再採番は手動マクロに委ねる
 
     ' 11) 高速化対応: 実際に列順変更があった場合のみ再適用
     If shouldReorderColumns Then
@@ -3261,17 +3334,25 @@ ContinueNextSourceRow:
 
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
+               "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
                "更新件数: " & updatedCount & " 件" & vbCrLf & _
                "追加件数: " & appendedCount & " 件" & vbCrLf & _
+               "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
+               "年度表現補正件数: " & annualFixChangedCount & " 件" & vbCrLf & _
+               "年度表現要確認件数: " & annualFixReviewCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
                "以下の見出しが見つからないため、左側固定対象から除外しました:" & vbCrLf & _
                missingHeadersText, vbExclamation
     Else
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
+               "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
                "更新件数: " & updatedCount & " 件" & vbCrLf & _
                "追加件数: " & appendedCount & " 件" & vbCrLf & _
+               "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
+               "年度表現補正件数: " & annualFixChangedCount & " 件" & vbCrLf & _
+               "年度表現要確認件数: " & annualFixReviewCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
     End If
 
@@ -3298,6 +3379,23 @@ ErrorHandler:
     MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & Err.Description, vbCritical
     Resume SafeExit
 
+
+End Sub
+
+Private Sub ApplyStep2PostProcessToTouchedRows(ByVal wsDst As Worksheet, ByVal touchedRowMap As Object)
+
+    Dim key As Variant
+    Dim rowNo As Long
+
+    If wsDst Is Nothing Then Exit Sub
+    If touchedRowMap Is Nothing Then Exit Sub
+    If touchedRowMap.Count = 0 Then Exit Sub
+
+    For Each key In touchedRowMap.Keys
+        rowNo = CLng(touchedRowMap(key))
+        ConvertAnnualUseDivisionValues wsDst, rowNo, rowNo
+        SyncSecondColorNameFromColor wsDst, rowNo, rowNo
+    Next key
 
 End Sub
 
@@ -4105,11 +4203,17 @@ Private Function IsUserManagedHeader( _
 
 End Function
 
-Private Sub BuildExistingRowMap(ByVal wsDst As Worksheet, ByVal dstLastRow As Long, ByVal existingRowMap As Object)
+Private Sub BuildExistingRowMap( _
+    ByVal wsDst As Worksheet, _
+    ByVal dstLastRow As Long, _
+    ByVal existingRowMap As Object, _
+    Optional ByVal targetYearValue As Long = 0)
 
     Dim headerMap As Object
     Dim rowNo As Long
     Dim key As String
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
 
     existingRowMap.RemoveAll
     Set headerMap = CreateObject("Scripting.Dictionary")
@@ -4121,13 +4225,21 @@ Private Sub BuildExistingRowMap(ByVal wsDst As Worksheet, ByVal dstLastRow As Lo
         Err.Raise vbObjectError + 2201, , "新ファイル基準表にキー列（ファイルID/ファイル番号/バーコード番号）が見つかりません。"
     End If
 
+    warekiYearCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("年度"))
+
     For rowNo = 2 To dstLastRow
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol) <> targetYearValue Then GoTo ContinueNextExistingRow
+        End If
+
         key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
         If key <> "" Then
             If Not existingRowMap.Exists(key) Then
                 existingRowMap.Add key, rowNo
             End If
         End If
+ContinueNextExistingRow:
     Next rowNo
 
 End Sub
@@ -4349,13 +4461,18 @@ End Function
 ' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
 ' - 未登録: ID系すべて空欄
 '--------------------------------------------------------
-Private Sub UpdateSyncStatusColumn(ByVal wsDst As Worksheet, ByVal sourceKeyMap As Object)
+Private Sub UpdateSyncStatusColumn( _
+    ByVal wsDst As Worksheet, _
+    ByVal sourceKeyMap As Object, _
+    Optional ByVal targetYearValue As Long = 0)
 
     Dim headerMap As Object
     Dim lastRow As Long
     Dim rowNo As Long
     Dim syncCol As Long
     Dim key As String
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
 
     If wsDst Is Nothing Then Exit Sub
     If sourceKeyMap Is Nothing Then Exit Sub
@@ -4369,7 +4486,14 @@ Private Sub UpdateSyncStatusColumn(ByVal wsDst As Worksheet, ByVal sourceKeyMap 
     lastRow = GetLastUsedRow(wsDst)
     If lastRow < 2 Then Exit Sub
 
+    warekiYearCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), Array("年度"))
+
     For rowNo = 2 To lastRow
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol) <> targetYearValue Then GoTo ContinueNextSyncRow
+        End If
+
         key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
 
         If key <> "" And sourceKeyMap.Exists(key) Then
@@ -4379,6 +4503,7 @@ Private Sub UpdateSyncStatusColumn(ByVal wsDst As Worksheet, ByVal sourceKeyMap 
         Else
             wsDst.Cells(rowNo, syncCol).Value = "未登録"
         End If
+ContinueNextSyncRow:
     Next rowNo
 
 End Sub
@@ -6564,6 +6689,8 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     Const SINGLE_SHEET_NAME3 As String = "フォルダシール"
     ' 1ページ = 20行（テンプレート「個別フォルダシール」1～20行）
     Const PAGE_ROWS As Long = 20
+    ' 1ページ = 12面固定
+    Const SEALS_PER_PAGE As Long = 12
     ' NOTE:
     ' 右側ブロックの結合セル（M:U / S:U）をテンプレート通りに維持するため、
     ' ページ複製範囲は U 列(21) までを対象にする。
@@ -6586,8 +6713,7 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     Dim idx As Long
     Dim pageTopRow As Long
     Dim srcRow As Long
-    Dim printLastRow As Long
-    Dim c As Long
+    Dim printLastCol As Long
     Dim requiredBlocks As Long
     Dim generatedBlocks As Long
     Dim addPageNo As Long
@@ -6609,6 +6735,8 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     If wsSrc Is Nothing Then Err.Raise vbObjectError + 2303, , "新ファイル基準表シートが見つかりません。"
     If wsSingle Is Nothing Then Err.Raise vbObjectError + 2304, , "単発用の個別フォルダシールシートが見つかりません。"
     If wsMulti Is Nothing Then Err.Raise vbObjectError + 2305, , "大量出力用シート「" & MULTI_SHEET_NAME & "」が見つかりません。"
+
+    printLastCol = GetSealPrintAreaLastColumn(wsMulti, PAGE_LAST_COL)
 
     frmSeal.BuildIndexes_NewSpec wsSrc, serialIndex, headerIndex
     serialCol = CLng(headerIndex("通し番号"))
@@ -6632,18 +6760,13 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
         End If
     Next r
 
-    ' 追記: 列幅はテンプレート（単発用1ページ目）と一致させる
-    For c = 1 To PAGE_LAST_COL
-        wsMulti.Columns(c).ColumnWidth = wsSingle.Columns(c).ColumnWidth
-    Next c
-    ' 追記: 印刷ズレ抑制のためページ設定もテンプレートに合わせる
-    ApplyPageSetupFromTemplate wsSingle, wsMulti
+    ' 既存の列幅・印刷範囲の最終列・余白・拡大縮小・印刷方向などのPageSetup設定は維持する
 
     If targetRows.Count = 0 Then
         Err.Raise vbObjectError + 2307, , "該当するデータがありません。"
     End If
 
-    pageCount = CLng(Application.WorksheetFunction.RoundUp(CDbl(targetRows.Count) / 12#, 0))
+    pageCount = CLng(Application.WorksheetFunction.RoundUp(CDbl(targetRows.Count) / CDbl(SEALS_PER_PAGE), 0))
     requiredBlocks = pageCount
     generatedBlocks = GetGeneratedSealBlockCount(wsMulti, PAGE_ROWS)
 
@@ -6651,19 +6774,16 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     If generatedBlocks < requiredBlocks Then
         For addPageNo = generatedBlocks + 1 To requiredBlocks
             pageTopRow = (addPageNo - 1) * PAGE_ROWS + 1
-            CopySealTemplatePageLayout wsSingle, wsMulti, pageTopRow, PAGE_ROWS, PAGE_LAST_COL
+            CopySealTemplatePageLayout wsMulti, wsMulti, pageTopRow, PAGE_ROWS, printLastCol
         Next addPageNo
         generatedBlocks = requiredBlocks
     End If
 
-    ' 12面ブロックごとに改ページを固定（今回印刷する必要ページ数を基準に再設定）
-    ConfigureSealPageBreaks wsMulti, PAGE_ROWS, pageCount
-
     For pageNo = 1 To pageCount
         pageTopRow = (pageNo - 1) * PAGE_ROWS + 1
 
-        For slot = 1 To 12
-            idx = (pageNo - 1) * 12 + slot
+        For slot = 1 To SEALS_PER_PAGE
+            idx = (pageNo - 1) * SEALS_PER_PAGE + slot
             If idx <= targetRows.Count Then
                 srcRow = CLng(targetRows(idx))
                 WriteOneSeal_NewSpec_WithRowOffset _
@@ -6682,14 +6802,13 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     ' 今回未使用の既存ブロックは削除せず残し、値だけクリア
     If generatedBlocks > pageCount Then
         For clearPageNo = pageCount + 1 To generatedBlocks
-            For slot = 1 To 12
+            For slot = 1 To SEALS_PER_PAGE
                 ClearOneSealSlot_WithRowOffset wsMulti, slot, (clearPageNo - 1) * PAGE_ROWS
             Next slot
         Next clearPageNo
     End If
 
-    printLastRow = pageCount * PAGE_ROWS
-    wsMulti.PageSetup.PrintArea = wsMulti.Range(wsMulti.Cells(1, 1), wsMulti.Cells(printLastRow, PAGE_LAST_COL)).Address
+    ConfigureMultiSealFixedPrintLayout wsMulti, targetRows.Count, PAGE_ROWS, SEALS_PER_PAGE, printLastCol
 
     MsgBox "個別フォルダシール（複数）を作成しました。" & vbCrLf & _
            "対象件数: " & targetRows.Count & " 件" & vbCrLf & _
@@ -6706,6 +6825,71 @@ ErrorHandler:
     Resume SafeExit
 
 End Sub
+
+Private Sub ConfigureMultiSealFixedPrintLayout( _
+    ByVal ws As Worksheet, _
+    ByVal outputCount As Long, _
+    ByVal pageRows As Long, _
+    ByVal sealsPerPage As Long, _
+    ByVal printLastCol As Long)
+
+    Dim requiredPages As Long
+    Dim printLastRow As Long
+
+    If ws Is Nothing Then Exit Sub
+    If pageRows <= 0 Then Exit Sub
+    If sealsPerPage <= 0 Then Exit Sub
+
+    If outputCount <= 0 Then
+        requiredPages = 1
+    Else
+        requiredPages = CLng(Application.WorksheetFunction.RoundUp(CDbl(outputCount) / CDbl(sealsPerPage), 0))
+    End If
+    If requiredPages < 1 Then requiredPages = 1
+
+    If printLastCol <= 0 Then printLastCol = GetSealPrintAreaLastColumn(ws, 21)
+    printLastRow = requiredPages * pageRows
+
+    ConfigureSealPageBreaks ws, pageRows, requiredPages
+    ws.PageSetup.PrintArea = ws.Range(ws.Cells(1, 1), ws.Cells(printLastRow, printLastCol)).Address
+
+End Sub
+
+Private Function GetSealPrintAreaLastColumn(ByVal ws As Worksheet, ByVal defaultLastCol As Long) As Long
+
+    Dim areaText As String
+    Dim printRange As Range
+    Dim oneArea As Range
+    Dim lastCol As Long
+
+    On Error GoTo Fallback
+
+    If ws Is Nothing Then GoTo Fallback
+
+    areaText = Trim$(ws.PageSetup.PrintArea)
+    If Len(areaText) > 0 Then
+        Set printRange = ws.Range(areaText)
+        For Each oneArea In printRange.Areas
+            If oneArea.Column + oneArea.Columns.Count - 1 > lastCol Then
+                lastCol = oneArea.Column + oneArea.Columns.Count - 1
+            End If
+        Next oneArea
+    End If
+
+    If lastCol <= 0 Then lastCol = defaultLastCol
+    If lastCol <= 0 Then lastCol = 21
+
+    GetSealPrintAreaLastColumn = lastCol
+    Exit Function
+
+Fallback:
+    If defaultLastCol > 0 Then
+        GetSealPrintAreaLastColumn = defaultLastCol
+    Else
+        GetSealPrintAreaLastColumn = 21
+    End If
+
+End Function
 
 Private Function GetGeneratedSealBlockCount(ByVal ws As Worksheet, ByVal pageRows As Long) As Long
 
