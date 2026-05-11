@@ -142,14 +142,37 @@ End Function
 Private Function GetReindexHeaderCandidates(ByVal headerName As String) As Variant
 
     Select Case headerName
-        Case "分類名２"
-            GetReindexHeaderCandidates = Array("分類名２", "分類名2")
-        Case "分類名３"
-            GetReindexHeaderCandidates = Array("分類名３", "分類名3")
+        Case "分類名２", "第1ガイド", "第１ガイド"
+            GetReindexHeaderCandidates = Array("第1ガイド", "第１ガイド", "分類名２", "分類名2")
+        Case "分類名３", "第2ガイド", "第２ガイド"
+            GetReindexHeaderCandidates = Array("第2ガイド", "第２ガイド", "分類名３", "分類名3")
+        Case "タイトル", "個別フォルダー", "個別フォルダ"
+            GetReindexHeaderCandidates = Array("個別フォルダー", "個別フォルダ", "タイトル")
         Case "年度（和暦）"
             GetReindexHeaderCandidates = Array("年度（和暦）", "年度(和暦)")
         Case Else
             GetReindexHeaderCandidates = Array(headerName)
+    End Select
+
+End Function
+
+Private Function NormalizeReindexHeaderName(ByVal headerName As String) As String
+
+    Dim normalized As String
+
+    normalized = Trim$(CStr(headerName))
+    normalized = Replace(normalized, " ", "")
+    normalized = Replace(normalized, "　", "")
+
+    Select Case normalized
+        Case "分類名2", "分類名２", "第1ガイド", "第１ガイド"
+            NormalizeReindexHeaderName = "分類名２"
+        Case "分類名3", "分類名３", "第2ガイド", "第２ガイド"
+            NormalizeReindexHeaderName = "分類名３"
+        Case "タイトル", "個別フォルダー", "個別フォルダ"
+            NormalizeReindexHeaderName = "タイトル"
+        Case Else
+            NormalizeReindexHeaderName = normalized
     End Select
 
 End Function
@@ -170,7 +193,7 @@ Private Function GetHeaderColumnByCandidates(ByVal ws As Worksheet, ByVal candid
     For c = 1 To lastCol
         headerValue = Trim(CStr(ws.Cells(1, c).Value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+            If StrComp(NormalizeReindexHeaderName(headerValue), NormalizeReindexHeaderName(CStr(candidates(i))), vbTextCompare) = 0 Then
                 GetHeaderColumnByCandidates = c
                 Exit Function
             End If

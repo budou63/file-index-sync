@@ -2731,6 +2731,9 @@ Public Sub 手順4_差分インポートCSVを作成する()
             If Not editHeaderMap.Exists(Trim(CStr(wsEdit.Cells(1, i).value))) Then
                 editHeaderMap.Add Trim(CStr(wsEdit.Cells(1, i).value)), i
             End If
+            If Not editHeaderMap.Exists(CanonicalHeaderName(Trim(CStr(wsEdit.Cells(1, i).value)))) Then
+                editHeaderMap.Add CanonicalHeaderName(Trim(CStr(wsEdit.Cells(1, i).value))), i
+            End If
         End If
     Next i
 
@@ -3987,7 +3990,7 @@ Private Function FindHeaderColumnByCandidatesAtRow( _
     For c = 1 To lastCol
         headerValue = Trim$(CStr(ws.Cells(headerRow, c).Value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(CStr(candidates(i))), vbTextCompare) = 0 Then
                 FindHeaderColumnByCandidatesAtRow = c
                 Exit Function
             End If
@@ -4561,7 +4564,7 @@ Private Function EnsureColumnByHeader(ByVal ws As Worksheet, ByVal headerMap As 
     Else
         addCol = GetLastUsedCol(ws) + 1
         If addCol < 1 Then addCol = 1
-        ws.Cells(1, addCol).value = headerName
+        ws.Cells(1, addCol).value = PreferredDisplayHeaderName(headerName)
         headerMap.Add canonical, addCol
         EnsureColumnByHeader = addCol
     End If
@@ -4579,14 +4582,39 @@ Private Function CanonicalHeaderName(ByVal headerName As String) As String
     Select Case normalized
         Case "分類名1", "分類名１"
             CanonicalHeaderName = "分類名１"
-        Case "分類名2", "分類名２"
+        Case "分類名2", "分類名２", "第1ガイド", "第１ガイド"
             CanonicalHeaderName = "分類名２"
-        Case "分類名3", "分類名３"
+        Case "分類名3", "分類名３", "第2ガイド", "第２ガイド"
             CanonicalHeaderName = "分類名３"
+        Case "タイトル", "個別フォルダー", "個別フォルダ"
+            CanonicalHeaderName = "タイトル"
         Case "n+1", "N+1", "ｎ+1", "Ｎ+1", "n＋1", "N＋1", "Ｎ＋1", "ｎ＋1"
             CanonicalHeaderName = "ｎ＋1"
         Case Else
             CanonicalHeaderName = normalized
+    End Select
+
+End Function
+
+Public Function GetHeaderColumn(ByVal ws As Worksheet, ByVal headerName As String) As Long
+
+    If ws Is Nothing Then Exit Function
+
+    GetHeaderColumn = FindHeaderColumn(ws, GetLastUsedCol(ws), GetStep2HeaderCandidates(headerName))
+
+End Function
+
+Private Function PreferredDisplayHeaderName(ByVal headerName As String) As String
+
+    Select Case CanonicalHeaderName(headerName)
+        Case "分類名２"
+            PreferredDisplayHeaderName = "第1ガイド"
+        Case "分類名３"
+            PreferredDisplayHeaderName = "第2ガイド"
+        Case "タイトル"
+            PreferredDisplayHeaderName = "個別フォルダー"
+        Case Else
+            PreferredDisplayHeaderName = headerName
     End Select
 
 End Function
@@ -4604,7 +4632,7 @@ Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, 
     For c = 1 To lastCol
         headerValue = Trim(CStr(ws.Cells(1, c).value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(CStr(candidates(i))), vbTextCompare) = 0 Then
                 FindHeaderColumn = c
                 Exit Function
             End If
@@ -4618,10 +4646,12 @@ Private Function GetStep2HeaderCandidates(ByVal targetHeader As String) As Varia
     Select Case targetHeader
         Case "分類名１"
             GetStep2HeaderCandidates = Array("分類名１", "分類名1")
-        Case "分類名２"
-            GetStep2HeaderCandidates = Array("分類名２", "分類名2")
-        Case "分類名３"
-            GetStep2HeaderCandidates = Array("分類名３", "分類名3")
+        Case "分類名２", "第1ガイド", "第１ガイド"
+            GetStep2HeaderCandidates = Array("第1ガイド", "第１ガイド", "分類名２", "分類名2")
+        Case "分類名３", "第2ガイド", "第２ガイド"
+            GetStep2HeaderCandidates = Array("第2ガイド", "第２ガイド", "分類名３", "分類名3")
+        Case "タイトル", "個別フォルダー", "個別フォルダ"
+            GetStep2HeaderCandidates = Array("個別フォルダー", "個別フォルダ", "タイトル")
         Case "2色名"
             GetStep2HeaderCandidates = Array("2色名", "２色名")
         Case "色名"
@@ -4644,8 +4674,8 @@ End Function
 Private Function GetStep2DisplayHeadersOrder() As Variant
 
     GetStep2DisplayHeadersOrder = Array( _
-        "通し番号", "キャビネット番号", "ｎ＋1", "毎年度利用区分1:毎年作成 2:単年のみ", "原課", "年度（和暦）", "分類名１", "分類名２", "2色名", "分類名３", _
-        "色名", "作成年度（和暦）", "タイトル", "保存期間", "媒体種別", "保存番号", "廃棄年月日", "内容・取扱い", "備考", "ファイルID", _
+        "通し番号", "キャビネット番号", "ｎ＋1", "毎年度利用区分1:毎年作成 2:単年のみ", "原課", "年度（和暦）", "分類名１", "第1ガイド", "2色名", "第2ガイド", _
+        "色名", "作成年度（和暦）", "個別フォルダー", "保存期間", "媒体種別", "保存番号", "廃棄年月日", "内容・取扱い", "備考", "ファイルID", _
         "ファイル番号", "バーコード番号", "年度", "原課ID", "サブタイトル", "完結日", "完結区分-1：未完結 1：完結", "完結者メンバーID", "保管期間ID", "保管期間", _
         "保管期間完了予定年", "保管期間完了予定年（和暦）", "保存期間ID", "保存期間満了時の措置ID", "保存期間満了時の措置", "分類コード１", "分類コード２", "分類コード３", "分類コード４", "分類名４", _
         "分類コード５", "分類名５", "分類内ファイルソート順", "年度暦年区分1:年度 2:暦年", "色ID", "媒体種別ID", "保存場所ID1", "保存場所コード１", "保存場所１", "保存場所ID2", _
@@ -4773,7 +4803,7 @@ Private Function FindColumnIndexFromHeaderArray( _
         If Not usedCols.Exists(CStr(c)) Then
             headerValue = Trim$(CStr(headerValues(1, c)))
             For i = LBound(candidates) To UBound(candidates)
-                If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+                If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(CStr(candidates(i))), vbTextCompare) = 0 Then
                     FindColumnIndexFromHeaderArray = c
                     Exit Function
                 End If
@@ -5058,10 +5088,15 @@ Private Sub WriteRowByFixedLayout( _
 
             If editHeaderMap.Exists(sourceHeaderName) Then
                 editCol = CLng(editHeaderMap(sourceHeaderName))
-                wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = wsEdit.Cells(srcRow, editCol).value
+            ElseIf editHeaderMap.Exists(CanonicalHeaderName(sourceHeaderName)) Then
+                editCol = CLng(editHeaderMap(CanonicalHeaderName(sourceHeaderName)))
             Else
                 wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = ""
+                GoTo ContinueFixedHeader
             End If
+
+            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = wsEdit.Cells(srcRow, editCol).value
+ContinueFixedHeader:
         End If
     Next i
 
@@ -6054,7 +6089,7 @@ Private Function GetHeaderColumnExact(ByVal ws As Worksheet, ByVal headerName As
 
     For c = 1 To lastCol
         headerValue = Trim(CStr(ws.Cells(1, c).value))
-        If StrComp(headerValue, Trim(headerName), vbBinaryCompare) = 0 Then
+        If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(Trim(headerName)), vbTextCompare) = 0 Then
             GetHeaderColumnExact = c
             Exit Function
         End If
@@ -6398,7 +6433,7 @@ Private Sub キャビネット別第1ガイド抽出_続きルール適用_NewSp
         Err.Raise vbObjectError + 3101, , "見出し「キャビネット番号」が見つかりません。"
     End If
     If guideCol = 0 Then
-        Err.Raise vbObjectError + 3102, , "見出し「分類名２（または分類名2）」が見つかりません。"
+        Err.Raise vbObjectError + 3102, , "見出し「第1ガイド（または分類名２）」が見つかりません。"
     End If
 
     lastRow = GetLastUsedRow(wsSrc)
@@ -7476,7 +7511,7 @@ Private Function HeaderExistsInRow_Mig(ByVal ws As Worksheet, ByVal rowNo As Lon
     Dim c As Long
 
     For c = 1 To lastCol
-        If StrComp(NormalizeTextForMatch(GetRawCellMerged(ws, rowNo, c)), NormalizeTextForMatch(headerName), vbBinaryCompare) = 0 Then
+        If StrComp(NormalizeMigrationHeaderName(GetRawCellMerged(ws, rowNo, c)), NormalizeMigrationHeaderName(headerName), vbTextCompare) = 0 Then
             HeaderExistsInRow_Mig = True
             Exit Function
         End If
@@ -7492,11 +7527,32 @@ Private Function GetHeaderColumnByName_Mig(ByVal ws As Worksheet, ByVal headerRo
     lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
 
     For c = 1 To lastCol
-        If StrComp(NormalizeTextForMatch(GetRawCellMerged(ws, headerRow, c)), NormalizeTextForMatch(headerName), vbBinaryCompare) = 0 Then
+        If StrComp(NormalizeMigrationHeaderName(GetRawCellMerged(ws, headerRow, c)), NormalizeMigrationHeaderName(headerName), vbTextCompare) = 0 Then
             GetHeaderColumnByName_Mig = c
             Exit Function
         End If
     Next c
+
+End Function
+
+Private Function NormalizeMigrationHeaderName(ByVal headerName As String) As String
+
+    Dim normalized As String
+
+    normalized = NormalizeTextForMatch(CStr(headerName))
+    normalized = Replace(normalized, " ", "")
+    normalized = Replace(normalized, "　", "")
+
+    Select Case normalized
+        Case "分類名2", "分類名２", "第1ガイド", "第１ガイド"
+            NormalizeMigrationHeaderName = "分類名２"
+        Case "分類名3", "分類名３", "第2ガイド", "第２ガイド"
+            NormalizeMigrationHeaderName = "分類名３"
+        Case "タイトル", "個別フォルダー", "個別フォルダ"
+            NormalizeMigrationHeaderName = "タイトル"
+        Case Else
+            NormalizeMigrationHeaderName = normalized
+    End Select
 
 End Function
 
