@@ -537,9 +537,9 @@ Public Sub BuildIndexes_NewSpec(ByVal wsSrc As Worksheet, ByRef serialIndex As O
     lastRow = LastUsedRow(wsSrc)
 
     headerIndex("通し番号") = FindHeaderByCandidates(wsSrc, lastCol, Array("通し番号"))
-    headerIndex("タイトル") = FindHeaderByCandidates(wsSrc, lastCol, Array("タイトル"))
-    headerIndex("分類名2") = FindHeaderByCandidates(wsSrc, lastCol, Array("分類名２", "分類名2"))
-    headerIndex("分類名3") = FindHeaderByCandidates(wsSrc, lastCol, Array("分類名３", "分類名3"))
+    headerIndex("タイトル") = FindHeaderByCandidates(wsSrc, lastCol, Array("個別フォルダー", "個別フォルダ", "タイトル"))
+    headerIndex("分類名2") = FindHeaderByCandidates(wsSrc, lastCol, Array("第1ガイド", "第１ガイド", "分類名２", "分類名2"))
+    headerIndex("分類名3") = FindHeaderByCandidates(wsSrc, lastCol, Array("第2ガイド", "第２ガイド", "分類名３", "分類名3"))
     headerIndex("年度和暦") = FindHeaderByCandidates(wsSrc, lastCol, Array("年度（和暦）", "年度(和暦)"))
     headerIndex("保存期間") = FindHeaderByCandidates(wsSrc, lastCol, Array("保存期間"))
     headerIndex("キャビネット番号") = FindHeaderByCandidates(wsSrc, lastCol, Array("キャビネット番号"))
@@ -682,12 +682,33 @@ Public Function FindHeaderByCandidates(ByVal ws As Worksheet, ByVal lastCol As L
     For c = 1 To lastCol
         hv = Trim$(CStr(ws.Cells(1, c).Value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(hv, Trim$(CStr(candidates(i))), vbBinaryCompare) = 0 Then
+            If StrComp(NormalizeSealHeaderName(hv), NormalizeSealHeaderName(Trim$(CStr(candidates(i)))), vbTextCompare) = 0 Then
                 FindHeaderByCandidates = c
                 Exit Function
             End If
         Next i
     Next c
+
+End Function
+
+Private Function NormalizeSealHeaderName(ByVal headerName As String) As String
+
+    Dim normalized As String
+
+    normalized = Trim$(CStr(headerName))
+    normalized = Replace(normalized, " ", "")
+    normalized = Replace(normalized, "　", "")
+
+    Select Case normalized
+        Case "分類名2", "分類名２", "第1ガイド", "第１ガイド"
+            NormalizeSealHeaderName = "分類名２"
+        Case "分類名3", "分類名３", "第2ガイド", "第２ガイド"
+            NormalizeSealHeaderName = "分類名３"
+        Case "タイトル", "個別フォルダー", "個別フォルダ"
+            NormalizeSealHeaderName = "タイトル"
+        Case Else
+            NormalizeSealHeaderName = normalized
+    End Select
 
 End Function
 
