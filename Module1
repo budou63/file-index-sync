@@ -7878,12 +7878,12 @@ Public Sub 新ファイル基準表_色ルール修正()
         remarksText = CStr(ws.Cells(rowNo, colRemarks).Value)
         isMacroInserted = ContainsMacroInserted_ColorRule(remarksText)
         If isMacroInserted Then
-            colorValue = NormalizeText_ColorRule(CStr(ws.Cells(rowNo, colColor1).Value))
+            colorValue = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor1).Value))
             If IsValidColor_ColorRule(colorValue) Then
                 If Not guideMacroColors.Exists(guideKey) Then guideMacroColors.Add guideKey, colorValue
             End If
 
-            colorValue = NormalizeText_ColorRule(CStr(ws.Cells(rowNo, colColor2).Value))
+            colorValue = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor2).Value))
             If IsValidColor_ColorRule(colorValue) Then
                 If Not groupMacroColors.Exists(groupKey) Then groupMacroColors.Add groupKey, colorValue
             End If
@@ -7998,10 +7998,29 @@ Private Function ContainsMacroInserted_ColorRule(ByVal remarksText As String) As
     ContainsMacroInserted_ColorRule = (InStr(1, NormalizeText_ColorRule(remarksText), "マクロ差込", vbBinaryCompare) > 0)
 End Function
 
-Private Function IsValidColor_ColorRule(ByVal colorName As String) As Boolean
+Private Function NormalizeColorName_ColorRule(ByVal colorName As String) As String
 
     Select Case NormalizeText_ColorRule(colorName)
-        Case "白", "赤", "青", "黄", "緑"
+        Case "白", "白色"
+            NormalizeColorName_ColorRule = "白色"
+        Case "赤", "赤色"
+            NormalizeColorName_ColorRule = "赤色"
+        Case "青", "青色"
+            NormalizeColorName_ColorRule = "青色"
+        Case "黄", "黄色"
+            NormalizeColorName_ColorRule = "黄色"
+        Case "緑", "緑色"
+            NormalizeColorName_ColorRule = "緑色"
+        Case Else
+            NormalizeColorName_ColorRule = NormalizeText_ColorRule(colorName)
+    End Select
+
+End Function
+
+Private Function IsValidColor_ColorRule(ByVal colorName As String) As Boolean
+
+    Select Case NormalizeColorName_ColorRule(colorName)
+        Case "白色", "赤色", "青色", "黄色", "緑色"
             IsValidColor_ColorRule = True
     End Select
 
@@ -8014,7 +8033,7 @@ Private Function SelectNextColor_ColorRule(ByVal previousColor As String, ByVal 
     Dim i As Long
     Dim candidate As String
 
-    colors = Array("白", "赤", "青", "黄", "緑")
+    colors = Array("白色", "赤色", "青色", "黄色", "緑色")
     idx = offset Mod (UBound(colors) - LBound(colors) + 1)
 
     For i = 0 To UBound(colors)
@@ -8055,7 +8074,7 @@ Private Sub ApplyColorValue_ColorRule( _
     Dim commentText As String
 
     oldColor = NormalizeText_ColorRule(CStr(targetCell.Value))
-    newColor = NormalizeText_ColorRule(newColor)
+    newColor = NormalizeColorName_ColorRule(newColor)
 
     If StrComp(oldColor, newColor, vbBinaryCompare) = 0 Then Exit Sub
 
