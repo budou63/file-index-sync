@@ -1004,6 +1004,7 @@ Public Sub 行移動_予定線を全消去()
     Dim ws As Worksheet
     Dim lastCol As Long
     Dim markerRow As Long
+    Dim key As Variant
 
     On Error GoTo SafeExit
 
@@ -2383,6 +2384,7 @@ Public Sub 重複フォルダ候補をマーキング()
     Dim rowKey As String
     Dim dictRowsByKey As Object
     Dim rowList As Collection
+    Dim key As Variant
     Dim duplicateGroupCount As Long
     Dim markedRowCount As Long
     Dim class2Arr As Variant
@@ -2493,6 +2495,7 @@ Public Sub 重複フォルダ候補をマーキングして並び替え()
     Dim originalRowArr() As Variant
     Dim keyCounts As Object
     Dim rowKey As String
+    Dim key As Variant
     Dim r As Long
     Dim duplicateGroupCount As Long
     Dim markedRowCount As Long
@@ -3385,6 +3388,7 @@ End Sub
 Private Sub ApplyStep2PostProcessToTouchedRows(ByVal wsDst As Worksheet, ByVal touchedRowMap As Object)
 
     Dim rowNo As Long
+    Dim key As Variant
 
     If wsDst Is Nothing Then Exit Sub
     If touchedRowMap Is Nothing Then Exit Sub
@@ -4258,6 +4262,7 @@ Private Sub UpdateRowFromSourceByHeader( _
     Dim beforeCompare As String
     Dim afterCompare As String
     Dim targetCell As Range
+    Dim key As Variant
 
     ' CSV由来列だけを上書きし、ユーザー管理列は触らない
     ' さらに、実際に差分があるセルだけ赤字＋コメントを付与する
@@ -4297,6 +4302,7 @@ Private Sub AppendRowFromSourceByHeader( _
 
     Dim srcCol As Long
     Dim dstCol As Long
+    Dim key As Variant
 
     ' 追加時は通常書式のまま値を書き込む（赤字・コメントは付与しない）
     For Each key In srcToDstMap.Keys
@@ -4869,6 +4875,7 @@ Private Sub ReapplyFormatAndWidthFromTemplate( _
     Dim dstCol As Long
     Dim templateCol As Long
     Dim applyLastRow As Long
+    Dim key As Variant
 
     If wsDst Is Nothing Then Exit Sub
 
@@ -4975,6 +4982,7 @@ Private Sub ReapplyValidationFromTemplate( _
     Dim dstCol As Long
     Dim templateCol As Long
     Dim applyLastRow As Long
+    Dim key As Variant
 
     If validationTemplateMap Is Nothing Then Exit Sub
     If wsTemplate Is Nothing Then Exit Sub
@@ -5512,6 +5520,7 @@ Private Function RecalculateHaikiDateByRowMap(ByVal wsEdit As Worksheet, ByVal r
     Dim prevCalculation As XlCalculation
     Dim errNo As Long
     Dim errDesc As String
+    Dim key As Variant
 
     On Error GoTo ErrorHandler
 
@@ -5698,6 +5707,7 @@ Public Sub UpdateHaikiDate(ByVal Target As Range)
     Dim saveTermText As String
     Dim calcResult As String
     Dim prevEnableEvents As Boolean
+    Dim key As Variant
 
     If Target Is Nothing Then Exit Sub
 
