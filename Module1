@@ -7796,7 +7796,9 @@ Public Sub 新ファイル基準表_色ルール修正()
     Dim guideOrder As Collection
     Dim guideGroups As Object
     Dim guideFirstGroup As Object
-    Dim groupMacroColors As Object
+    Dim groupColorCounts As Object
+    Dim groupFirstColors As Object
+    Dim groupHasMacroRows As Object
     Dim groupAssignedColors As Object
     Dim guideAssignedColors As Object
     Dim changedRows As Object
@@ -7812,7 +7814,13 @@ Public Sub 新ファイル基準表_色ルール修正()
     Dim colorValue As String
     Dim selectedColor As String
     Dim previousGroupColor As String
+    Dim previousGroupKey As String
     Dim groupList As Collection
+    Dim colorCounts As Object
+    Dim previousColorCounts As Object
+    Dim preservedGroupCount As Long
+    Dim filledGroupCount As Long
+    Dim adjacentAdjustedGroupCount As Long
     Dim maxGuideColorRun As Long
     Dim maxGuide2ColorRun As Long
 
@@ -7857,13 +7865,14 @@ Public Sub 新ファイル基準表_色ルール修正()
     Set guideOrder = New Collection
     Set guideGroups = CreateObject("Scripting.Dictionary")
     Set guideFirstGroup = CreateObject("Scripting.Dictionary")
-    Set groupMacroColors = CreateObject("Scripting.Dictionary")
+    Set groupColorCounts = CreateObject("Scripting.Dictionary")
+    Set groupFirstColors = CreateObject("Scripting.Dictionary")
+    Set groupHasMacroRows = CreateObject("Scripting.Dictionary")
     Set groupAssignedColors = CreateObject("Scripting.Dictionary")
     Set guideAssignedColors = CreateObject("Scripting.Dictionary")
     Set changedRows = CreateObject("Scripting.Dictionary")
 
-    ' 1回目の走査: 第1ガイド単位と、第1ガイド+第2ガイド単位の出現順を記録する。
-    ' 色名は第1ガイド名で統一し、2色名だけを第1ガイド+第2ガイド単位で変える。
+    ' 1回目の走査: 第1ガイド単位と、第1ガイド+第2ガイド単位の出現順、既存有効色を記録する。
     For rowNo = 2 To lastRow
         guideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
         guide2Key = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide2).Value)
@@ -7879,31 +7888,64 @@ Public Sub 新ファイル基準表_色ルール修正()
             If Not guideFirstGroup.Exists(guideKey) Then guideFirstGroup.Add guideKey, groupKey
         End If
 
-        remarksText = CStr(ws.Cells(rowNo, colRemarks).Value)
-        If ContainsMacroInserted_ColorRule(remarksText) Then
-            colorValue = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor2).Value))
-            If IsValidColor_ColorRule(colorValue) Then
-                If Not groupMacroColors.Exists(groupKey) Then groupMacroColors.Add groupKey, colorValue
-            End If
+        If Not groupColorCounts.Exists(groupKey) Then
+            Set colorCounts = CreateObject("Scripting.Dictionary")
+            groupColorCounts.Add groupKey, colorCounts
         End If
+
+        colorValue = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor2).Value))
+        If IsValidColor_ColorRule(colorValue) Then
+            Set colorCounts = groupColorCounts(groupKey)
+            If colorCounts.Exists(colorValue) Then
+                colorCounts(colorValue) = CLng(colorCounts(colorValue)) + 1
+            Else
+                colorCounts.Add colorValue, 1
+            End If
+            If Not groupFirstColors.Exists(groupKey) Then groupFirstColors.Add groupKey, colorValue
+        End If
+
+        remarksText = CStr(ws.Cells(rowNo, colRemarks).Value)
+        If ContainsMacroInserted_ColorRule(remarksText) Then groupHasMacroRows(groupKey) = True
     Next rowNo
 
-    ' 第2ガイドの2色名を、第1ガイド配下の第2ガイド出現順で決定する。
+    ' 第2ガイドの2色名を決定する。既存有効色があれば、多数決（同数なら先出）で原則維持する。
     For guideIndex = 1 To guideOrder.Count
         guideKey = CStr(guideOrder(guideIndex))
         Set groupList = guideGroups(guideKey)
         previousGroupColor = vbNullString
+        previousGroupKey = vbNullString
 
         For groupIndex = 1 To groupList.Count
             groupKey = CStr(groupList(groupIndex))
-            If groupMacroColors.Exists(groupKey) Then
-                selectedColor = CStr(groupMacroColors(groupKey))
+            Set colorCounts = groupColorCounts(groupKey)
+
+            If colorCounts.Count > 0 Then
+                selectedColor = SelectExistingGroupColor_ColorRule(colorCounts, CStr(groupFirstColors(groupKey)))
+                preservedGroupCount = preservedGroupCount + 1
             Else
                 selectedColor = SelectNextColor_ColorRule(previousGroupColor, groupIndex - 1)
+                filledGroupCount = filledGroupCount + 1
+            End If
+
+            If Len(previousGroupColor) > 0 Then
+                If StrComp(selectedColor, previousGroupColor, vbBinaryCompare) = 0 Then
+                    If colorCounts.Count = 0 Or Not groupHasMacroRows.Exists(groupKey) Then
+                        selectedColor = SelectNextColor_ColorRule(previousGroupColor, groupIndex - 1)
+                        If colorCounts.Count > 0 Then preservedGroupCount = preservedGroupCount - 1
+                        adjacentAdjustedGroupCount = adjacentAdjustedGroupCount + 1
+                    ElseIf Len(previousGroupKey) > 0 Then
+                        Set previousColorCounts = groupColorCounts(previousGroupKey)
+                        If previousColorCounts.Count = 0 And Not groupHasMacroRows.Exists(previousGroupKey) Then
+                            groupAssignedColors(previousGroupKey) = SelectNextColor_ColorRule(selectedColor, groupIndex - 2)
+                            adjacentAdjustedGroupCount = adjacentAdjustedGroupCount + 1
+                        End If
+                    End If
+                End If
             End If
 
             groupAssignedColors.Add groupKey, selectedColor
             previousGroupColor = selectedColor
+            previousGroupKey = groupKey
         Next groupIndex
 
         firstGroupKey = CStr(guideFirstGroup(guideKey))
@@ -7926,6 +7968,9 @@ Public Sub 新ファイル基準表_色ルール修正()
     MsgBox "新ファイル基準表の色ルール修正が完了しました。" & vbCrLf & _
            "変更したセル数: " & CStr(changedCellCount) & vbCrLf & _
            "変更した行数: " & CStr(changedRows.Count) & vbCrLf & _
+           "既存色を維持した2色名グループ数: " & CStr(preservedGroupCount) & vbCrLf & _
+           "空欄または不正色のため新規補完した2色名グループ数: " & CStr(filledGroupCount) & vbCrLf & _
+           "隣接色の連続回避のため変更した2色名グループ数: " & CStr(adjacentAdjustedGroupCount) & vbCrLf & _
            "第1ガイド色名の最大連続数: " & CStr(maxGuideColorRun) & vbCrLf & _
            "第2ガイド2色名の最大連続数: " & CStr(maxGuide2ColorRun), vbInformation
 
@@ -8036,6 +8081,29 @@ Private Function IsValidColor_ColorRule(ByVal colorName As String) As Boolean
         Case "白色", "赤色", "青色", "黄色", "緑色"
             IsValidColor_ColorRule = True
     End Select
+
+End Function
+
+Private Function SelectExistingGroupColor_ColorRule(ByVal colorCounts As Object, ByVal firstColor As String) As String
+
+    Dim key As Variant
+    Dim bestColor As String
+    Dim bestCount As Long
+
+    If colorCounts Is Nothing Then Exit Function
+    If colorCounts.Count = 0 Then Exit Function
+
+    bestColor = NormalizeColorName_ColorRule(firstColor)
+    If colorCounts.Exists(bestColor) Then bestCount = CLng(colorCounts(bestColor))
+
+    For Each key In colorCounts.Keys
+        If CLng(colorCounts(key)) > bestCount Then
+            bestColor = CStr(key)
+            bestCount = CLng(colorCounts(key))
+        End If
+    Next key
+
+    SelectExistingGroupColor_ColorRule = bestColor
 
 End Function
 
