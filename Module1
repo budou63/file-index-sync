@@ -8070,8 +8070,60 @@ Private Function NormalizeText_ColorRule(ByVal valueText As String) As String
 
 End Function
 
+Public Function NormalizeGuideKey(ByVal s As String) As String
+
+    Dim normalized As String
+    Dim i As Long
+    Dim ch As String
+    Dim codePoint As Long
+    Dim resultText As String
+
+    normalized = CStr(s)
+    normalized = Replace(normalized, vbCr, "")
+    normalized = Replace(normalized, vbLf, "")
+    normalized = Replace(normalized, vbTab, "")
+    normalized = Replace(normalized, ChrW(&H200B), "") ' ゼロ幅スペース
+    normalized = Replace(normalized, ChrW(&H200C), "")
+    normalized = Replace(normalized, ChrW(&H200D), "")
+    normalized = Replace(normalized, ChrW(&HFEFF), "")
+    normalized = Replace(normalized, ChrW(&HA0), "") ' ノーブレークスペース
+    normalized = Replace(normalized, ChrW(&H3000), "")
+    normalized = Replace(normalized, " ", "")
+
+    normalized = Replace(normalized, "／", "/")
+    normalized = Replace(normalized, "＼", "/")
+    normalized = Replace(normalized, "\", "/")
+    normalized = Replace(normalized, "･", "・")
+    normalized = Replace(normalized, "·", "・")
+    normalized = Replace(normalized, "－", "-")
+    normalized = Replace(normalized, "―", "-")
+    normalized = Replace(normalized, "‐", "-")
+    normalized = Replace(normalized, "‑", "-")
+    normalized = Replace(normalized, "–", "-")
+    normalized = Replace(normalized, "—", "-")
+    normalized = Replace(normalized, "ー", "-")
+    normalized = Replace(normalized, "ｰ", "-")
+
+    On Error Resume Next
+    normalized = StrConv(normalized, vbNarrow)
+    normalized = StrConv(normalized, vbLowerCase)
+    On Error GoTo 0
+
+    normalized = Trim$(normalized)
+
+    For i = 1 To Len(normalized)
+        ch = Mid$(normalized, i, 1)
+        codePoint = AscW(ch)
+        If codePoint < 0 Then codePoint = codePoint + 65536
+        If codePoint >= 32 And codePoint <> 127 Then resultText = resultText & ch
+    Next i
+
+    NormalizeGuideKey = resultText
+
+End Function
+
 Private Function BuildGuideKey_ColorRule(ByVal valueText As Variant) As String
-    BuildGuideKey_ColorRule = NormalizeText_ColorRule(CStr(valueText))
+    BuildGuideKey_ColorRule = NormalizeGuideKey(CStr(valueText))
 End Function
 
 Private Function BuildBlockContextKey_ColorRule( _
@@ -8083,11 +8135,11 @@ Private Function BuildBlockContextKey_ColorRule( _
 
     Dim keyText As String
 
-    If colClass1 > 0 Then keyText = keyText & NormalizeText_ColorRule(CStr(ws.Cells(rowNo, colClass1).Value))
+    If colClass1 > 0 Then keyText = keyText & NormalizeGuideKey(CStr(ws.Cells(rowNo, colClass1).Value))
     keyText = keyText & ChrW(&H1E)
-    If colDepartment > 0 Then keyText = keyText & NormalizeText_ColorRule(CStr(ws.Cells(rowNo, colDepartment).Value))
+    If colDepartment > 0 Then keyText = keyText & NormalizeGuideKey(CStr(ws.Cells(rowNo, colDepartment).Value))
     keyText = keyText & ChrW(&H1E)
-    If colYear > 0 Then keyText = keyText & NormalizeText_ColorRule(CStr(ws.Cells(rowNo, colYear).Value))
+    If colYear > 0 Then keyText = keyText & NormalizeGuideKey(CStr(ws.Cells(rowNo, colYear).Value))
 
     BuildBlockContextKey_ColorRule = keyText
 
@@ -8320,7 +8372,7 @@ Private Function BuildColorRuleIssueMessage_ColorRule( _
 
         If guideColors.Exists(guideKey) Then
             If StrComp(CStr(guideColors(guideKey)), color1, vbBinaryCompare) <> 0 Then
-                AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, "同じ第1ガイドの色名が未統一です。"
+                AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, BuildColorRuleIssueDetail_ColorRule(ws, rowNo, colGuide1, colColor1, colGuide2, colColor2, "同じ正規化済み第1ガイドの色名が未統一です。")
             End If
         Else
             guideColors.Add guideKey, color1
@@ -8328,7 +8380,7 @@ Private Function BuildColorRuleIssueMessage_ColorRule( _
 
         If groupColors.Exists(groupKey) Then
             If StrComp(CStr(groupColors(groupKey)), color2, vbBinaryCompare) <> 0 Then
-                AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, "同じ第1ガイド+第2ガイドの2色名が未統一です。"
+                AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, BuildColorRuleIssueDetail_ColorRule(ws, rowNo, colGuide1, colColor1, colGuide2, colColor2, "同じ正規化済み第1ガイド+第2ガイドの2色名が未統一です。")
             End If
         Else
             groupColors.Add groupKey, color2
@@ -8337,7 +8389,7 @@ Private Function BuildColorRuleIssueMessage_ColorRule( _
         If Len(previousGuideKey) > 0 Then
             If StrComp(guideKey, previousGuideKey, vbBinaryCompare) <> 0 Then
                 If StrComp(color1, previousColor1, vbBinaryCompare) = 0 Then
-                    AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, "第1ガイド切替箇所で色名が連続しています。"
+                    AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, BuildColorRuleIssueDetail_ColorRule(ws, rowNo, colGuide1, colColor1, colGuide2, colColor2, "第1ガイド切替箇所で色名が連続しています。")
                 End If
             End If
         End If
@@ -8352,6 +8404,23 @@ Private Function BuildColorRuleIssueMessage_ColorRule( _
 
 End Function
 
+Private Function BuildColorRuleIssueDetail_ColorRule( _
+    ByVal ws As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal colGuide1 As Long, _
+    ByVal colColor1 As Long, _
+    ByVal colGuide2 As Long, _
+    ByVal colColor2 As Long, _
+    ByVal issueText As String) As String
+
+    BuildColorRuleIssueDetail_ColorRule = issueText & _
+        " 第1ガイド=[" & CStr(ws.Cells(rowNo, colGuide1).Value) & "]" & _
+        " 第2ガイド=[" & CStr(ws.Cells(rowNo, colGuide2).Value) & "]" & _
+        " 色名=[" & CStr(ws.Cells(rowNo, colColor1).Value) & "]" & _
+        " 2色名=[" & CStr(ws.Cells(rowNo, colColor2).Value) & "]"
+
+End Function
+
 Private Sub AppendColorRuleIssue_ColorRule( _
     ByRef messageText As String, _
     ByRef issueCount As Long, _
@@ -8359,6 +8428,7 @@ Private Sub AppendColorRuleIssue_ColorRule( _
     ByVal issueText As String)
 
     issueCount = issueCount + 1
+    Debug.Print "[色ルール確認] " & CStr(rowNo) & "行目: " & issueText
     If issueCount <= 20 Then
         If Len(messageText) > 0 Then messageText = messageText & vbCrLf
         messageText = messageText & "・" & CStr(rowNo) & "行目: " & issueText
