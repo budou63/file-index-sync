@@ -7792,29 +7792,27 @@ Public Sub 新ファイル基準表_色ルール修正()
     Dim colColor2 As Long
     Dim colFolder As Long
     Dim colRemarks As Long
-    Dim colClass1 As Long
-    Dim colDepartment As Long
-    Dim colYear As Long
     Dim missingHeaders As String
-    Dim blockOrder As Collection
-    Dim blockAssignedColors As Object
-    Dim blockMacroColors As Object
-    Dim blockKeysByRow As Object
+    Dim guideOrder As Collection
+    Dim guideGroups As Object
+    Dim guideFirstGroup As Object
+    Dim groupMacroColors As Object
+    Dim groupAssignedColors As Object
+    Dim guideAssignedColors As Object
     Dim changedRows As Object
     Dim changedCellCount As Long
     Dim rowNo As Long
-    Dim blockIndex As Long
-    Dim blockKey As String
-    Dim currentGuideKey As String
-    Dim currentGuide2Key As String
-    Dim currentContextKey As String
-    Dim previousGuideKey As String
-    Dim previousGuide2Key As String
-    Dim previousContextKey As String
+    Dim guideIndex As Long
+    Dim groupIndex As Long
+    Dim guideKey As String
+    Dim guide2Key As String
+    Dim groupKey As String
+    Dim firstGroupKey As String
     Dim remarksText As String
     Dim colorValue As String
     Dim selectedColor As String
-    Dim previousAssignedColor As String
+    Dim previousGroupColor As String
+    Dim groupList As Collection
     Dim maxGuideColorRun As Long
     Dim maxGuide2ColorRun As Long
 
@@ -7842,9 +7840,6 @@ Public Sub 新ファイル基準表_色ルール修正()
     colColor2 = GetExactHeaderColumn_ColorRule(ws, lastCol, "2色名")
     colFolder = GetExactHeaderColumn_ColorRule(ws, lastCol, "個別フォルダー")
     colRemarks = GetExactHeaderColumn_ColorRule(ws, lastCol, "備考")
-    colClass1 = GetExactHeaderColumn_ColorRule(ws, lastCol, "分類名１")
-    colDepartment = GetExactHeaderColumn_ColorRule(ws, lastCol, "原課")
-    colYear = GetExactHeaderColumn_ColorRule(ws, lastCol, "年度（和暦）")
 
     If colGuide1 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "第1ガイド")
     If colColor1 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "色名")
@@ -7859,75 +7854,70 @@ Public Sub 新ファイル基準表_色ルール修正()
         GoTo SafeExit
     End If
 
-    Set blockOrder = New Collection
-    Set blockAssignedColors = CreateObject("Scripting.Dictionary")
-    Set blockMacroColors = CreateObject("Scripting.Dictionary")
-    Set blockKeysByRow = CreateObject("Scripting.Dictionary")
+    Set guideOrder = New Collection
+    Set guideGroups = CreateObject("Scripting.Dictionary")
+    Set guideFirstGroup = CreateObject("Scripting.Dictionary")
+    Set groupMacroColors = CreateObject("Scripting.Dictionary")
+    Set groupAssignedColors = CreateObject("Scripting.Dictionary")
+    Set guideAssignedColors = CreateObject("Scripting.Dictionary")
     Set changedRows = CreateObject("Scripting.Dictionary")
 
-    previousGuideKey = vbNullString
-    previousGuide2Key = vbNullString
-    previousContextKey = vbNullString
-    blockIndex = 0
-
-    ' 1回目の走査: 行の並び上の第1ガイドブロックを作る。
-    ' 第1ガイド名だけで固定せず、原課/年度/分類名１の変化や第2ガイドの変化でブロックを分ける。
+    ' 1回目の走査: 第1ガイド単位と、第1ガイド+第2ガイド単位の出現順を記録する。
+    ' 色名は第1ガイド名で統一し、2色名だけを第1ガイド+第2ガイド単位で変える。
     For rowNo = 2 To lastRow
-        currentGuideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
-        currentGuide2Key = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide2).Value)
-        currentContextKey = BuildBlockContextKey_ColorRule(ws, rowNo, colClass1, colDepartment, colYear)
+        guideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
+        guide2Key = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide2).Value)
+        groupKey = BuildGroupKey_ColorRule(guideKey, guide2Key)
 
-        If rowNo = 2 Or _
-           StrComp(currentGuideKey, previousGuideKey, vbBinaryCompare) <> 0 Or _
-           StrComp(currentGuide2Key, previousGuide2Key, vbBinaryCompare) <> 0 Or _
-           StrComp(currentContextKey, previousContextKey, vbBinaryCompare) <> 0 Then
-            blockIndex = blockIndex + 1
-            blockKey = "B" & CStr(blockIndex)
-            blockOrder.Add blockKey
+        If Not guideGroups.Exists(guideKey) Then
+            guideGroups.Add guideKey, New Collection
+            guideOrder.Add guideKey
         End If
 
-        blockKeysByRow.Add CStr(rowNo), blockKey
+        If Not CollectionContainsText_ColorRule(guideGroups(guideKey), groupKey) Then
+            guideGroups(guideKey).Add groupKey
+            If Not guideFirstGroup.Exists(guideKey) Then guideFirstGroup.Add guideKey, groupKey
+        End If
 
         remarksText = CStr(ws.Cells(rowNo, colRemarks).Value)
         If ContainsMacroInserted_ColorRule(remarksText) Then
             colorValue = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor2).Value))
             If IsValidColor_ColorRule(colorValue) Then
-                If Not blockMacroColors.Exists(blockKey) Then blockMacroColors.Add blockKey, colorValue
+                If Not groupMacroColors.Exists(groupKey) Then groupMacroColors.Add groupKey, colorValue
             End If
         End If
-
-        previousGuideKey = currentGuideKey
-        previousGuide2Key = currentGuide2Key
-        previousContextKey = currentContextKey
     Next rowNo
 
-    ' 第2ガイドグループの2色名を決定する。
-    ' マクロ差込の既存色は尊重しつつ、直前ブロックと同色になる場合は視認性を優先して次色を使う。
-    previousAssignedColor = vbNullString
-    For blockIndex = 1 To blockOrder.Count
-        blockKey = CStr(blockOrder(blockIndex))
-        If blockMacroColors.Exists(blockKey) Then
-            selectedColor = CStr(blockMacroColors(blockKey))
-            If Len(previousAssignedColor) > 0 Then
-                If StrComp(selectedColor, previousAssignedColor, vbBinaryCompare) = 0 Then
-                    selectedColor = SelectNextColor_ColorRule(previousAssignedColor, blockIndex - 1)
-                End If
+    ' 第2ガイドの2色名を、第1ガイド配下の第2ガイド出現順で決定する。
+    For guideIndex = 1 To guideOrder.Count
+        guideKey = CStr(guideOrder(guideIndex))
+        Set groupList = guideGroups(guideKey)
+        previousGroupColor = vbNullString
+
+        For groupIndex = 1 To groupList.Count
+            groupKey = CStr(groupList(groupIndex))
+            If groupMacroColors.Exists(groupKey) Then
+                selectedColor = CStr(groupMacroColors(groupKey))
+            Else
+                selectedColor = SelectNextColor_ColorRule(previousGroupColor, groupIndex - 1)
             End If
-        Else
-            selectedColor = SelectNextColor_ColorRule(previousAssignedColor, blockIndex - 1)
-        End If
 
-        blockAssignedColors.Add blockKey, selectedColor
-        previousAssignedColor = selectedColor
-    Next blockIndex
+            groupAssignedColors.Add groupKey, selectedColor
+            previousGroupColor = selectedColor
+        Next groupIndex
 
-    ' 2回目の走査: 各ブロックの先頭第2ガイド色を、第1ガイド色として各行へ反映する。
+        firstGroupKey = CStr(guideFirstGroup(guideKey))
+        guideAssignedColors.Add guideKey, CStr(groupAssignedColors(firstGroupKey))
+    Next guideIndex
+
+    ' 2回目の走査: 色名は第1ガイド単位で統一し、2色名は第1ガイド+第2ガイド単位で反映する。
     For rowNo = 2 To lastRow
-        blockKey = CStr(blockKeysByRow(CStr(rowNo)))
-        selectedColor = CStr(blockAssignedColors(blockKey))
+        guideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
+        guide2Key = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide2).Value)
+        groupKey = BuildGroupKey_ColorRule(guideKey, guide2Key)
 
-        ApplyColorValue_ColorRule ws.Cells(rowNo, colColor1), selectedColor, "色名", changedCellCount, changedRows, rowNo
-        ApplyColorValue_ColorRule ws.Cells(rowNo, colColor2), selectedColor, "2色名", changedCellCount, changedRows, rowNo
+        ApplyColorValue_ColorRule ws.Cells(rowNo, colColor1), CStr(guideAssignedColors(guideKey)), "色名", changedCellCount, changedRows, rowNo
+        ApplyColorValue_ColorRule ws.Cells(rowNo, colColor2), CStr(groupAssignedColors(groupKey)), "2色名", changedCellCount, changedRows, rowNo
     Next rowNo
 
     maxGuideColorRun = CalculateMaxConsecutiveColor_ColorRule(ws, lastRow, colColor1)
