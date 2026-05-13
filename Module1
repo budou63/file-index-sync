@@ -7821,6 +7821,16 @@ Public Sub 新ファイル基準表_色ルール修正()
     Dim preservedGroupCount As Long
     Dim filledGroupCount As Long
     Dim adjacentAdjustedGroupCount As Long
+    Dim guideAdjacentAdjustedCount As Long
+    Dim adjustmentLoop As Long
+    Dim adjustedInLoop As Boolean
+    Dim currentGuideKey As String
+    Dim previousGuideKey As String
+    Dim currentGuideColor As String
+    Dim previousGuideColor As String
+    Dim newGuideColor As String
+    Dim guideAdjacentAdjusted As Object
+    Dim validationMessage As String
     Dim maxGuideColorRun As Long
     Dim maxGuide2ColorRun As Long
 
@@ -7871,6 +7881,7 @@ Public Sub 新ファイル基準表_色ルール修正()
     Set groupAssignedColors = CreateObject("Scripting.Dictionary")
     Set guideAssignedColors = CreateObject("Scripting.Dictionary")
     Set changedRows = CreateObject("Scripting.Dictionary")
+    Set guideAdjacentAdjusted = CreateObject("Scripting.Dictionary")
 
     ' 1回目の走査: 第1ガイド単位と、第1ガイド+第2ガイド単位の出現順、既存有効色を記録する。
     For rowNo = 2 To lastRow
@@ -7952,6 +7963,35 @@ Public Sub 新ファイル基準表_色ルール修正()
         guideAssignedColors.Add guideKey, CStr(groupAssignedColors(firstGroupKey))
     Next guideIndex
 
+    ' 第1ガイドが変わる箇所で同じ色名が連続しないよう、必要な第1ガイド色と先頭第2ガイド色だけを調整する。
+    For adjustmentLoop = 1 To 5
+        adjustedInLoop = False
+        previousGuideKey = vbNullString
+
+        For rowNo = 2 To lastRow
+            currentGuideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
+            If Len(previousGuideKey) > 0 Then
+                If StrComp(currentGuideKey, previousGuideKey, vbBinaryCompare) <> 0 Then
+                    previousGuideColor = CStr(guideAssignedColors(previousGuideKey))
+                    currentGuideColor = CStr(guideAssignedColors(currentGuideKey))
+                    If StrComp(currentGuideColor, previousGuideColor, vbBinaryCompare) = 0 Then
+                        newGuideColor = SelectDifferentColor_ColorRule(currentGuideColor, previousGuideColor)
+                        guideAssignedColors(currentGuideKey) = newGuideColor
+                        groupAssignedColors(CStr(guideFirstGroup(currentGuideKey))) = newGuideColor
+                        If Not guideAdjacentAdjusted.Exists(currentGuideKey) Then
+                            guideAdjacentAdjusted.Add currentGuideKey, True
+                            guideAdjacentAdjustedCount = guideAdjacentAdjustedCount + 1
+                        End If
+                        adjustedInLoop = True
+                    End If
+                End If
+            End If
+            previousGuideKey = currentGuideKey
+        Next rowNo
+
+        If Not adjustedInLoop Then Exit For
+    Next adjustmentLoop
+
     ' 2回目の走査: 色名は第1ガイド単位で統一し、2色名は第1ガイド+第2ガイド単位で反映する。
     For rowNo = 2 To lastRow
         guideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
@@ -7964,6 +8004,9 @@ Public Sub 新ファイル基準表_色ルール修正()
 
     maxGuideColorRun = CalculateMaxConsecutiveColor_ColorRule(ws, lastRow, colColor1)
     maxGuide2ColorRun = CalculateMaxConsecutiveColor_ColorRule(ws, lastRow, colColor2)
+    validationMessage = BuildColorRuleIssueMessage_ColorRule(ws, lastRow, colGuide1, colColor1, colGuide2, colColor2)
+
+    If Len(validationMessage) = 0 Then validationMessage = "チェック結果: 問題なし"
 
     MsgBox "新ファイル基準表の色ルール修正が完了しました。" & vbCrLf & _
            "変更したセル数: " & CStr(changedCellCount) & vbCrLf & _
@@ -7971,8 +8014,10 @@ Public Sub 新ファイル基準表_色ルール修正()
            "既存色を維持した2色名グループ数: " & CStr(preservedGroupCount) & vbCrLf & _
            "空欄または不正色のため新規補完した2色名グループ数: " & CStr(filledGroupCount) & vbCrLf & _
            "隣接色の連続回避のため変更した2色名グループ数: " & CStr(adjacentAdjustedGroupCount) & vbCrLf & _
+           "第1ガイド連続回避のため変更した第1ガイド数: " & CStr(guideAdjacentAdjustedCount) & vbCrLf & _
            "第1ガイド色名の最大連続数: " & CStr(maxGuideColorRun) & vbCrLf & _
-           "第2ガイド2色名の最大連続数: " & CStr(maxGuide2ColorRun), vbInformation
+           "第2ガイド2色名の最大連続数: " & CStr(maxGuide2ColorRun) & vbCrLf & _
+           validationMessage, vbInformation
 
 SafeExit:
     On Error Resume Next
@@ -8107,6 +8152,35 @@ Private Function SelectExistingGroupColor_ColorRule(ByVal colorCounts As Object,
 
 End Function
 
+Private Function SelectDifferentColor_ColorRule(ByVal currentColor As String, ByVal avoidColor As String) As String
+
+    Dim colors As Variant
+    Dim i As Long
+    Dim candidate As String
+
+    colors = Array("白色", "赤色", "青色", "黄色", "緑色")
+    currentColor = NormalizeColorName_ColorRule(currentColor)
+    avoidColor = NormalizeColorName_ColorRule(avoidColor)
+
+    If IsValidColor_ColorRule(currentColor) Then
+        If StrComp(currentColor, avoidColor, vbBinaryCompare) <> 0 Then
+            SelectDifferentColor_ColorRule = currentColor
+            Exit Function
+        End If
+    End If
+
+    For i = 0 To UBound(colors)
+        candidate = CStr(colors(i))
+        If StrComp(candidate, avoidColor, vbBinaryCompare) <> 0 Then
+            SelectDifferentColor_ColorRule = candidate
+            Exit Function
+        End If
+    Next i
+
+    SelectDifferentColor_ColorRule = CStr(colors(0))
+
+End Function
+
 Private Function SelectNextColor_ColorRule(ByVal previousColor As String, ByVal offset As Long) As String
 
     Dim colors As Variant
@@ -8209,6 +8283,88 @@ Private Function CalculateMaxConsecutiveColor_ColorRule( _
     Next rowNo
 
 End Function
+
+Private Function BuildColorRuleIssueMessage_ColorRule( _
+    ByVal ws As Worksheet, _
+    ByVal lastRow As Long, _
+    ByVal colGuide1 As Long, _
+    ByVal colColor1 As Long, _
+    ByVal colGuide2 As Long, _
+    ByVal colColor2 As Long) As String
+
+    Dim guideColors As Object
+    Dim groupColors As Object
+    Dim rowNo As Long
+    Dim guideKey As String
+    Dim guide2Key As String
+    Dim groupKey As String
+    Dim color1 As String
+    Dim color2 As String
+    Dim previousGuideKey As String
+    Dim previousColor1 As String
+    Dim issueCount As Long
+    Dim messageText As String
+
+    If ws Is Nothing Then Exit Function
+    If lastRow < 2 Then Exit Function
+
+    Set guideColors = CreateObject("Scripting.Dictionary")
+    Set groupColors = CreateObject("Scripting.Dictionary")
+
+    For rowNo = 2 To lastRow
+        guideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
+        guide2Key = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide2).Value)
+        groupKey = BuildGroupKey_ColorRule(guideKey, guide2Key)
+        color1 = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor1).Value))
+        color2 = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor2).Value))
+
+        If guideColors.Exists(guideKey) Then
+            If StrComp(CStr(guideColors(guideKey)), color1, vbBinaryCompare) <> 0 Then
+                AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, "同じ第1ガイドの色名が未統一です。"
+            End If
+        Else
+            guideColors.Add guideKey, color1
+        End If
+
+        If groupColors.Exists(groupKey) Then
+            If StrComp(CStr(groupColors(groupKey)), color2, vbBinaryCompare) <> 0 Then
+                AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, "同じ第1ガイド+第2ガイドの2色名が未統一です。"
+            End If
+        Else
+            groupColors.Add groupKey, color2
+        End If
+
+        If Len(previousGuideKey) > 0 Then
+            If StrComp(guideKey, previousGuideKey, vbBinaryCompare) <> 0 Then
+                If StrComp(color1, previousColor1, vbBinaryCompare) = 0 Then
+                    AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, "第1ガイド切替箇所で色名が連続しています。"
+                End If
+            End If
+        End If
+
+        previousGuideKey = guideKey
+        previousColor1 = color1
+    Next rowNo
+
+    If issueCount > 0 Then
+        BuildColorRuleIssueMessage_ColorRule = "チェック結果: 要確認 " & CStr(issueCount) & "件" & vbCrLf & messageText
+    End If
+
+End Function
+
+Private Sub AppendColorRuleIssue_ColorRule( _
+    ByRef messageText As String, _
+    ByRef issueCount As Long, _
+    ByVal rowNo As Long, _
+    ByVal issueText As String)
+
+    issueCount = issueCount + 1
+    If issueCount <= 20 Then
+        If Len(messageText) > 0 Then messageText = messageText & vbCrLf
+        messageText = messageText & "・" & CStr(rowNo) & "行目: " & issueText
+    End If
+
+End Sub
 
 Private Sub AppendCellComment_ColorRule(ByVal targetCell As Range, ByVal appendText As String)
 
