@@ -12,6 +12,9 @@ Private Const DUP_CHECK_ORIGINAL_ORDER_HEADER As String = "重複確認用_元�
 Private Const DUP_CHECK_TEMP_KEY_HEADER As String = "__重複確認キー_TMP__"
 Private Const DUP_CHECK_TEMP_FLAG_HEADER As String = "__重複確認フラグ_TMP__"
 Private Const DUP_CHECK_MARK_COLOR As Long = 65535 ' RGB(255,255,0)
+Private Const SEAL_PAGE_ROWS As Long = 20
+Private Const SEAL_PAGE_COL_LAST As Long = 21 ' U列
+Private Const SEAL_PER_PAGE As Long = 12
 
 '========================================================
 ' 新ファイル基準表: 行移動モード（▲/▼で挿入予定位置のみ移動）
@@ -1003,8 +1006,8 @@ Public Sub 行移動_予定線を全消去()
 
     Dim ws As Worksheet
     Dim lastCol As Long
-    Dim key As Variant
     Dim markerRow As Long
+    Dim key As Variant
 
     On Error GoTo SafeExit
 
@@ -2381,10 +2384,10 @@ Public Sub 重複フォルダ候補をマーキング()
     Dim colTitle As Long
     Dim r As Long
     Dim markColor As Long
-    Dim key As Variant
     Dim rowKey As String
     Dim dictRowsByKey As Object
     Dim rowList As Collection
+    Dim key As Variant
     Dim duplicateGroupCount As Long
     Dim markedRowCount As Long
     Dim class2Arr As Variant
@@ -2494,8 +2497,8 @@ Public Sub 重複フォルダ候補をマーキングして並び替え()
     Dim dupArr() As Variant
     Dim originalRowArr() As Variant
     Dim keyCounts As Object
-    Dim key As Variant
     Dim rowKey As String
+    Dim key As Variant
     Dim r As Long
     Dim duplicateGroupCount As Long
     Dim markedRowCount As Long
@@ -3387,8 +3390,8 @@ End Sub
 
 Private Sub ApplyStep2PostProcessToTouchedRows(ByVal wsDst As Worksheet, ByVal touchedRowMap As Object)
 
-    Dim key As Variant
     Dim rowNo As Long
+    Dim key As Variant
 
     If wsDst Is Nothing Then Exit Sub
     If touchedRowMap Is Nothing Then Exit Sub
@@ -4255,7 +4258,6 @@ Private Sub UpdateRowFromSourceByHeader( _
     ByVal srcHeaderMap As Object, _
     ByVal srcToDstMap As Object)
 
-    Dim key As Variant
     Dim srcCol As Long
     Dim dstCol As Long
     Dim beforeValue As Variant
@@ -4263,6 +4265,7 @@ Private Sub UpdateRowFromSourceByHeader( _
     Dim beforeCompare As String
     Dim afterCompare As String
     Dim targetCell As Range
+    Dim key As Variant
 
     ' CSV由来列だけを上書きし、ユーザー管理列は触らない
     ' さらに、実際に差分があるセルだけ赤字＋コメントを付与する
@@ -4300,9 +4303,9 @@ Private Sub AppendRowFromSourceByHeader( _
     ByVal srcHeaderMap As Object, _
     ByVal srcToDstMap As Object)
 
-    Dim key As Variant
     Dim srcCol As Long
     Dim dstCol As Long
+    Dim key As Variant
 
     ' 追加時は通常書式のまま値を書き込む（赤字・コメントは付与しない）
     For Each key In srcToDstMap.Keys
@@ -4871,11 +4874,11 @@ Private Sub ReapplyFormatAndWidthFromTemplate( _
     ByVal columnWidthMap As Object, _
     ByVal wsTemplate As Worksheet)
 
-    Dim key As Variant
     Dim lastCol As Long
     Dim dstCol As Long
     Dim templateCol As Long
     Dim applyLastRow As Long
+    Dim key As Variant
 
     If wsDst Is Nothing Then Exit Sub
 
@@ -4978,11 +4981,11 @@ Private Sub ReapplyValidationFromTemplate( _
     ByVal validationTemplateMap As Object, _
     ByVal wsTemplate As Worksheet)
 
-    Dim key As Variant
     Dim lastCol As Long
     Dim dstCol As Long
     Dim templateCol As Long
     Dim applyLastRow As Long
+    Dim key As Variant
 
     If validationTemplateMap Is Nothing Then Exit Sub
     If wsTemplate Is Nothing Then Exit Sub
@@ -5511,7 +5514,6 @@ Private Function RecalculateHaikiDateByRowMap(ByVal wsEdit As Worksheet, ByVal r
     Dim warekiCol As Long
     Dim saveTermCol As Long
     Dim haikiCol As Long
-    Dim key As Variant
     Dim rowNo As Long
     Dim warekiText As String
     Dim saveTermText As String
@@ -5521,6 +5523,7 @@ Private Function RecalculateHaikiDateByRowMap(ByVal wsEdit As Worksheet, ByVal r
     Dim prevCalculation As XlCalculation
     Dim errNo As Long
     Dim errDesc As String
+    Dim key As Variant
 
     On Error GoTo ErrorHandler
 
@@ -5702,12 +5705,12 @@ Public Sub UpdateHaikiDate(ByVal Target As Range)
     Dim workRange As Range
     Dim changedCell As Range
     Dim rowMap As Object
-    Dim key As Variant
     Dim rowNo As Long
     Dim warekiText As String
     Dim saveTermText As String
     Dim calcResult As String
     Dim prevEnableEvents As Boolean
+    Dim key As Variant
 
     If Target Is Nothing Then Exit Sub
 
@@ -6722,14 +6725,7 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     Const SINGLE_SHEET_NAME1 As String = "個別フォルダシール"
     Const SINGLE_SHEET_NAME2 As String = "個別フォルダーシール"
     Const SINGLE_SHEET_NAME3 As String = "フォルダシール"
-    ' 1ページ = 20行（テンプレート「個別フォルダシール」1～20行）
-    Const PAGE_ROWS As Long = 20
-    ' 1ページ = 12面固定
-    Const SEALS_PER_PAGE As Long = 12
-    ' NOTE:
-    ' 右側ブロックの結合セル（M:U / S:U）をテンプレート通りに維持するため、
-    ' ページ複製範囲は U 列(21) までを対象にする。
-    Const PAGE_LAST_COL As Long = 21
+    ' 1ページ = 20行、12面、印刷範囲右端 = U列固定（モジュール定数を使用）
 
     Dim wsSrc As Worksheet
     Dim wsSingle As Worksheet
@@ -6771,7 +6767,9 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     If wsSingle Is Nothing Then Err.Raise vbObjectError + 2304, , "単発用の個別フォルダシールシートが見つかりません。"
     If wsMulti Is Nothing Then Err.Raise vbObjectError + 2305, , "大量出力用シート「" & MULTI_SHEET_NAME & "」が見つかりません。"
 
-    printLastCol = GetSealPrintAreaLastColumn(wsMulti, PAGE_LAST_COL)
+    ' 個別フォルダシール（複数）の横方向印刷範囲は常に A:U 固定。
+    ' 既存PrintArea/UsedRange/結合セルから右端列を再判定しない。
+    printLastCol = SEAL_PAGE_COL_LAST
 
     frmSeal.BuildIndexes_NewSpec wsSrc, serialIndex, headerIndex
     serialCol = CLng(headerIndex("通し番号"))
@@ -6795,30 +6793,31 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
         End If
     Next r
 
-    ' 既存の列幅・印刷範囲の最終列・余白・拡大縮小・印刷方向などのPageSetup設定は維持する
+    ' 既存の列幅・余白・拡大縮小・印刷方向などのPageSetup設定は維持する。
+    ' ただし印刷範囲は後段で A:U、必要ページ数×20行へ固定する。
 
     If targetRows.Count = 0 Then
         Err.Raise vbObjectError + 2307, , "該当するデータがありません。"
     End If
 
-    pageCount = CLng(Application.WorksheetFunction.RoundUp(CDbl(targetRows.Count) / CDbl(SEALS_PER_PAGE), 0))
+    pageCount = CLng(Application.WorksheetFunction.RoundUp(CDbl(targetRows.Count) / CDbl(SEAL_PER_PAGE), 0))
     requiredBlocks = pageCount
-    generatedBlocks = GetGeneratedSealBlockCount(wsMulti, PAGE_ROWS)
+    generatedBlocks = GetGeneratedSealBlockCount(wsMulti, SEAL_PAGE_ROWS)
 
     ' 既存ブロックを再利用し、不足分のみ12面単位で追加
     If generatedBlocks < requiredBlocks Then
         For addPageNo = generatedBlocks + 1 To requiredBlocks
-            pageTopRow = (addPageNo - 1) * PAGE_ROWS + 1
-            CopySealTemplatePageLayout wsMulti, wsMulti, pageTopRow, PAGE_ROWS, printLastCol
+            pageTopRow = (addPageNo - 1) * SEAL_PAGE_ROWS + 1
+            CopySealTemplatePageLayout wsMulti, wsMulti, pageTopRow, SEAL_PAGE_ROWS, printLastCol
         Next addPageNo
         generatedBlocks = requiredBlocks
     End If
 
     For pageNo = 1 To pageCount
-        pageTopRow = (pageNo - 1) * PAGE_ROWS + 1
+        pageTopRow = (pageNo - 1) * SEAL_PAGE_ROWS + 1
 
-        For slot = 1 To SEALS_PER_PAGE
-            idx = (pageNo - 1) * SEALS_PER_PAGE + slot
+        For slot = 1 To SEAL_PER_PAGE
+            idx = (pageNo - 1) * SEAL_PER_PAGE + slot
             If idx <= targetRows.Count Then
                 srcRow = CLng(targetRows(idx))
                 WriteOneSeal_NewSpec_WithRowOffset _
@@ -6837,13 +6836,13 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     ' 今回未使用の既存ブロックは削除せず残し、値だけクリア
     If generatedBlocks > pageCount Then
         For clearPageNo = pageCount + 1 To generatedBlocks
-            For slot = 1 To SEALS_PER_PAGE
-                ClearOneSealSlot_WithRowOffset wsMulti, slot, (clearPageNo - 1) * PAGE_ROWS
+            For slot = 1 To SEAL_PER_PAGE
+                ClearOneSealSlot_WithRowOffset wsMulti, slot, (clearPageNo - 1) * SEAL_PAGE_ROWS
             Next slot
         Next clearPageNo
     End If
 
-    ConfigureMultiSealFixedPrintLayout wsMulti, targetRows.Count, PAGE_ROWS, SEALS_PER_PAGE, printLastCol
+    ConfigureMultiSealFixedPrintLayout wsMulti, targetRows.Count, SEAL_PAGE_ROWS, SEAL_PER_PAGE, printLastCol
 
     MsgBox "個別フォルダシール（複数）を作成しました。" & vbCrLf & _
            "対象件数: " & targetRows.Count & " 件" & vbCrLf & _
@@ -6872,59 +6871,34 @@ Private Sub ConfigureMultiSealFixedPrintLayout( _
     Dim printLastRow As Long
 
     If ws Is Nothing Then Exit Sub
-    If pageRows <= 0 Then Exit Sub
-    If sealsPerPage <= 0 Then Exit Sub
 
+    ' 個別フォルダシール（複数）は、横方向を必ず A:U 固定にする。
+    ' 引数 pageRows/sealsPerPage/printLastCol は互換性維持のため受け取るが、
+    ' 印刷範囲の算定はモジュール定数（20行、12面、U列）だけを使う。
     If outputCount <= 0 Then
         requiredPages = 1
     Else
-        requiredPages = CLng(Application.WorksheetFunction.RoundUp(CDbl(outputCount) / CDbl(sealsPerPage), 0))
+        requiredPages = CLng(Application.WorksheetFunction.RoundUp(CDbl(outputCount) / CDbl(SEAL_PER_PAGE), 0))
     End If
     If requiredPages < 1 Then requiredPages = 1
 
-    If printLastCol <= 0 Then printLastCol = GetSealPrintAreaLastColumn(ws, 21)
-    printLastRow = requiredPages * pageRows
+    printLastRow = requiredPages * SEAL_PAGE_ROWS
 
-    ' 既存のPageSetup（Zoom/FitToPagesWide/FitToPagesTall等）は変更せず、
-    ' 印刷範囲を20行単位で固定してから手動改ページだけを再作成する。
-    ws.PageSetup.PrintArea = ws.Range(ws.Cells(1, 1), ws.Cells(printLastRow, printLastCol)).Address
-    ConfigureSealPageBreaks ws, pageRows, requiredPages
+    ' PageSetup.PrintArea 設定箇所:
+    ' 右端列は常に U列、下端行だけを必要ページ数×20行へ伸縮する。
+    ws.PageSetup.PrintArea = ws.Range(ws.Cells(1, 1), ws.Cells(printLastRow, SEAL_PAGE_COL_LAST)).Address
+
+    ' 改ページ設定箇所:
+    ' 21行目、41行目、61行目…の上にだけ手動水平改ページを作る。
+    ConfigureSealPageBreaks ws, SEAL_PAGE_ROWS, requiredPages
 
 End Sub
 
 Private Function GetSealPrintAreaLastColumn(ByVal ws As Worksheet, ByVal defaultLastCol As Long) As Long
 
-    Dim areaText As String
-    Dim printRange As Range
-    Dim oneArea As Range
-    Dim lastCol As Long
-
-    On Error GoTo Fallback
-
-    If ws Is Nothing Then GoTo Fallback
-
-    areaText = Trim$(ws.PageSetup.PrintArea)
-    If Len(areaText) > 0 Then
-        Set printRange = ws.Range(areaText)
-        For Each oneArea In printRange.Areas
-            If oneArea.Column + oneArea.Columns.Count - 1 > lastCol Then
-                lastCol = oneArea.Column + oneArea.Columns.Count - 1
-            End If
-        Next oneArea
-    End If
-
-    If lastCol <= 0 Then lastCol = defaultLastCol
-    If lastCol <= 0 Then lastCol = 21
-
-    GetSealPrintAreaLastColumn = lastCol
-    Exit Function
-
-Fallback:
-    If defaultLastCol > 0 Then
-        GetSealPrintAreaLastColumn = defaultLastCol
-    Else
-        GetSealPrintAreaLastColumn = 21
-    End If
+    ' 個別フォルダシール（複数）の印刷範囲右端は U列固定。
+    ' 既存のPrintArea、UsedRange、最終入力列、結合セル範囲から再判定しない。
+    GetSealPrintAreaLastColumn = SEAL_PAGE_COL_LAST
 
 End Function
 
@@ -6945,7 +6919,7 @@ Private Function GetGeneratedSealBlockCount(ByVal ws As Worksheet, ByVal pageRow
         rowBottom = rngPrint.Row + rngPrint.Rows.Count - 1
     End If
 
-    Set lastDataCell = ws.Range(ws.Cells(1, 1), ws.Cells(ws.Rows.Count, 21)).Find( _
+    Set lastDataCell = ws.Range(ws.Cells(1, 1), ws.Cells(ws.Rows.Count, SEAL_PAGE_COL_LAST)).Find( _
         What:="*", LookIn:=xlFormulas, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
     If Not lastDataCell Is Nothing Then dataBottom = lastDataCell.Row
 
@@ -7118,9 +7092,6 @@ End Sub
 Public Sub ClearAllSeals_NewSpec()
 
     Const MULTI_SHEET_NAME As String = "個別フォルダシール（複数）"
-    Const PAGE_ROWS As Long = 20
-    Const PAGE_LAST_COL As Long = 21
-
     Dim wsSingle As Worksheet
     Dim wsMulti As Worksheet
     Dim slot As Long
@@ -7131,7 +7102,7 @@ Public Sub ClearAllSeals_NewSpec()
 
     Set wsSingle = ResolveWorksheetByCandidates(ThisWorkbook, Array("個別フォルダシール", "個別フォルダーシール", "フォルダシール"))
     If Not wsSingle Is Nothing Then
-        For slot = 1 To 12
+        For slot = 1 To SEAL_PER_PAGE
             ClearOneSealSlot wsSingle, slot
         Next slot
         clearedSingle = True
@@ -7139,15 +7110,14 @@ Public Sub ClearAllSeals_NewSpec()
 
     Set wsMulti = ResolveWorksheetByCandidates(ThisWorkbook, Array(MULTI_SHEET_NAME))
     If Not wsMulti Is Nothing Then
-        generatedBlocks = GetGeneratedSealBlockCount(wsMulti, PAGE_ROWS)
+        generatedBlocks = GetGeneratedSealBlockCount(wsMulti, SEAL_PAGE_ROWS)
         For pageNo = 1 To generatedBlocks
-            For slot = 1 To 12
-                ClearOneSealSlot_WithRowOffset wsMulti, slot, (pageNo - 1) * PAGE_ROWS
+            For slot = 1 To SEAL_PER_PAGE
+                ClearOneSealSlot_WithRowOffset wsMulti, slot, (pageNo - 1) * SEAL_PAGE_ROWS
             Next slot
         Next pageNo
-        ' クリア後は1ページ固定に戻す（列範囲はテンプレートどおり A:U）
-        ConfigureSealPageBreaks wsMulti, PAGE_ROWS, 1
-        wsMulti.PageSetup.PrintArea = wsMulti.Range(wsMulti.Cells(1, 1), wsMulti.Cells(PAGE_ROWS, PAGE_LAST_COL)).Address
+        ' クリア処理では既存の印刷範囲・改ページを維持し、値だけをクリアする。
+        ' PageSetup.PrintAreaを1ページ分へ勝手に縮めない。
         clearedMulti = True
     End If
 
@@ -7772,3 +7742,685 @@ Private Function IsPaperMedia(ByVal rawValue As String) As Boolean
     IsPaperMedia = (StrComp(NormalizeMediaValue(rawValue), "紙", vbBinaryCompare) = 0)
 
 End Function
+
+'========================================================
+' 新ファイル基準表: 旧ファイル基準表の考え方に基づく色ルール修正
+'========================================================
+Public Sub 新ファイル基準表_色ルール修正()
+
+    Const PROC_NAME As String = "新ファイル基準表_色ルール修正"
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim oldCalculation As XlCalculation
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim colGuide1 As Long
+    Dim colColor1 As Long
+    Dim colGuide2 As Long
+    Dim colColor2 As Long
+    Dim colFolder As Long
+    Dim colRemarks As Long
+    Dim missingHeaders As String
+    Dim guideOrder As Collection
+    Dim guideGroups As Object
+    Dim guideFirstGroup As Object
+    Dim groupColorCounts As Object
+    Dim groupFirstColors As Object
+    Dim groupHasMacroRows As Object
+    Dim groupAssignedColors As Object
+    Dim guideAssignedColors As Object
+    Dim changedRows As Object
+    Dim changedCellCount As Long
+    Dim rowNo As Long
+    Dim guideIndex As Long
+    Dim groupIndex As Long
+    Dim guideKey As String
+    Dim guide2Key As String
+    Dim groupKey As String
+    Dim firstGroupKey As String
+    Dim remarksText As String
+    Dim colorValue As String
+    Dim selectedColor As String
+    Dim previousGroupColor As String
+    Dim previousGroupKey As String
+    Dim groupList As Collection
+    Dim colorCounts As Object
+    Dim previousColorCounts As Object
+    Dim preservedGroupCount As Long
+    Dim filledGroupCount As Long
+    Dim adjacentAdjustedGroupCount As Long
+    Dim guideAdjacentAdjustedCount As Long
+    Dim adjustmentLoop As Long
+    Dim adjustedInLoop As Boolean
+    Dim currentGuideKey As String
+    Dim previousGuideKey As String
+    Dim currentGuideColor As String
+    Dim previousGuideColor As String
+    Dim newGuideColor As String
+    Dim guideAdjacentAdjusted As Object
+    Dim validationMessage As String
+    Dim maxGuideColorRun As Long
+    Dim maxGuide2ColorRun As Long
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    oldCalculation = Application.Calculation
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+
+    If lastRow < 2 Or lastCol < 1 Then
+        MsgBox "新ファイル基準表に処理対象データがありません。", vbInformation
+        GoTo SafeExit
+    End If
+
+    colGuide1 = GetExactHeaderColumn_ColorRule(ws, lastCol, "第1ガイド")
+    colColor1 = GetExactHeaderColumn_ColorRule(ws, lastCol, "色名")
+    colGuide2 = GetExactHeaderColumn_ColorRule(ws, lastCol, "第2ガイド")
+    colColor2 = GetExactHeaderColumn_ColorRule(ws, lastCol, "2色名")
+    colFolder = GetExactHeaderColumn_ColorRule(ws, lastCol, "個別フォルダー")
+    colRemarks = GetExactHeaderColumn_ColorRule(ws, lastCol, "備考")
+
+    If colGuide1 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "第1ガイド")
+    If colColor1 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "色名")
+    If colGuide2 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "第2ガイド")
+    If colColor2 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "2色名")
+    If colFolder = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "個別フォルダー")
+    If colRemarks = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "備考")
+
+    If Len(missingHeaders) > 0 Then
+        MsgBox "新ファイル基準表_色ルール修正を中止しました。" & vbCrLf & _
+               "不足している見出し:" & vbCrLf & missingHeaders, vbExclamation
+        GoTo SafeExit
+    End If
+
+    Set guideOrder = New Collection
+    Set guideGroups = CreateObject("Scripting.Dictionary")
+    Set guideFirstGroup = CreateObject("Scripting.Dictionary")
+    Set groupColorCounts = CreateObject("Scripting.Dictionary")
+    Set groupFirstColors = CreateObject("Scripting.Dictionary")
+    Set groupHasMacroRows = CreateObject("Scripting.Dictionary")
+    Set groupAssignedColors = CreateObject("Scripting.Dictionary")
+    Set guideAssignedColors = CreateObject("Scripting.Dictionary")
+    Set changedRows = CreateObject("Scripting.Dictionary")
+    Set guideAdjacentAdjusted = CreateObject("Scripting.Dictionary")
+
+    ' 1回目の走査: 第1ガイド単位と、第1ガイド+第2ガイド単位の出現順、既存有効色を記録する。
+    For rowNo = 2 To lastRow
+        guideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
+        guide2Key = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide2).Value)
+        groupKey = BuildGroupKey_ColorRule(guideKey, guide2Key)
+
+        If Not guideGroups.Exists(guideKey) Then
+            guideGroups.Add guideKey, New Collection
+            guideOrder.Add guideKey
+        End If
+
+        If Not CollectionContainsText_ColorRule(guideGroups(guideKey), groupKey) Then
+            guideGroups(guideKey).Add groupKey
+            If Not guideFirstGroup.Exists(guideKey) Then guideFirstGroup.Add guideKey, groupKey
+        End If
+
+        If Not groupColorCounts.Exists(groupKey) Then
+            Set colorCounts = CreateObject("Scripting.Dictionary")
+            groupColorCounts.Add groupKey, colorCounts
+        End If
+
+        colorValue = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor2).Value))
+        If IsValidColor_ColorRule(colorValue) Then
+            Set colorCounts = groupColorCounts(groupKey)
+            If colorCounts.Exists(colorValue) Then
+                colorCounts(colorValue) = CLng(colorCounts(colorValue)) + 1
+            Else
+                colorCounts.Add colorValue, 1
+            End If
+            If Not groupFirstColors.Exists(groupKey) Then groupFirstColors.Add groupKey, colorValue
+        End If
+
+        remarksText = CStr(ws.Cells(rowNo, colRemarks).Value)
+        If ContainsMacroInserted_ColorRule(remarksText) Then groupHasMacroRows(groupKey) = True
+    Next rowNo
+
+    ' 第2ガイドの2色名を決定する。既存有効色があれば、多数決（同数なら先出）で原則維持する。
+    For guideIndex = 1 To guideOrder.Count
+        guideKey = CStr(guideOrder(guideIndex))
+        Set groupList = guideGroups(guideKey)
+        previousGroupColor = vbNullString
+        previousGroupKey = vbNullString
+
+        For groupIndex = 1 To groupList.Count
+            groupKey = CStr(groupList(groupIndex))
+            Set colorCounts = groupColorCounts(groupKey)
+
+            If colorCounts.Count > 0 Then
+                selectedColor = SelectExistingGroupColor_ColorRule(colorCounts, CStr(groupFirstColors(groupKey)))
+                preservedGroupCount = preservedGroupCount + 1
+            Else
+                selectedColor = SelectNextColor_ColorRule(previousGroupColor, groupIndex - 1)
+                filledGroupCount = filledGroupCount + 1
+            End If
+
+            If Len(previousGroupColor) > 0 Then
+                If StrComp(selectedColor, previousGroupColor, vbBinaryCompare) = 0 Then
+                    If colorCounts.Count = 0 Or Not groupHasMacroRows.Exists(groupKey) Then
+                        selectedColor = SelectNextColor_ColorRule(previousGroupColor, groupIndex - 1)
+                        If colorCounts.Count > 0 Then preservedGroupCount = preservedGroupCount - 1
+                        adjacentAdjustedGroupCount = adjacentAdjustedGroupCount + 1
+                    ElseIf Len(previousGroupKey) > 0 Then
+                        Set previousColorCounts = groupColorCounts(previousGroupKey)
+                        If previousColorCounts.Count = 0 And Not groupHasMacroRows.Exists(previousGroupKey) Then
+                            groupAssignedColors(previousGroupKey) = SelectNextColor_ColorRule(selectedColor, groupIndex - 2)
+                            adjacentAdjustedGroupCount = adjacentAdjustedGroupCount + 1
+                        End If
+                    End If
+                End If
+            End If
+
+            groupAssignedColors.Add groupKey, selectedColor
+            previousGroupColor = selectedColor
+            previousGroupKey = groupKey
+        Next groupIndex
+
+        firstGroupKey = CStr(guideFirstGroup(guideKey))
+        guideAssignedColors.Add guideKey, CStr(groupAssignedColors(firstGroupKey))
+    Next guideIndex
+
+    ' 第1ガイドが変わる箇所で同じ色名が連続しないよう、必要な第1ガイド色と先頭第2ガイド色だけを調整する。
+    For adjustmentLoop = 1 To 5
+        adjustedInLoop = False
+        previousGuideKey = vbNullString
+
+        For rowNo = 2 To lastRow
+            currentGuideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
+            If Len(previousGuideKey) > 0 Then
+                If StrComp(currentGuideKey, previousGuideKey, vbBinaryCompare) <> 0 Then
+                    previousGuideColor = CStr(guideAssignedColors(previousGuideKey))
+                    currentGuideColor = CStr(guideAssignedColors(currentGuideKey))
+                    If StrComp(currentGuideColor, previousGuideColor, vbBinaryCompare) = 0 Then
+                        newGuideColor = SelectDifferentColor_ColorRule(currentGuideColor, previousGuideColor)
+                        guideAssignedColors(currentGuideKey) = newGuideColor
+                        groupAssignedColors(CStr(guideFirstGroup(currentGuideKey))) = newGuideColor
+                        If Not guideAdjacentAdjusted.Exists(currentGuideKey) Then
+                            guideAdjacentAdjusted.Add currentGuideKey, True
+                            guideAdjacentAdjustedCount = guideAdjacentAdjustedCount + 1
+                        End If
+                        adjustedInLoop = True
+                    End If
+                End If
+            End If
+            previousGuideKey = currentGuideKey
+        Next rowNo
+
+        If Not adjustedInLoop Then Exit For
+    Next adjustmentLoop
+
+    ' 2回目の走査: 色名は第1ガイド単位で統一し、2色名は第1ガイド+第2ガイド単位で反映する。
+    For rowNo = 2 To lastRow
+        guideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
+        guide2Key = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide2).Value)
+        groupKey = BuildGroupKey_ColorRule(guideKey, guide2Key)
+
+        ApplyColorValue_ColorRule ws.Cells(rowNo, colColor1), CStr(guideAssignedColors(guideKey)), "色名", changedCellCount, changedRows, rowNo
+        ApplyColorValue_ColorRule ws.Cells(rowNo, colColor2), CStr(groupAssignedColors(groupKey)), "2色名", changedCellCount, changedRows, rowNo
+    Next rowNo
+
+    maxGuideColorRun = CalculateMaxConsecutiveColor_ColorRule(ws, lastRow, colColor1)
+    maxGuide2ColorRun = CalculateMaxConsecutiveColor_ColorRule(ws, lastRow, colColor2)
+    validationMessage = BuildColorRuleIssueMessage_ColorRule(ws, lastRow, colGuide1, colColor1, colGuide2, colColor2)
+
+    If Len(validationMessage) = 0 Then validationMessage = "チェック結果: 問題なし"
+
+    MsgBox "新ファイル基準表の色ルール修正が完了しました。" & vbCrLf & _
+           "変更したセル数: " & CStr(changedCellCount) & vbCrLf & _
+           "変更した行数: " & CStr(changedRows.Count) & vbCrLf & _
+           "既存色を維持した2色名グループ数: " & CStr(preservedGroupCount) & vbCrLf & _
+           "空欄または不正色のため新規補完した2色名グループ数: " & CStr(filledGroupCount) & vbCrLf & _
+           "隣接色の連続回避のため変更した2色名グループ数: " & CStr(adjacentAdjustedGroupCount) & vbCrLf & _
+           "第1ガイド連続回避のため変更した第1ガイド数: " & CStr(guideAdjacentAdjustedCount) & vbCrLf & _
+           "第1ガイド色名の最大連続数: " & CStr(maxGuideColorRun) & vbCrLf & _
+           "第2ガイド2色名の最大連続数: " & CStr(maxGuide2ColorRun) & vbCrLf & _
+           validationMessage, vbInformation
+
+SafeExit:
+    On Error Resume Next
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Application.Calculation = oldCalculation
+    On Error GoTo 0
+    Exit Sub
+
+ErrorHandler:
+    MsgBox PROC_NAME & "でエラーが発生しました。" & vbCrLf & Err.Description, vbExclamation
+    Resume SafeExit
+
+End Sub
+
+Private Function GetExactHeaderColumn_ColorRule(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal headerName As String) As Long
+
+    Dim colNo As Long
+
+    If ws Is Nothing Then Exit Function
+
+    For colNo = 1 To lastCol
+        If StrComp(Trim$(CStr(ws.Cells(1, colNo).Value)), headerName, vbBinaryCompare) = 0 Then
+            GetExactHeaderColumn_ColorRule = colNo
+            Exit Function
+        End If
+    Next colNo
+
+End Function
+
+Private Function AppendMissingHeader_ColorRule(ByVal currentMessage As String, ByVal headerName As String) As String
+
+    If Len(currentMessage) > 0 Then currentMessage = currentMessage & vbCrLf
+    AppendMissingHeader_ColorRule = currentMessage & "・" & headerName
+
+End Function
+
+Private Function NormalizeText_ColorRule(ByVal valueText As String) As String
+
+    Dim s As String
+
+    s = CStr(valueText)
+    s = Replace(s, vbCr, "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, vbTab, "")
+    s = Replace(s, ChrW(&H3000), " ")
+    s = Trim$(s)
+
+    NormalizeText_ColorRule = s
+
+End Function
+
+Public Function NormalizeGuideKey(ByVal s As String) As String
+
+    Dim normalized As String
+    Dim i As Long
+    Dim ch As String
+    Dim codePoint As Long
+    Dim resultText As String
+
+    normalized = CStr(s)
+    normalized = Replace(normalized, vbCr, "")
+    normalized = Replace(normalized, vbLf, "")
+    normalized = Replace(normalized, vbTab, "")
+    normalized = Replace(normalized, ChrW(&H200B), "") ' ゼロ幅スペース
+    normalized = Replace(normalized, ChrW(&H200C), "")
+    normalized = Replace(normalized, ChrW(&H200D), "")
+    normalized = Replace(normalized, ChrW(&HFEFF), "")
+    normalized = Replace(normalized, ChrW(&HA0), "") ' ノーブレークスペース
+    normalized = Replace(normalized, ChrW(&H3000), "")
+    normalized = Replace(normalized, " ", "")
+
+    normalized = Replace(normalized, "／", "/")
+    normalized = Replace(normalized, "＼", "/")
+    normalized = Replace(normalized, "\", "/")
+    normalized = Replace(normalized, "･", "・")
+    normalized = Replace(normalized, "·", "・")
+    normalized = Replace(normalized, "－", "-")
+    normalized = Replace(normalized, "―", "-")
+    normalized = Replace(normalized, "‐", "-")
+    normalized = Replace(normalized, "‑", "-")
+    normalized = Replace(normalized, "–", "-")
+    normalized = Replace(normalized, "—", "-")
+    normalized = Replace(normalized, "ー", "-")
+    normalized = Replace(normalized, "ｰ", "-")
+
+    On Error Resume Next
+    normalized = StrConv(normalized, vbNarrow)
+    normalized = StrConv(normalized, vbLowerCase)
+    On Error GoTo 0
+
+    normalized = Trim$(normalized)
+
+    For i = 1 To Len(normalized)
+        ch = Mid$(normalized, i, 1)
+        codePoint = AscW(ch)
+        If codePoint < 0 Then codePoint = codePoint + 65536
+        If codePoint >= 32 And codePoint <> 127 Then resultText = resultText & ch
+    Next i
+
+    NormalizeGuideKey = resultText
+
+End Function
+
+Private Function BuildGuideKey_ColorRule(ByVal valueText As Variant) As String
+    BuildGuideKey_ColorRule = NormalizeGuideKey(CStr(valueText))
+End Function
+
+Private Function BuildBlockContextKey_ColorRule( _
+    ByVal ws As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal colClass1 As Long, _
+    ByVal colDepartment As Long, _
+    ByVal colYear As Long) As String
+
+    Dim keyText As String
+
+    If colClass1 > 0 Then keyText = keyText & NormalizeGuideKey(CStr(ws.Cells(rowNo, colClass1).Value))
+    keyText = keyText & ChrW(&H1E)
+    If colDepartment > 0 Then keyText = keyText & NormalizeGuideKey(CStr(ws.Cells(rowNo, colDepartment).Value))
+    keyText = keyText & ChrW(&H1E)
+    If colYear > 0 Then keyText = keyText & NormalizeGuideKey(CStr(ws.Cells(rowNo, colYear).Value))
+
+    BuildBlockContextKey_ColorRule = keyText
+
+End Function
+
+Private Function BuildGroupKey_ColorRule(ByVal guide1Key As String, ByVal guide2Key As String) As String
+    BuildGroupKey_ColorRule = guide1Key & ChrW(&H1F) & guide2Key
+End Function
+
+Private Function ContainsMacroInserted_ColorRule(ByVal remarksText As String) As Boolean
+    ContainsMacroInserted_ColorRule = (InStr(1, NormalizeText_ColorRule(remarksText), "マクロ差込", vbBinaryCompare) > 0)
+End Function
+
+Private Function NormalizeColorName_ColorRule(ByVal colorName As String) As String
+
+    Select Case NormalizeText_ColorRule(colorName)
+        Case "白", "白色"
+            NormalizeColorName_ColorRule = "白色"
+        Case "赤", "赤色"
+            NormalizeColorName_ColorRule = "赤色"
+        Case "青", "青色"
+            NormalizeColorName_ColorRule = "青色"
+        Case "黄", "黄色"
+            NormalizeColorName_ColorRule = "黄色"
+        Case "緑", "緑色"
+            NormalizeColorName_ColorRule = "緑色"
+        Case Else
+            NormalizeColorName_ColorRule = NormalizeText_ColorRule(colorName)
+    End Select
+
+End Function
+
+Private Function IsValidColor_ColorRule(ByVal colorName As String) As Boolean
+
+    Select Case NormalizeColorName_ColorRule(colorName)
+        Case "白色", "赤色", "青色", "黄色", "緑色"
+            IsValidColor_ColorRule = True
+    End Select
+
+End Function
+
+Private Function SelectExistingGroupColor_ColorRule(ByVal colorCounts As Object, ByVal firstColor As String) As String
+
+    Dim key As Variant
+    Dim bestColor As String
+    Dim bestCount As Long
+
+    If colorCounts Is Nothing Then Exit Function
+    If colorCounts.Count = 0 Then Exit Function
+
+    bestColor = NormalizeColorName_ColorRule(firstColor)
+    If colorCounts.Exists(bestColor) Then bestCount = CLng(colorCounts(bestColor))
+
+    For Each key In colorCounts.Keys
+        If CLng(colorCounts(key)) > bestCount Then
+            bestColor = CStr(key)
+            bestCount = CLng(colorCounts(key))
+        End If
+    Next key
+
+    SelectExistingGroupColor_ColorRule = bestColor
+
+End Function
+
+Private Function SelectDifferentColor_ColorRule(ByVal currentColor As String, ByVal avoidColor As String) As String
+
+    Dim colors As Variant
+    Dim i As Long
+    Dim candidate As String
+
+    colors = Array("白色", "赤色", "青色", "黄色", "緑色")
+    currentColor = NormalizeColorName_ColorRule(currentColor)
+    avoidColor = NormalizeColorName_ColorRule(avoidColor)
+
+    If IsValidColor_ColorRule(currentColor) Then
+        If StrComp(currentColor, avoidColor, vbBinaryCompare) <> 0 Then
+            SelectDifferentColor_ColorRule = currentColor
+            Exit Function
+        End If
+    End If
+
+    For i = 0 To UBound(colors)
+        candidate = CStr(colors(i))
+        If StrComp(candidate, avoidColor, vbBinaryCompare) <> 0 Then
+            SelectDifferentColor_ColorRule = candidate
+            Exit Function
+        End If
+    Next i
+
+    SelectDifferentColor_ColorRule = CStr(colors(0))
+
+End Function
+
+Private Function SelectNextColor_ColorRule(ByVal previousColor As String, ByVal offset As Long) As String
+
+    Dim colors As Variant
+    Dim idx As Long
+    Dim i As Long
+    Dim candidate As String
+
+    colors = Array("白色", "赤色", "青色", "黄色", "緑色")
+    idx = offset Mod (UBound(colors) - LBound(colors) + 1)
+
+    For i = 0 To UBound(colors)
+        candidate = CStr(colors((idx + i) Mod (UBound(colors) + 1)))
+        If StrComp(candidate, previousColor, vbBinaryCompare) <> 0 Then
+            SelectNextColor_ColorRule = candidate
+            Exit Function
+        End If
+    Next i
+
+    SelectNextColor_ColorRule = CStr(colors(0))
+
+End Function
+
+Private Function CollectionContainsText_ColorRule(ByVal targetCollection As Collection, ByVal valueText As String) As Boolean
+
+    Dim item As Variant
+
+    For Each item In targetCollection
+        If StrComp(CStr(item), valueText, vbBinaryCompare) = 0 Then
+            CollectionContainsText_ColorRule = True
+            Exit Function
+        End If
+    Next item
+
+End Function
+
+Private Sub ApplyColorValue_ColorRule( _
+    ByVal targetCell As Range, _
+    ByVal newColor As String, _
+    ByVal colorHeaderName As String, _
+    ByRef changedCellCount As Long, _
+    ByVal changedRows As Object, _
+    ByVal rowNo As Long)
+
+    Dim oldColor As String
+    Dim oldColorForComment As String
+    Dim commentText As String
+
+    oldColor = NormalizeText_ColorRule(CStr(targetCell.Value))
+    newColor = NormalizeColorName_ColorRule(newColor)
+
+    If StrComp(oldColor, newColor, vbBinaryCompare) = 0 Then Exit Sub
+
+    targetCell.Value = newColor
+    targetCell.Font.Color = RGB(255, 0, 0)
+
+    If Len(oldColor) = 0 Then
+        oldColorForComment = "（空欄）"
+    Else
+        oldColorForComment = oldColor
+    End If
+
+    commentText = "マクロにより" & colorHeaderName & "を変更しました。" & vbCrLf & _
+                  "変更前：" & oldColorForComment & vbCrLf & _
+                  "変更後：" & newColor
+    AppendCellComment_ColorRule targetCell, commentText
+
+    changedCellCount = changedCellCount + 1
+    If Not changedRows.Exists(CStr(rowNo)) Then changedRows.Add CStr(rowNo), True
+
+End Sub
+
+Private Function CalculateMaxConsecutiveColor_ColorRule( _
+    ByVal ws As Worksheet, _
+    ByVal lastRow As Long, _
+    ByVal colNo As Long) As Long
+
+    Dim rowNo As Long
+    Dim currentColor As String
+    Dim previousColor As String
+    Dim currentRun As Long
+
+    If ws Is Nothing Then Exit Function
+    If lastRow < 2 Or colNo <= 0 Then Exit Function
+
+    For rowNo = 2 To lastRow
+        currentColor = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colNo).Value))
+        If Len(currentColor) = 0 Then
+            previousColor = vbNullString
+            currentRun = 0
+        ElseIf StrComp(currentColor, previousColor, vbBinaryCompare) = 0 Then
+            currentRun = currentRun + 1
+        Else
+            previousColor = currentColor
+            currentRun = 1
+        End If
+
+        If currentRun > CalculateMaxConsecutiveColor_ColorRule Then
+            CalculateMaxConsecutiveColor_ColorRule = currentRun
+        End If
+    Next rowNo
+
+End Function
+
+Private Function BuildColorRuleIssueMessage_ColorRule( _
+    ByVal ws As Worksheet, _
+    ByVal lastRow As Long, _
+    ByVal colGuide1 As Long, _
+    ByVal colColor1 As Long, _
+    ByVal colGuide2 As Long, _
+    ByVal colColor2 As Long) As String
+
+    Dim guideColors As Object
+    Dim groupColors As Object
+    Dim rowNo As Long
+    Dim guideKey As String
+    Dim guide2Key As String
+    Dim groupKey As String
+    Dim color1 As String
+    Dim color2 As String
+    Dim previousGuideKey As String
+    Dim previousColor1 As String
+    Dim issueCount As Long
+    Dim messageText As String
+
+    If ws Is Nothing Then Exit Function
+    If lastRow < 2 Then Exit Function
+
+    Set guideColors = CreateObject("Scripting.Dictionary")
+    Set groupColors = CreateObject("Scripting.Dictionary")
+
+    For rowNo = 2 To lastRow
+        guideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
+        guide2Key = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide2).Value)
+        groupKey = BuildGroupKey_ColorRule(guideKey, guide2Key)
+        color1 = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor1).Value))
+        color2 = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor2).Value))
+
+        If guideColors.Exists(guideKey) Then
+            If StrComp(CStr(guideColors(guideKey)), color1, vbBinaryCompare) <> 0 Then
+                AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, BuildColorRuleIssueDetail_ColorRule(ws, rowNo, colGuide1, colColor1, colGuide2, colColor2, "同じ正規化済み第1ガイドの色名が未統一です。")
+            End If
+        Else
+            guideColors.Add guideKey, color1
+        End If
+
+        If groupColors.Exists(groupKey) Then
+            If StrComp(CStr(groupColors(groupKey)), color2, vbBinaryCompare) <> 0 Then
+                AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, BuildColorRuleIssueDetail_ColorRule(ws, rowNo, colGuide1, colColor1, colGuide2, colColor2, "同じ正規化済み第1ガイド+第2ガイドの2色名が未統一です。")
+            End If
+        Else
+            groupColors.Add groupKey, color2
+        End If
+
+        If Len(previousGuideKey) > 0 Then
+            If StrComp(guideKey, previousGuideKey, vbBinaryCompare) <> 0 Then
+                If StrComp(color1, previousColor1, vbBinaryCompare) = 0 Then
+                    AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, BuildColorRuleIssueDetail_ColorRule(ws, rowNo, colGuide1, colColor1, colGuide2, colColor2, "第1ガイド切替箇所で色名が連続しています。")
+                End If
+            End If
+        End If
+
+        previousGuideKey = guideKey
+        previousColor1 = color1
+    Next rowNo
+
+    If issueCount > 0 Then
+        BuildColorRuleIssueMessage_ColorRule = "チェック結果: 要確認 " & CStr(issueCount) & "件" & vbCrLf & messageText
+    End If
+
+End Function
+
+Private Function BuildColorRuleIssueDetail_ColorRule( _
+    ByVal ws As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal colGuide1 As Long, _
+    ByVal colColor1 As Long, _
+    ByVal colGuide2 As Long, _
+    ByVal colColor2 As Long, _
+    ByVal issueText As String) As String
+
+    BuildColorRuleIssueDetail_ColorRule = issueText & _
+        " 第1ガイド=[" & CStr(ws.Cells(rowNo, colGuide1).Value) & "]" & _
+        " 第2ガイド=[" & CStr(ws.Cells(rowNo, colGuide2).Value) & "]" & _
+        " 色名=[" & CStr(ws.Cells(rowNo, colColor1).Value) & "]" & _
+        " 2色名=[" & CStr(ws.Cells(rowNo, colColor2).Value) & "]"
+
+End Function
+
+Private Sub AppendColorRuleIssue_ColorRule( _
+    ByRef messageText As String, _
+    ByRef issueCount As Long, _
+    ByVal rowNo As Long, _
+    ByVal issueText As String)
+
+    issueCount = issueCount + 1
+    Debug.Print "[色ルール確認] " & CStr(rowNo) & "行目: " & issueText
+    If issueCount <= 20 Then
+        If Len(messageText) > 0 Then messageText = messageText & vbCrLf
+        messageText = messageText & "・" & CStr(rowNo) & "行目: " & issueText
+    End If
+
+End Sub
+
+Private Sub AppendCellComment_ColorRule(ByVal targetCell As Range, ByVal appendText As String)
+
+    Dim existingText As String
+
+    On Error Resume Next
+    existingText = ""
+    If Not targetCell.Comment Is Nothing Then existingText = targetCell.Comment.Text
+    On Error GoTo 0
+
+    On Error Resume Next
+    If Len(existingText) > 0 Then
+        targetCell.Comment.Text Text:=existingText & vbCrLf & vbCrLf & appendText
+    Else
+        targetCell.AddComment appendText
+    End If
+    On Error GoTo 0
+
+End Sub
