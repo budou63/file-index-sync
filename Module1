@@ -1405,7 +1405,6 @@ Public Sub CSV取込_シンプル版()
     Dim srcLastRow As Long
     Dim srcLastCol As Long
     Dim appendRow As Long
-    Dim insertRow As Long
     Dim srcRow As Long
     Dim appendedCount As Long
     Dim deletedCount As Long
@@ -1419,8 +1418,6 @@ Public Sub CSV取込_シンプル版()
     Dim targetFiscalYearValue As Long
     Dim rowYear As String
     Dim rowYearValue As Long
-    Dim annualFixChangedCount As Long
-    Dim annualFixReviewCount As Long
 
     On Error GoTo ErrorHandler
 
@@ -1539,8 +1536,8 @@ Public Sub CSV取込_シンプル版()
 
     wbCSV.Close False
 
-    ' 取込後補正: 「毎年作成」行のみ年度表現を安全に補正
-    ApplyAnnualFolderNameCorrections ws, annualFixChangedCount, annualFixReviewCount, targetFiscalYearValue
+    ' CSV取込は新システムの現状同期として扱うため、
+    ' 年度表現の繰上げ・タイトル年度変換はここでは行わない。
     
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
@@ -1549,9 +1546,7 @@ Public Sub CSV取込_シンプル版()
            "対象年度: " & targetFiscalYear & vbCrLf & _
            "削除件数: " & deletedCount & " 件" & vbCrLf & _
            "取込件数: " & appendedCount & " 件" & vbCrLf & _
-           "年度空欄スキップ件数: " & skippedBlankYearCount & " 件" & vbCrLf & _
-           "年度表現補正件数: " & annualFixChangedCount & " 件" & vbCrLf & _
-           "年度表現要確認件数: " & annualFixReviewCount & " 件", vbInformation
+           "年度空欄スキップ件数: " & skippedBlankYearCount & " 件", vbInformation
     Exit Sub
 
 ErrorHandler:
@@ -1747,8 +1742,35 @@ Private Function ConvertYearTextToSortableKey(ByVal yearText As String) As Long
 End Function
 
 '========================================================
-' CSV取込後補正: 「毎年作成」行の年度表現のみ安全に補正
+' n+1/毎年作成用の年度表現補正。CSV取込・CSV整形からは呼び出さない。
 '========================================================
+Public Sub nプラス1_毎年作成年度補正を実行する()
+
+    Dim ws As Worksheet
+    Dim targetYearRaw As String
+    Dim targetYearValue As Long
+    Dim changedCount As Long
+    Dim reviewCount As Long
+
+    Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+
+    targetYearRaw = InputBox("補正対象年度を入力してください。空欄の場合は全年度を対象にします。（例: R8 / 令和8 / 2026）", "n+1年度補正")
+    If Len(Trim$(targetYearRaw)) > 0 Then
+        targetYearValue = NormalizeYearValue(targetYearRaw)
+        If targetYearValue <= 0 Then
+            MsgBox "年度の入力を解釈できませんでした。", vbExclamation
+            Exit Sub
+        End If
+    End If
+
+    ApplyAnnualFolderNameCorrections ws, changedCount, reviewCount, targetYearValue
+
+    MsgBox "n+1/毎年作成の年度補正が完了しました。" & vbCrLf & _
+           "補正件数: " & changedCount & " 件" & vbCrLf & _
+           "要確認件数: " & reviewCount & " 件", vbInformation
+
+End Sub
+
 Private Sub ApplyAnnualFolderNameCorrections( _
     ByVal ws As Worksheet, _
     ByRef changedCount As Long, _
@@ -3160,8 +3182,6 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim srcYearCol As Long
     Dim srcRowYearValue As Long
     Dim skippedOtherYearCount As Long
-    Dim annualFixChangedCount As Long
-    Dim annualFixReviewCount As Long
 
     On Error GoTo ErrorHandler
 
@@ -3310,8 +3330,8 @@ ContinueNextSourceRow:
     ' 7) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
     ApplyStep2PostProcessToTouchedRows wsDst, touchedTargetRowMap
 
-    ' 7-2) 年度表現補正は指定年度の行だけに限定する
-    ApplyAnnualFolderNameCorrections wsDst, annualFixChangedCount, annualFixReviewCount, targetYearValue
+    ' 7-2) CSV整形は現状同期のため、n+1/毎年作成による年度表現補正は行わない。
+    '      年度補正が必要な場合は nプラス1_毎年作成年度補正を実行する を個別に実行する。
 
     ' 8) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
     If leftFixedCount > 0 Then
@@ -3345,8 +3365,6 @@ ContinueNextSourceRow:
                "追加件数: " & appendedCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
-               "年度表現補正件数: " & annualFixChangedCount & " 件" & vbCrLf & _
-               "年度表現要確認件数: " & annualFixReviewCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
                "以下の見出しが見つからないため、左側固定対象から除外しました:" & vbCrLf & _
                missingHeadersText, vbExclamation
@@ -3357,8 +3375,6 @@ ContinueNextSourceRow:
                "追加件数: " & appendedCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
-               "年度表現補正件数: " & annualFixChangedCount & " 件" & vbCrLf & _
-               "年度表現要確認件数: " & annualFixReviewCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
     End If
 
