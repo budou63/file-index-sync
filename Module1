@@ -3169,6 +3169,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim appendRow As Long
     Dim key As String
     Dim previousCalculationMode As XlCalculation
+    Dim previousScreenUpdating As Boolean
+    Dim previousEnableEvents As Boolean
     Dim appendedCount As Long
     Dim updatedCount As Long
     Dim skippedNoKeyCount As Long
@@ -3186,6 +3188,14 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim visualDiffMap As Object
     Dim changedCount As Long
     Dim serialCol As Long
+    Dim sourceNameSyncMap As Object
+    Dim destNameSyncMap As Object
+    Dim nameSyncKey As String
+    Dim nameSyncRows As Collection
+    Dim nameSyncSourceRowsText As String
+    Dim nameSyncCount As Long
+    Dim ambiguousSyncCount As Long
+    Dim hasRowDiff As Boolean
 
     On Error GoTo ErrorHandler
 
@@ -3198,13 +3208,17 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Set sourceKeyMap = CreateObject("Scripting.Dictionary")
     Set touchedTargetRowMap = CreateObject("Scripting.Dictionary")
     Set visualDiffMap = CreateObject("Scripting.Dictionary")
+    Set sourceNameSyncMap = CreateObject("Scripting.Dictionary")
+    Set destNameSyncMap = CreateObject("Scripting.Dictionary")
     Set validationTemplateMap = CreateObject("Scripting.Dictionary")
     Set formatTemplateMap = CreateObject("Scripting.Dictionary")
     Set columnWidthMap = CreateObject("Scripting.Dictionary")
 
+    previousScreenUpdating = Application.ScreenUpdating
+    previousEnableEvents = Application.EnableEvents
+    previousCalculationMode = Application.Calculation
     Application.ScreenUpdating = False
     Application.EnableEvents = False
-    previousCalculationMode = Application.Calculation
     Application.Calculation = xlCalculationManual
 
     srcLastCol = GetLastUsedCol(wsSrc)
@@ -3272,6 +3286,10 @@ Public Sub 手順2_新ファイル基準表を作成する()
     serialCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), GetStep2HeaderCandidates("通し番号"))
     ClearSerialDiffMarksForTargetYear wsDst, serialCol, targetYearValue
 
+    ' ID未登録/ID不一致の手入力行を、名称ベース（年度＋第1ガイド＋第2ガイド＋個別フォルダー）でも突合できるようにする
+    BuildSourceNameSyncMap wsSrc, srcLastRow, srcLastCol, sourceNameSyncMap, targetYearValue
+    BuildDestinationNameSyncMap wsDst, dstLastRow, GetLastUsedCol(wsDst), destNameSyncMap, targetYearValue
+
     ' 目録CSVのうち、指定年度に一致する行だけを反映する
     If srcLastRow >= 2 Then
         For srcRow = 2 To srcLastRow
@@ -3296,7 +3314,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
             If existingRowMap.Exists(key) Then
                 targetRow = CLng(existingRowMap(key))
-                If RowDiffersFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap) Then
+                hasRowDiff = RowDiffersFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
+                If hasRowDiff Then
                     If Not ShouldExcludeRowFromStep2VisualDiff(wsDst, targetRow) Then
                         If Not visualDiffMap.Exists(key) Then changedCount = changedCount + 1
                         visualDiffMap(key) = "変更"
@@ -3315,12 +3334,50 @@ Public Sub 手順2_新ファイル基準表を作成する()
                     If targetRow > updateEndRow Then updateEndRow = targetRow
                 End If
             Else
-                AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
-                existingRowMap.Add key, appendRow
-                visualDiffMap(key) = "追加"
-                appendedCount = appendedCount + 1
-                If Not touchedTargetRowMap.Exists(CStr(appendRow)) Then touchedTargetRowMap.Add CStr(appendRow), appendRow
-                appendRow = appendRow + 1
+                nameSyncKey = BuildFolderNameSyncKeyFromSheetRow(wsSrc, srcRow, srcLastCol)
+                If nameSyncKey <> "" And sourceNameSyncMap.Exists(nameSyncKey) And destNameSyncMap.Exists(nameSyncKey) Then
+                    Set nameSyncRows = sourceNameSyncMap(nameSyncKey)
+                    If nameSyncRows.Count = 1 Then
+                        Set nameSyncRows = destNameSyncMap(nameSyncKey)
+                        If nameSyncRows.Count = 1 Then
+                            targetRow = CLng(nameSyncRows.Item(1))
+                            hasRowDiff = RowDiffersFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
+                            UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap
+                            AppendRemarkOnce wsDst, targetRow, "システム同期済"
+                            If key <> "" Then existingRowMap(key) = targetRow
+                            If key <> "" And Not ShouldExcludeRowFromStep2VisualDiff(wsDst, targetRow) Then
+                                If Not visualDiffMap.Exists(key) Then changedCount = changedCount + 1
+                                visualDiffMap(key) = "名称同期"
+                            End If
+                            nameSyncCount = nameSyncCount + 1
+                            If Not touchedTargetRowMap.Exists(CStr(targetRow)) Then touchedTargetRowMap.Add CStr(targetRow), targetRow
+
+                            If Not didUpdateRows Then
+                                updateStartRow = targetRow
+                                updateEndRow = targetRow
+                                didUpdateRows = True
+                            Else
+                                If targetRow < updateStartRow Then updateStartRow = targetRow
+                                If targetRow > updateEndRow Then updateEndRow = targetRow
+                            End If
+                        Else
+                            ambiguousSyncCount = ambiguousSyncCount + 1
+                            AppendAmbiguousNameSyncRemark wsDst, nameSyncRows, "同期候補重複①（新ファイル基準表側候補複数）"
+                        End If
+                    Else
+                        ambiguousSyncCount = ambiguousSyncCount + 1
+                        nameSyncSourceRowsText = CollectionItemsText(nameSyncRows)
+                        Set nameSyncRows = destNameSyncMap(nameSyncKey)
+                        AppendAmbiguousNameSyncRemark wsDst, nameSyncRows, "同期候補重複①（目録CSV行: " & nameSyncSourceRowsText & "）"
+                    End If
+                Else
+                    AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
+                    If key <> "" Then existingRowMap.Add key, appendRow
+                    If key <> "" Then visualDiffMap(key) = "追加"
+                    appendedCount = appendedCount + 1
+                    If Not touchedTargetRowMap.Exists(CStr(appendRow)) Then touchedTargetRowMap.Add CStr(appendRow), appendRow
+                    appendRow = appendRow + 1
+                End If
             End If
 
 ContinueNextSourceRow:
@@ -3380,10 +3437,11 @@ ContinueNextSourceRow:
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
                "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
-               "更新件数: " & updatedCount & " 件" & vbCrLf & _
-               "追加件数: " & appendedCount & " 件" & vbCrLf & _
-               "赤塗りつぶし（追加）: " & appendedCount & " 件" & vbCrLf & _
-               "赤塗りつぶし（変更）: " & changedCount & " 件" & vbCrLf & _
+               "通常更新: " & updatedCount & " 件" & vbCrLf & _
+               "名称ベース同期: " & nameSyncCount & " 件" & vbCrLf & _
+               "新規追加: " & appendedCount & " 件" & vbCrLf & _
+               "内容変更: " & changedCount & " 件" & vbCrLf & _
+               "判定困難: " & ambiguousSyncCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
@@ -3392,10 +3450,11 @@ ContinueNextSourceRow:
     Else
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
                "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
-               "更新件数: " & updatedCount & " 件" & vbCrLf & _
-               "追加件数: " & appendedCount & " 件" & vbCrLf & _
-               "赤塗りつぶし（追加）: " & appendedCount & " 件" & vbCrLf & _
-               "赤塗りつぶし（変更）: " & changedCount & " 件" & vbCrLf & _
+               "通常更新: " & updatedCount & " 件" & vbCrLf & _
+               "名称ベース同期: " & nameSyncCount & " 件" & vbCrLf & _
+               "新規追加: " & appendedCount & " 件" & vbCrLf & _
+               "内容変更: " & changedCount & " 件" & vbCrLf & _
+               "判定困難: " & ambiguousSyncCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
@@ -3415,8 +3474,8 @@ SafeExit:
     End If
     On Error GoTo 0
 
-    Application.ScreenUpdating = True
-    Application.EnableEvents = True
+    Application.ScreenUpdating = previousScreenUpdating
+    Application.EnableEvents = previousEnableEvents
     Application.Calculation = previousCalculationMode
     Exit Sub
 
@@ -3424,6 +3483,213 @@ ErrorHandler:
     MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & Err.Description, vbCritical
     Resume SafeExit
 
+
+End Sub
+
+
+Private Sub BuildSourceNameSyncMap( _
+    ByVal wsSrc As Worksheet, _
+    ByVal srcLastRow As Long, _
+    ByVal srcLastCol As Long, _
+    ByVal nameSyncMap As Object, _
+    ByVal targetYearValue As Long)
+
+    Dim srcRow As Long
+    Dim key As String
+    Dim rowYearValue As Long
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+
+    If nameSyncMap Is Nothing Then Exit Sub
+    nameSyncMap.RemoveAll
+    If wsSrc Is Nothing Then Exit Sub
+    If srcLastRow < 2 Then Exit Sub
+
+    warekiYearCol = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    westernYearCol = FindHeaderColumn(wsSrc, srcLastCol, Array("年度"))
+
+    For srcRow = 2 To srcLastRow
+        rowYearValue = GetNormalizedYearFromRow(wsSrc, srcRow, warekiYearCol, westernYearCol)
+        If targetYearValue > 0 And rowYearValue <> targetYearValue Then GoTo ContinueNextSourceNameRow
+
+        key = BuildFolderNameSyncKeyFromSheetRow(wsSrc, srcRow, srcLastCol)
+        If key <> "" Then AddRowToMultiValueMap nameSyncMap, key, srcRow
+ContinueNextSourceNameRow:
+    Next srcRow
+
+End Sub
+
+Private Sub BuildDestinationNameSyncMap( _
+    ByVal wsDst As Worksheet, _
+    ByVal dstLastRow As Long, _
+    ByVal dstLastCol As Long, _
+    ByVal nameSyncMap As Object, _
+    ByVal targetYearValue As Long)
+
+    Dim dstRow As Long
+    Dim key As String
+    Dim rowYearValue As Long
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+
+    If nameSyncMap Is Nothing Then Exit Sub
+    nameSyncMap.RemoveAll
+    If wsDst Is Nothing Then Exit Sub
+    If dstLastRow < 2 Then Exit Sub
+
+    warekiYearCol = FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    westernYearCol = FindHeaderColumn(wsDst, dstLastCol, Array("年度"))
+
+    For dstRow = 2 To dstLastRow
+        rowYearValue = GetNormalizedYearFromRow(wsDst, dstRow, warekiYearCol, westernYearCol)
+        If targetYearValue > 0 And rowYearValue <> targetYearValue Then GoTo ContinueNextDestinationNameRow
+
+        key = BuildFolderNameSyncKeyFromSheetRow(wsDst, dstRow, dstLastCol)
+        If key <> "" Then AddRowToMultiValueMap nameSyncMap, key, dstRow
+ContinueNextDestinationNameRow:
+    Next dstRow
+
+End Sub
+
+Private Function BuildFolderNameSyncKeyFromSheetRow(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal lastCol As Long) As String
+
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+    Dim class2Col As Long
+    Dim class3Col As Long
+    Dim titleCol As Long
+    Dim yearValue As Long
+    Dim class2Value As String
+    Dim class3Value As String
+    Dim titleValue As String
+
+    If ws Is Nothing Then Exit Function
+    If lastCol <= 0 Then Exit Function
+
+    warekiYearCol = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    westernYearCol = FindHeaderColumn(ws, lastCol, Array("年度"))
+    class2Col = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名２"))
+    class3Col = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名３"))
+    titleCol = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("タイトル"))
+
+    If (warekiYearCol <= 0 And westernYearCol <= 0) Or class2Col <= 0 Or class3Col <= 0 Or titleCol <= 0 Then Exit Function
+
+    yearValue = GetNormalizedYearFromRow(ws, rowNo, warekiYearCol, westernYearCol)
+    If yearValue <= 0 Then Exit Function
+
+    class2Value = NormalizeForFolderNameSyncKey(ws.Cells(rowNo, class2Col).Value)
+    class3Value = NormalizeForFolderNameSyncKey(ws.Cells(rowNo, class3Col).Value)
+    titleValue = NormalizeForFolderNameSyncKey(ws.Cells(rowNo, titleCol).Value)
+    If class2Value = "" Or class3Value = "" Or titleValue = "" Then Exit Function
+
+    BuildFolderNameSyncKeyFromSheetRow = CStr(yearValue) & "|" & class2Value & "|" & class3Value & "|" & titleValue
+
+End Function
+
+Private Function NormalizeForFolderNameSyncKey(ByVal v As Variant) As String
+
+    Dim s As String
+
+    If IsError(v) Or IsNull(v) Or IsEmpty(v) Then Exit Function
+
+    s = CStr(v)
+    s = RemoveInvisibleChars(s)
+    s = Application.WorksheetFunction.Clean(s)
+    s = Replace(s, vbCrLf, " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, ChrW(&H3000), " ")
+    s = Replace(s, "（", "(")
+    s = Replace(s, "）", ")")
+    s = Replace(s, "･", "・")
+    s = Replace(s, "・", "/")
+    s = Replace(s, "／", "/")
+    s = NormalizeHyphenChars(s)
+
+    On Error Resume Next
+    s = StrConv(s, vbNarrow)
+    On Error GoTo 0
+
+    s = ConvertZenkakuAlnumToHankaku(s)
+    s = LCase$(s)
+    s = CollapseSpaces(s)
+    s = Replace(s, " ", "")
+
+    NormalizeForFolderNameSyncKey = Trim$(s)
+
+End Function
+
+Private Function RemoveInvisibleChars(ByVal s As String) As String
+
+    s = Replace(s, ChrW(&H200B), "")
+    s = Replace(s, ChrW(&H200C), "")
+    s = Replace(s, ChrW(&H200D), "")
+    s = Replace(s, ChrW(&HFEFF), "")
+    s = Replace(s, ChrW(&H2060), "")
+    RemoveInvisibleChars = s
+
+End Function
+
+Private Sub AddRowToMultiValueMap(ByVal targetMap As Object, ByVal key As String, ByVal rowNo As Long)
+
+    Dim rows As Collection
+
+    If targetMap.Exists(key) Then
+        Set rows = targetMap(key)
+    Else
+        Set rows = New Collection
+        targetMap.Add key, rows
+    End If
+    rows.Add rowNo
+
+End Sub
+
+Private Function CollectionItemsText(ByVal rows As Collection) As String
+
+    Dim i As Long
+    Dim s As String
+
+    If rows Is Nothing Then Exit Function
+    For i = 1 To rows.Count
+        If Len(s) > 0 Then s = s & ","
+        s = s & CStr(rows.Item(i))
+    Next i
+    CollectionItemsText = s
+
+End Function
+
+Private Sub AppendRemarkOnce(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal remarkText As String)
+
+    Dim remarksCol As Long
+    Dim currentText As String
+
+    If ws Is Nothing Then Exit Sub
+    If rowNo < 2 Then Exit Sub
+    If Len(Trim$(remarkText)) = 0 Then Exit Sub
+
+    remarksCol = FindHeaderColumn(ws, GetLastUsedCol(ws), Array("備考"))
+    If remarksCol <= 0 Then Exit Sub
+
+    currentText = CStr(ws.Cells(rowNo, remarksCol).Value)
+    If InStr(1, currentText, remarkText, vbTextCompare) > 0 Then Exit Sub
+
+    If Len(Trim$(currentText)) > 0 Then
+        ws.Cells(rowNo, remarksCol).Value = currentText & vbCrLf & remarkText
+    Else
+        ws.Cells(rowNo, remarksCol).Value = remarkText
+    End If
+
+End Sub
+
+Private Sub AppendAmbiguousNameSyncRemark(ByVal ws As Worksheet, ByVal rows As Collection, ByVal remarkText As String)
+
+    Dim rowValue As Variant
+
+    If rows Is Nothing Then Exit Sub
+    For Each rowValue In rows
+        AppendRemarkOnce ws, CLng(rowValue), remarkText
+    Next rowValue
 
 End Sub
 
