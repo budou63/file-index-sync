@@ -3345,7 +3345,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
                             UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap
                             AppendRemarkOnce wsDst, targetRow, "システム同期済"
                             If key <> "" Then existingRowMap(key) = targetRow
-                            If key <> "" And Not ShouldExcludeRowFromStep2VisualDiff(wsDst, targetRow) Then
+                            ' 名称ベース同期が成立した行は、差分比較結果に関わらず今回の同期済み変更行として赤塗り対象にする
+                            If key <> "" Then
                                 If Not visualDiffMap.Exists(key) Then changedCount = changedCount + 1
                                 visualDiffMap(key) = "名称同期"
                             End If
@@ -3417,12 +3418,6 @@ ContinueNextSourceRow:
 
     SortNewFileStandardByFiscalYear wsDst
 
-    serialCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), GetStep2HeaderCandidates("通し番号"))
-    ApplySerialDiffMarksByKey wsDst, serialCol, visualDiffMap, targetYearValue
-
-    srcLastCol = GetLastUsedCol(wsDst)
-    wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol)).AutoFilter
-
     ' 9) 左側固定対象の不足見出しを通知用に収集（列の表示状態は変更しない）
     HideKeyColumnsForStep2 wsDst, displayHeaders, missingHeadersText
 
@@ -3433,6 +3428,13 @@ ContinueNextSourceRow:
         ReapplyValidationFromTemplate wsDst, validationTemplateMap, wsValidationTemplate
         ReapplyFormatAndWidthFromTemplate wsDst, formatTemplateMap, columnWidthMap, wsFormatTemplate
     End If
+
+    ' 書式再適用後に、追加・変更・名称ベース同期行の通し番号列だけを赤塗りする
+    serialCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), GetStep2HeaderCandidates("通し番号"))
+    ApplySerialDiffMarksByKey wsDst, serialCol, visualDiffMap, targetYearValue
+
+    ' CSV整形完了時点の使用範囲へ、見出し行フィルターを正しい範囲で設定し直す
+    ApplyAutoFilterToNewFileStandard wsDst
 
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
@@ -3486,6 +3488,24 @@ ErrorHandler:
 
 End Sub
 
+
+Private Sub ApplyAutoFilterToNewFileStandard(ByVal ws As Worksheet)
+
+    Dim headerRow As Long
+    Dim lastRow As Long
+    Dim lastCol As Long
+
+    If ws Is Nothing Then Exit Sub
+
+    headerRow = 1
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+    If lastRow < headerRow Or lastCol <= 0 Then Exit Sub
+
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Range(ws.Cells(headerRow, 1), ws.Cells(lastRow, lastCol)).AutoFilter
+
+End Sub
 
 Private Sub BuildSourceNameSyncMap( _
     ByVal wsSrc As Worksheet, _
