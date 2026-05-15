@@ -3199,6 +3199,13 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim nameSyncCount As Long
     Dim ambiguousSyncCount As Long
     Dim hasRowDiff As Boolean
+    Dim syncCol As Long
+    Dim beforeSyncStatus As String
+    Dim currentSyncCount As Long
+    Dim registrationPlannedCount As Long
+    Dim registrationToCurrentCount As Long
+    Dim deletionPlannedRemainCount As Long
+    Dim deletionPlannedDeletedCount As Long
 
     On Error GoTo ErrorHandler
 
@@ -3262,6 +3269,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     For i = LBound(baselineUserManagedHeaders) To UBound(baselineUserManagedHeaders)
         EnsureColumnByHeader wsDst, existingDstHeaders, CStr(baselineUserManagedHeaders(i))
     Next i
+    syncCol = GetUniqueSyncStatusColumnOrRaise(wsDst)
 
     ' 3) 目録CSVの見出し辞書を作成し、CSV由来列の転記マップを組み立てる
     BuildSourceHeaderMap wsSrc, srcLastCol, srcHeaderMap
@@ -3318,10 +3326,17 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
             If existingRowMap.Exists(key) Then
                 targetRow = CLng(existingRowMap(key))
+                beforeSyncStatus = GetSyncStatusValue(wsDst, targetRow, syncCol)
+                If beforeSyncStatus = "削除予定" Then
+                    visualDiffMap(key) = "削除予定"
+                    serialCommentMap(key) = BuildSerialDiffComment("削除予定", "", "")
+                    GoTo ContinueNextSourceRow
+                End If
+
                 hasRowDiff = RowDiffersFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
+                changedHeadersText = GetChangedHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
+                idCompletionHeadersText = GetIdentityCompletionHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap)
                 If hasRowDiff Then
-                    changedHeadersText = GetChangedHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
-                    idCompletionHeadersText = GetIdentityCompletionHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap)
                     If Not ShouldExcludeRowFromStep2VisualDiff(wsDst, targetRow) Then
                         If Not visualDiffMap.Exists(key) Then changedCount = changedCount + 1
                         visualDiffMap(key) = "変更"
@@ -3329,7 +3344,15 @@ Public Sub 手順2_新ファイル基準表を作成する()
                     End If
                 End If
                 UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap
-                updatedCount = updatedCount + 1
+                If beforeSyncStatus = "登録予定" Then
+                    wsDst.Cells(targetRow, syncCol).Value = "現行"
+                    visualDiffMap(key) = "登録予定現行"
+                    serialCommentMap(key) = BuildSerialDiffComment("登録予定現行", changedHeadersText, idCompletionHeadersText)
+                    registrationToCurrentCount = registrationToCurrentCount + 1
+                Else
+                    updatedCount = updatedCount + 1
+                    currentSyncCount = currentSyncCount + 1
+                End If
                 If Not touchedTargetRowMap.Exists(CStr(targetRow)) Then touchedTargetRowMap.Add CStr(targetRow), targetRow
 
                 If Not didUpdateRows Then
@@ -3348,6 +3371,13 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         Set nameSyncRows = destNameSyncMap(nameSyncKey)
                         If nameSyncRows.Count = 1 Then
                             targetRow = CLng(nameSyncRows.Item(1))
+                            beforeSyncStatus = GetSyncStatusValue(wsDst, targetRow, syncCol)
+                            If beforeSyncStatus = "削除予定" Then
+                                visualDiffMap("NAME|" & nameSyncKey) = "削除予定"
+                                serialCommentMap("NAME|" & nameSyncKey) = BuildSerialDiffComment("削除予定", "", "")
+                                GoTo ContinueNextSourceRow
+                            End If
+
                             hasRowDiff = RowDiffersFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
                             changedHeadersText = GetChangedHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
                             idCompletionHeadersText = GetIdentityCompletionHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap)
@@ -3357,8 +3387,15 @@ Public Sub 手順2_新ファイル基準表を作成する()
                             ' 名称ベース同期が成立した行は、差分比較結果に関わらず今回の同期済み変更行として赤塗り対象にする
                             If key <> "" Then
                                 If Not visualDiffMap.Exists(key) Then changedCount = changedCount + 1
-                                visualDiffMap(key) = "名称同期"
-                                serialCommentMap(key) = BuildSerialDiffComment("名称同期", changedHeadersText, idCompletionHeadersText)
+                                If beforeSyncStatus = "登録予定" Then
+                                    visualDiffMap(key) = "登録予定現行"
+                                    serialCommentMap(key) = BuildSerialDiffComment("登録予定現行", changedHeadersText, idCompletionHeadersText)
+                                    wsDst.Cells(targetRow, syncCol).Value = "現行"
+                                    registrationToCurrentCount = registrationToCurrentCount + 1
+                                Else
+                                    visualDiffMap(key) = "名称同期"
+                                    serialCommentMap(key) = BuildSerialDiffComment("名称同期", changedHeadersText, idCompletionHeadersText)
+                                End If
                             End If
                             nameSyncCount = nameSyncCount + 1
                             If Not touchedTargetRowMap.Exists(CStr(targetRow)) Then touchedTargetRowMap.Add CStr(targetRow), targetRow
@@ -3396,6 +3433,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         visualDiffMap(key) = "追加"
                         serialCommentMap(key) = BuildSerialDiffComment("追加", "", "")
                     End If
+                    wsDst.Cells(appendRow, syncCol).Value = "現行"
                     appendedCount = appendedCount + 1
                     If Not touchedTargetRowMap.Exists(CStr(appendRow)) Then touchedTargetRowMap.Add CStr(appendRow), appendRow
                     appendRow = appendRow + 1
@@ -3419,13 +3457,17 @@ ContinueNextSourceRow:
         ReorderSheetColumnsByMap wsDst, columnOrderMap
     End If
 
-    ' 6) 同期状態列を更新（現行 / 削除候補 / 未登録）
-    UpdateSyncStatusColumn wsDst, sourceKeyMap, targetYearValue
-
-    ' 7) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
+    ' 6) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
     ApplyStep2PostProcessToTouchedRows wsDst, touchedTargetRowMap
 
-    ' 7-2) CSV整形は現状同期のため、n+1/毎年作成による年度表現補正は行わない。
+    ' 7-1) 登録予定/削除予定の残存確認と、目録CSVから消えた削除予定行の削除を行う
+    ProcessPendingSyncStatusRows wsDst, syncCol, sourceKeyMap, sourceNameSyncMap, visualDiffMap, serialCommentMap, _
+        targetYearValue, registrationPlannedCount, deletionPlannedRemainCount, deletionPlannedDeletedCount
+
+    ' 7-2) 同期状態列を更新（現行 / 登録予定 / 削除予定）
+    UpdateSyncStatusColumn wsDst, sourceKeyMap, targetYearValue
+
+    ' 7-3) CSV整形は現状同期のため、n+1/毎年作成による年度表現補正は行わない。
     '      年度補正が必要な場合は nプラス1_毎年作成年度補正を実行する を個別に実行する。
 
     ' 8) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
@@ -3460,11 +3502,15 @@ ContinueNextSourceRow:
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
                "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
-               "通常更新: " & updatedCount & " 件" & vbCrLf & _
-               "名称ベース同期: " & nameSyncCount & " 件" & vbCrLf & _
-               "新規追加: " & appendedCount & " 件" & vbCrLf & _
-               "内容変更: " & changedCount & " 件" & vbCrLf & _
-               "判定困難: " & ambiguousSyncCount & " 件" & vbCrLf & _
+               "現行同期件数: " & currentSyncCount & " 件" & vbCrLf & _
+               "登録予定件数: " & registrationPlannedCount & " 件" & vbCrLf & _
+               "登録予定から現行になった件数: " & registrationToCurrentCount & " 件" & vbCrLf & _
+               "削除予定のまま残った件数: " & deletionPlannedRemainCount & " 件" & vbCrLf & _
+               "削除予定から削除した件数: " & deletionPlannedDeletedCount & " 件" & vbCrLf & _
+               "新規追加件数: " & appendedCount & " 件" & vbCrLf & _
+               "内容変更件数: " & changedCount & " 件" & vbCrLf & _
+               "名称ベース同期件数: " & nameSyncCount & " 件" & vbCrLf & _
+               "判定困難件数: " & ambiguousSyncCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
@@ -3473,11 +3519,15 @@ ContinueNextSourceRow:
     Else
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
                "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
-               "通常更新: " & updatedCount & " 件" & vbCrLf & _
-               "名称ベース同期: " & nameSyncCount & " 件" & vbCrLf & _
-               "新規追加: " & appendedCount & " 件" & vbCrLf & _
-               "内容変更: " & changedCount & " 件" & vbCrLf & _
-               "判定困難: " & ambiguousSyncCount & " 件" & vbCrLf & _
+               "現行同期件数: " & currentSyncCount & " 件" & vbCrLf & _
+               "登録予定件数: " & registrationPlannedCount & " 件" & vbCrLf & _
+               "登録予定から現行になった件数: " & registrationToCurrentCount & " 件" & vbCrLf & _
+               "削除予定のまま残った件数: " & deletionPlannedRemainCount & " 件" & vbCrLf & _
+               "削除予定から削除した件数: " & deletionPlannedDeletedCount & " 件" & vbCrLf & _
+               "新規追加件数: " & appendedCount & " 件" & vbCrLf & _
+               "内容変更件数: " & changedCount & " 件" & vbCrLf & _
+               "名称ベース同期件数: " & nameSyncCount & " 件" & vbCrLf & _
+               "判定困難件数: " & ambiguousSyncCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
@@ -3509,6 +3559,178 @@ ErrorHandler:
 
 End Sub
 
+
+
+Private Function GetUniqueSyncStatusColumnOrRaise(ByVal ws As Worksheet) As Long
+
+    Dim lastCol As Long
+    Dim colNo As Long
+    Dim foundCol As Long
+    Dim foundCount As Long
+    Dim headerValue As String
+
+    If ws Is Nothing Then Exit Function
+
+    lastCol = GetLastUsedCol(ws)
+    For colNo = 1 To lastCol
+        headerValue = Trim$(CStr(ws.Cells(1, colNo).Value))
+        If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName("同期状態"), vbTextCompare) = 0 Then
+            foundCount = foundCount + 1
+            foundCol = colNo
+        End If
+    Next colNo
+
+    If foundCount > 1 Then
+        Err.Raise vbObjectError + 2011, , "新ファイル基準表に見出し「同期状態」が複数あります。列を1つにしてからCSV整形を実行してください。"
+    End If
+
+    If foundCount = 1 Then
+        GetUniqueSyncStatusColumnOrRaise = foundCol
+    Else
+        GetUniqueSyncStatusColumnOrRaise = EnsureHeaderColumn(ws, "同期状態")
+    End If
+
+End Function
+
+Private Function GetSyncStatusValue(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal syncCol As Long) As String
+
+    If ws Is Nothing Then Exit Function
+    If rowNo < 2 Or syncCol <= 0 Then Exit Function
+    GetSyncStatusValue = NormalizeSyncStatusValue(ws.Cells(rowNo, syncCol).Value)
+
+End Function
+
+Private Function NormalizeSyncStatusValue(ByVal rawValue As Variant) As String
+
+    Dim s As String
+
+    If IsError(rawValue) Or IsNull(rawValue) Or IsEmpty(rawValue) Then Exit Function
+    s = NormalizeForDiffCompare(rawValue)
+    s = Replace(s, " ", "")
+
+    Select Case s
+        Case "現行"
+            NormalizeSyncStatusValue = "現行"
+        Case "登録予定", "未登録"
+            NormalizeSyncStatusValue = "登録予定"
+        Case "削除予定", "削除候補"
+            NormalizeSyncStatusValue = "削除予定"
+        Case Else
+            NormalizeSyncStatusValue = s
+    End Select
+
+End Function
+
+Private Sub ProcessPendingSyncStatusRows( _
+    ByVal wsDst As Worksheet, _
+    ByVal syncCol As Long, _
+    ByVal sourceKeyMap As Object, _
+    ByVal sourceNameSyncMap As Object, _
+    ByVal visualDiffMap As Object, _
+    ByVal serialCommentMap As Object, _
+    ByVal targetYearValue As Long, _
+    ByRef registrationPlannedCount As Long, _
+    ByRef deletionPlannedRemainCount As Long, _
+    ByRef deletionPlannedDeletedCount As Long)
+
+    Dim headerMap As Object
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim rowNo As Long
+    Dim statusValue As String
+    Dim key As String
+    Dim nameKey As String
+    Dim markKey As String
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+    Dim existsInSource As Boolean
+
+    If wsDst Is Nothing Then Exit Sub
+    If syncCol <= 0 Then Exit Sub
+
+    Set headerMap = CreateObject("Scripting.Dictionary")
+    lastCol = GetLastUsedCol(wsDst)
+    BuildSourceHeaderMap wsDst, lastCol, headerMap
+
+    lastRow = GetLastUsedRow(wsDst)
+    If lastRow < 2 Then Exit Sub
+
+    warekiYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度"))
+
+    For rowNo = lastRow To 2 Step -1
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol) <> targetYearValue Then GoTo ContinueNextPendingRow
+        End If
+
+        statusValue = GetSyncStatusValue(wsDst, rowNo, syncCol)
+        If statusValue <> "登録予定" And statusValue <> "削除予定" Then GoTo ContinueNextPendingRow
+
+        key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
+        nameKey = BuildFolderNameSyncKeyFromSheetRow(wsDst, rowNo, lastCol)
+        existsInSource = RowExistsInSourceByIdentityOrName(key, nameKey, sourceKeyMap, sourceNameSyncMap)
+
+        If statusValue = "登録予定" Then
+            If Not existsInSource Then
+                wsDst.Cells(rowNo, syncCol).Value = "登録予定"
+                markKey = BuildVisualMarkerKey(key, nameKey)
+                If markKey <> "" Then
+                    visualDiffMap(markKey) = "登録予定"
+                    serialCommentMap(markKey) = BuildSerialDiffComment("登録予定", "", "")
+                End If
+                registrationPlannedCount = registrationPlannedCount + 1
+            End If
+        ElseIf statusValue = "削除予定" Then
+            If existsInSource Then
+                wsDst.Cells(rowNo, syncCol).Value = "削除予定"
+                markKey = BuildVisualMarkerKey(key, nameKey)
+                If markKey <> "" Then
+                    visualDiffMap(markKey) = "削除予定"
+                    serialCommentMap(markKey) = BuildSerialDiffComment("削除予定", "", "")
+                End If
+                deletionPlannedRemainCount = deletionPlannedRemainCount + 1
+            Else
+                wsDst.Rows(rowNo).Delete
+                deletionPlannedDeletedCount = deletionPlannedDeletedCount + 1
+            End If
+        End If
+ContinueNextPendingRow:
+    Next rowNo
+
+End Sub
+
+Private Function RowExistsInSourceByIdentityOrName( _
+    ByVal key As String, _
+    ByVal nameKey As String, _
+    ByVal sourceKeyMap As Object, _
+    ByVal sourceNameSyncMap As Object) As Boolean
+
+    If key <> "" Then
+        If Not sourceKeyMap Is Nothing Then
+            If sourceKeyMap.Exists(key) Then
+                RowExistsInSourceByIdentityOrName = True
+                Exit Function
+            End If
+        End If
+    End If
+
+    If nameKey <> "" Then
+        If Not sourceNameSyncMap Is Nothing Then
+            If sourceNameSyncMap.Exists(nameKey) Then RowExistsInSourceByIdentityOrName = True
+        End If
+    End If
+
+End Function
+
+Private Function BuildVisualMarkerKey(ByVal key As String, ByVal nameKey As String) As String
+
+    If key <> "" Then
+        BuildVisualMarkerKey = key
+    ElseIf nameKey <> "" Then
+        BuildVisualMarkerKey = "NAME|" & nameKey
+    End If
+
+End Function
 
 Private Sub ApplyAutoFilterToNewFileStandard(ByVal ws As Worksheet)
 
@@ -4399,8 +4621,8 @@ End Sub
 ' 新ファイル基準表の「同期状態」列を更新する
 ' 判定:
 ' - 現行: 今回の目録CSVキー一覧に存在
-' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
-' - 未登録: ID系すべて空欄
+' - 登録予定: ID系すべて空欄、または既に登録予定として管理中
+' - 削除予定: ID系ありで目録CSVに存在しない、または既に削除予定として管理中
 '--------------------------------------------------------
 
 '--------------------------------------------------------
@@ -4448,8 +4670,8 @@ End Sub
 ' 新ファイル基準表の「同期状態」列を更新する
 ' 判定:
 ' - 現行: 今回の目録CSVキー一覧に存在
-' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
-' - 未登録: ID系すべて空欄
+' - 登録予定: ID系すべて空欄、または既に登録予定として管理中
+' - 削除予定: ID系ありで目録CSVに存在しない、または既に削除予定として管理中
 '--------------------------------------------------------
 
 '--------------------------------------------------------
@@ -4497,8 +4719,8 @@ End Sub
 ' 新ファイル基準表の「同期状態」列を更新する
 ' 判定:
 ' - 現行: 今回の目録CSVキー一覧に存在
-' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
-' - 未登録: ID系すべて空欄
+' - 登録予定: ID系すべて空欄、または既に登録予定として管理中
+' - 削除予定: ID系ありで目録CSVに存在しない、または既に削除予定として管理中
 '--------------------------------------------------------
 
 '--------------------------------------------------------
@@ -4695,6 +4917,20 @@ Private Function BuildSerialDiffComment( _
             commentText = "【名称ベース同期】" & vbCrLf & _
                 "年度・第1ガイド・第2ガイド・個別フォルダーが一致したため、目録CSV側の正式データで上書きしました。"
             If Len(changedHeadersText) > 0 Then commentText = commentText & vbCrLf & "上書き項目：" & changedHeadersText
+        Case "登録予定"
+            BuildSerialDiffComment = "【登録予定】" & vbCrLf & _
+                "この行は新ファイル基準表で作成されましたが、今回の目録CSVにはまだ存在しません。" & vbCrLf & _
+                "新システム側で未登録の可能性があります。"
+            Exit Function
+        Case "登録予定現行"
+            commentText = "【登録予定→現行】" & vbCrLf & _
+                "登録予定のフォルダが目録CSVに存在したため、目録CSV側の正式データで上書きし、同期状態を現行に変更しました。"
+            If Len(changedHeadersText) > 0 Then commentText = commentText & vbCrLf & "上書き項目：" & changedHeadersText
+        Case "削除予定"
+            BuildSerialDiffComment = "【削除予定】" & vbCrLf & _
+                "この行は削除予定ですが、今回の目録CSVにまだ存在しています。" & vbCrLf & _
+                "新システム側で削除されていない可能性があります。"
+            Exit Function
         Case "判定困難"
             BuildSerialDiffComment = "【判定困難】" & vbCrLf & _
                 "同一候補が複数存在するため、自動同期しませんでした。" & vbCrLf & _
@@ -5129,8 +5365,8 @@ End Function
 ' 新ファイル基準表の「同期状態」列を更新する
 ' 判定:
 ' - 現行: 今回の目録CSVキー一覧に存在
-' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
-' - 未登録: ID系すべて空欄
+' - 登録予定: ID系すべて空欄、または既に登録予定として管理中
+' - 削除予定: ID系ありで目録CSVに存在しない、または既に削除予定として管理中
 '--------------------------------------------------------
 Private Sub UpdateSyncStatusColumn( _
     ByVal wsDst As Worksheet, _
@@ -5151,8 +5387,8 @@ Private Sub UpdateSyncStatusColumn( _
     Set headerMap = CreateObject("Scripting.Dictionary")
     BuildHeaderMap wsDst, GetLastUsedCol(wsDst), headerMap
 
-    ' 「同期状態」列は必須列として確保
-    syncCol = EnsureColumnByHeader(wsDst, headerMap, "同期状態")
+    ' 「同期状態」列は必須列として確保（重複見出しは事前検出）
+    syncCol = GetUniqueSyncStatusColumnOrRaise(wsDst)
 
     lastRow = GetLastUsedRow(wsDst)
     If lastRow < 2 Then Exit Sub
@@ -5165,14 +5401,19 @@ Private Sub UpdateSyncStatusColumn( _
             If GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol) <> targetYearValue Then GoTo ContinueNextSyncRow
         End If
 
+        Select Case GetSyncStatusValue(wsDst, rowNo, syncCol)
+            Case "登録予定", "削除予定"
+                GoTo ContinueNextSyncRow
+        End Select
+
         key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
 
         If key <> "" And sourceKeyMap.Exists(key) Then
             wsDst.Cells(rowNo, syncCol).Value = "現行"
         ElseIf HasAnyFileIdentity(wsDst, rowNo, headerMap) Then
-            wsDst.Cells(rowNo, syncCol).Value = "削除候補"
+            wsDst.Cells(rowNo, syncCol).Value = "削除予定"
         Else
-            wsDst.Cells(rowNo, syncCol).Value = "未登録"
+            wsDst.Cells(rowNo, syncCol).Value = "登録予定"
         End If
 ContinueNextSyncRow:
     Next rowNo
