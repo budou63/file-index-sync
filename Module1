@@ -3351,7 +3351,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                     registrationToCurrentCount = registrationToCurrentCount + 1
                 Else
                     updatedCount = updatedCount + 1
-                    currentSyncCount = currentSyncCount + 1
+                    If beforeSyncStatus = "現行" Then currentSyncCount = currentSyncCount + 1
                 End If
                 If Not touchedTargetRowMap.Exists(CStr(targetRow)) Then touchedTargetRowMap.Add CStr(targetRow), targetRow
 
@@ -3433,7 +3433,6 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         visualDiffMap(key) = "追加"
                         serialCommentMap(key) = BuildSerialDiffComment("追加", "", "")
                     End If
-                    wsDst.Cells(appendRow, syncCol).Value = "現行"
                     appendedCount = appendedCount + 1
                     If Not touchedTargetRowMap.Exists(CStr(appendRow)) Then touchedTargetRowMap.Add CStr(appendRow), appendRow
                     appendRow = appendRow + 1
@@ -3502,8 +3501,8 @@ ContinueNextSourceRow:
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
                "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
-               "現行同期件数: " & currentSyncCount & " 件" & vbCrLf & _
-               "登録予定件数: " & registrationPlannedCount & " 件" & vbCrLf & _
+               "現行更新件数: " & currentSyncCount & " 件" & vbCrLf & _
+               "登録予定のまま残った件数: " & registrationPlannedCount & " 件" & vbCrLf & _
                "登録予定から現行になった件数: " & registrationToCurrentCount & " 件" & vbCrLf & _
                "削除予定のまま残った件数: " & deletionPlannedRemainCount & " 件" & vbCrLf & _
                "削除予定から削除した件数: " & deletionPlannedDeletedCount & " 件" & vbCrLf & _
@@ -3519,8 +3518,8 @@ ContinueNextSourceRow:
     Else
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
                "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
-               "現行同期件数: " & currentSyncCount & " 件" & vbCrLf & _
-               "登録予定件数: " & registrationPlannedCount & " 件" & vbCrLf & _
+               "現行更新件数: " & currentSyncCount & " 件" & vbCrLf & _
+               "登録予定のまま残った件数: " & registrationPlannedCount & " 件" & vbCrLf & _
                "登録予定から現行になった件数: " & registrationToCurrentCount & " 件" & vbCrLf & _
                "削除予定のまま残った件数: " & deletionPlannedRemainCount & " 件" & vbCrLf & _
                "削除予定から削除した件数: " & deletionPlannedDeletedCount & " 件" & vbCrLf & _
@@ -3581,7 +3580,7 @@ Private Function GetUniqueSyncStatusColumnOrRaise(ByVal ws As Worksheet) As Long
     Next colNo
 
     If foundCount > 1 Then
-        Err.Raise vbObjectError + 2011, , "新ファイル基準表に見出し「同期状態」が複数あります。列を1つにしてからCSV整形を実行してください。"
+        Err.Raise vbObjectError + 2011, , "同期状態列が重複しています。見出しを確認してください。"
     End If
 
     If foundCount = 1 Then
@@ -4618,11 +4617,10 @@ End Sub
 
 
 '--------------------------------------------------------
-' 新ファイル基準表の「同期状態」列を更新する
-' 判定:
-' - 現行: 今回の目録CSVキー一覧に存在
-' - 登録予定: ID系すべて空欄、または既に登録予定として管理中
-' - 削除予定: ID系ありで目録CSVに存在しない、または既に削除予定として管理中
+' 新ファイル基準表の「同期状態」列を正規化する
+' - 空欄: 自動入力せず空欄のまま
+' - 現行/登録予定/削除予定: 許可値として維持
+' - 旧値（未登録/削除候補）は内部正規化結果へ寄せる
 '--------------------------------------------------------
 
 '--------------------------------------------------------
@@ -4667,11 +4665,10 @@ End Sub
 
 
 '--------------------------------------------------------
-' 新ファイル基準表の「同期状態」列を更新する
-' 判定:
-' - 現行: 今回の目録CSVキー一覧に存在
-' - 登録予定: ID系すべて空欄、または既に登録予定として管理中
-' - 削除予定: ID系ありで目録CSVに存在しない、または既に削除予定として管理中
+' 新ファイル基準表の「同期状態」列を正規化する
+' - 空欄: 自動入力せず空欄のまま
+' - 現行/登録予定/削除予定: 許可値として維持
+' - 旧値（未登録/削除候補）は内部正規化結果へ寄せる
 '--------------------------------------------------------
 
 '--------------------------------------------------------
@@ -4716,11 +4713,10 @@ End Sub
 
 
 '--------------------------------------------------------
-' 新ファイル基準表の「同期状態」列を更新する
-' 判定:
-' - 現行: 今回の目録CSVキー一覧に存在
-' - 登録予定: ID系すべて空欄、または既に登録予定として管理中
-' - 削除予定: ID系ありで目録CSVに存在しない、または既に削除予定として管理中
+' 新ファイル基準表の「同期状態」列を正規化する
+' - 空欄: 自動入力せず空欄のまま
+' - 現行/登録予定/削除予定: 許可値として維持
+' - 旧値（未登録/削除候補）は内部正規化結果へ寄せる
 '--------------------------------------------------------
 
 '--------------------------------------------------------
@@ -4919,7 +4915,7 @@ Private Function BuildSerialDiffComment( _
             If Len(changedHeadersText) > 0 Then commentText = commentText & vbCrLf & "上書き項目：" & changedHeadersText
         Case "登録予定"
             BuildSerialDiffComment = "【登録予定】" & vbCrLf & _
-                "この行は新ファイル基準表で作成されましたが、今回の目録CSVにはまだ存在しません。" & vbCrLf & _
+                "この行は登録予定ですが、今回の目録CSVにはまだ存在しません。" & vbCrLf & _
                 "新システム側で未登録の可能性があります。"
             Exit Function
         Case "登録予定現行"
@@ -4938,7 +4934,7 @@ Private Function BuildSerialDiffComment( _
             Exit Function
         Case Else
             commentText = "【内容変更】" & vbCrLf & _
-                "既存行と目録CSVを比較し、差異があった項目を更新しました。"
+                "目録CSV側の値で更新しました。"
             If Len(changedHeadersText) > 0 Then commentText = commentText & vbCrLf & "更新項目：" & changedHeadersText
     End Select
 
@@ -5362,11 +5358,10 @@ Private Function BuildFileKeyFromSheetRow(ByVal ws As Worksheet, ByVal rowNo As 
 End Function
 
 '--------------------------------------------------------
-' 新ファイル基準表の「同期状態」列を更新する
-' 判定:
-' - 現行: 今回の目録CSVキー一覧に存在
-' - 登録予定: ID系すべて空欄、または既に登録予定として管理中
-' - 削除予定: ID系ありで目録CSVに存在しない、または既に削除予定として管理中
+' 新ファイル基準表の「同期状態」列を正規化する
+' - 空欄: 自動入力せず空欄のまま
+' - 現行/登録予定/削除予定: 許可値として維持
+' - 旧値（未登録/削除候補）は内部正規化結果へ寄せる
 '--------------------------------------------------------
 Private Sub UpdateSyncStatusColumn( _
     ByVal wsDst As Worksheet, _
@@ -5402,19 +5397,15 @@ Private Sub UpdateSyncStatusColumn( _
         End If
 
         Select Case GetSyncStatusValue(wsDst, rowNo, syncCol)
-            Case "登録予定", "削除予定"
-                GoTo ContinueNextSyncRow
+            Case "現行"
+                wsDst.Cells(rowNo, syncCol).Value = "現行"
+            Case "登録予定"
+                wsDst.Cells(rowNo, syncCol).Value = "登録予定"
+            Case "削除予定"
+                wsDst.Cells(rowNo, syncCol).Value = "削除予定"
+            Case Else
+                ' 空欄は同期状態を管理しない通常行として扱い、自動入力しない
         End Select
-
-        key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
-
-        If key <> "" And sourceKeyMap.Exists(key) Then
-            wsDst.Cells(rowNo, syncCol).Value = "現行"
-        ElseIf HasAnyFileIdentity(wsDst, rowNo, headerMap) Then
-            wsDst.Cells(rowNo, syncCol).Value = "削除予定"
-        Else
-            wsDst.Cells(rowNo, syncCol).Value = "登録予定"
-        End If
 ContinueNextSyncRow:
     Next rowNo
 
@@ -5583,19 +5574,19 @@ End Function
 Private Function GetStep2DisplayHeadersOrder() As Variant
 
     GetStep2DisplayHeadersOrder = Array( _
-        "通し番号", "キャビネット番号", "ｎ＋1", "毎年度利用区分1:毎年作成 2:単年のみ", "原課", "年度（和暦）", "分類名１", "第1ガイド", "2色名", "第2ガイド", _
-        "色名", "作成年度（和暦）", "個別フォルダー", "保存期間", "媒体種別", "保存番号", "廃棄年月日", "内容・取扱い", "備考", "ファイルID", _
-        "ファイル番号", "バーコード番号", "年度", "原課ID", "サブタイトル", "完結日", "完結区分-1：未完結 1：完結", "完結者メンバーID", "保管期間ID", "保管期間", _
-        "保管期間完了予定年", "保管期間完了予定年（和暦）", "保存期間ID", "保存期間満了時の措置ID", "保存期間満了時の措置", "分類コード１", "分類コード２", "分類コード３", "分類コード４", "分類名４", _
-        "分類コード５", "分類名５", "分類内ファイルソート順", "年度暦年区分1:年度 2:暦年", "色ID", "媒体種別ID", "保存場所ID1", "保存場所コード１", "保存場所１", "保存場所ID2", _
-        "保存場所コード２", "保存場所２", "保存場所ID3", "保存場所コード３", "保存場所３", "保存場所ID4", "保存場所コード４", "保存場所４", "保存場所ID5", "保存場所コード５", _
-        "保存場所５", "保存箱ID", "保存箱コード", "保存箱名称", "ファイルラベルID", "ファイルラベル", "ファイルラベル出力済み-1:未出力 1:出力", "背表紙用タイトル", "背表紙用サブタイトル", "公開用タイトル", _
-        "公開用サブタイトル", "公開区分-1:非公開 1:公開", "歴史資料区分-1:非該当 1:該当", "廃棄区分1:未廃棄 2:廃棄済 3:不明", "廃棄延長年", "廃棄延長理由", "廃棄予定年", "廃棄予定年（和暦）", "機密レベルID", "機密レベル名称", _
-        "作成所属名", "作成年度", "作成者名", "引継処理日", "棚卸処理日", "廃棄処理日", "履歴ファイル区分-1:非該当 1:該当", "機密ファイル区分-1:機密ファイル", "履歴番号", "履歴管理コメント", _
-        "登録者メンバーID", "登録日時", "更新者メンバーID", "更新日時", "汎用項目１", "汎用項目２", "汎用項目３", "汎用項目４", "汎用項目５", "汎用項目６", _
-        "汎用項目７", "汎用項目８", "汎用項目９", "汎用項目１０", "汎用日付項目１", "汎用日付項目２", "汎用日付項目３", "汎用日付項目４", "汎用日付項目５", "汎用数値項目１", _
-        "汎用数値項目２", "汎用数値項目３", "汎用数値項目４", "汎用数値項目５", "汎用選択項目１", "汎用選択項目２", "汎用選択項目３", "汎用選択項目４", "汎用選択項目５", "汎用チェック項目１", _
-        "汎用チェック項目２", "汎用チェック項目３", "汎用チェック項目４", "汎用チェック項目５", "ファイルラベル区分", "ファイルラベルサイズ", "ファイルラベルサイズ", "ファイルラベル区分名", "同期状態" _
+        "通し番号", "キャビネット番号", "ｎ＋1", "毎年度利用区分1:毎年作成 2:単年のみ", "原課", "年度（和暦）", "分類名１", "第1ガイド", "色名", "第2ガイド", _
+        "2色名", "作成年度（和暦）", "個別フォルダー", "保存期間", "媒体種別", "保存番号", "廃棄年月日", "同期状態", "内容・取扱い", "備考", _
+        "ファイルID", "ファイル番号", "バーコード番号", "年度", "原課ID", "サブタイトル", "完結日", "完結区分-1：未完結 1：完結", "完結者メンバーID", "保管期間ID", _
+        "保管期間", "保管期間完了予定年", "保管期間完了予定年（和暦）", "保存期間ID", "保存期間満了時の措置ID", "保存期間満了時の措置", "分類コード１", "分類コード２", "分類コード３", "分類コード４", _
+        "分類名４", "分類コード５", "分類名５", "分類内ファイルソート順", "年度暦年区分1:年度 2:暦年", "色ID", "媒体種別ID", "保存場所ID1", "保存場所コード１", "保存場所１", _
+        "保存場所ID2", "保存場所コード２", "保存場所２", "保存場所ID3", "保存場所コード３", "保存場所３", "保存場所ID4", "保存場所コード４", "保存場所４", "保存場所ID5", _
+        "保存場所コード５", "保存場所５", "保存箱ID", "保存箱コード", "保存箱名称", "ファイルラベルID", "ファイルラベル", "ファイルラベル出力済み-1:未出力 1:出力", "背表紙用タイトル", "背表紙用サブタイトル", _
+        "公開用タイトル", "公開用サブタイトル", "公開区分-1:非公開 1:公開", "歴史資料区分-1:非該当 1:該当", "廃棄区分1:未廃棄 2:廃棄済 3:不明", "廃棄延長年", "廃棄延長理由", "廃棄予定年", "廃棄予定年（和暦）", "機密レベルID", _
+        "機密レベル名称", "作成所属名", "作成年度", "作成者名", "引継処理日", "棚卸処理日", "廃棄処理日", "履歴ファイル区分-1:非該当 1:該当", "機密ファイル区分-1:機密ファイル", "履歴番号", _
+        "履歴管理コメント", "登録者メンバーID", "登録日時", "更新者メンバーID", "更新日時", "汎用項目１", "汎用項目２", "汎用項目３", "汎用項目４", "汎用項目５", _
+        "汎用項目６", "汎用項目７", "汎用項目８", "汎用項目９", "汎用項目１０", "汎用日付項目１", "汎用日付項目２", "汎用日付項目３", "汎用日付項目４", "汎用日付項目５", _
+        "汎用数値項目１", "汎用数値項目２", "汎用数値項目３", "汎用数値項目４", "汎用数値項目５", "汎用選択項目１", "汎用選択項目２", "汎用選択項目３", "汎用選択項目４", "汎用選択項目５", _
+        "汎用チェック項目１", "汎用チェック項目２", "汎用チェック項目３", "汎用チェック項目４", "汎用チェック項目５", "ファイルラベル区分", "ファイルラベルサイズ", "ファイルラベルサイズ", "ファイルラベル区分名" _
     )
 
 End Function
