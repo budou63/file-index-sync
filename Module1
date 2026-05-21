@@ -2335,7 +2335,7 @@ Public Sub 手順5_差分インポートCSVを外部出力する()
     defaultFileName = "差分インポートCSV_" & Format(Now, "yyyymmdd_hhnnss") & ".csv"
     savePath = Application.GetSaveAsFilename( _
         InitialFileName:=defaultFileName, _
-        FileFilter:="CSV UTF-8 (*.csv),*.csv,CSV (Comma delimited) (*.csv),*.csv", _
+        FileFilter:="CSV (コンマ区切り) (*.csv),*.csv", _
         Title:="差分インポートCSV の保存先を選択してください")
 
     If VarType(savePath) = vbBoolean Then
@@ -2371,10 +2371,16 @@ Public Sub 手順5_差分インポートCSVを外部出力する()
     Application.DisplayAlerts = False
 
     On Error Resume Next
-    wbExport.SaveAs Filename:=finalPath, FileFormat:=62, Local:=True ' xlCSVUTF8
+    wbExport.SaveAs Filename:=finalPath, FileFormat:=xlCSV, Local:=True
     If Err.Number <> 0 Then
         Err.Clear
-        wbExport.SaveAs Filename:=finalPath, FileFormat:=xlCSV, Local:=True
+        wbExport.SaveAs Filename:=finalPath, FileFormat:=6, Local:=True
+    End If
+    If Err.Number <> 0 Then
+        Dim saveErrDesc As String
+        saveErrDesc = Err.Description
+        On Error GoTo ErrorHandler
+        Err.Raise vbObjectError + 2402, , "CSV保存に失敗しました: " & saveErrDesc
     End If
     On Error GoTo ErrorHandler
 
@@ -2706,6 +2712,11 @@ Public Sub 手順4_差分インポートCSVを作成する()
     srcLastCol = GetLastUsedCol(wsSrc)
     editLastRow = GetLastUsedRow(wsEdit)
     editLastCol = GetLastUsedCol(wsEdit)
+
+    If editLastRow >= 2 Then
+        新ファイル基準表_年度と原課ID再補完 wsEdit, 2, editLastRow, True
+        editLastCol = GetLastUsedCol(wsEdit)
+    End If
 
     keyYearSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("年度（和暦）"))
     keyYearSrcWestern = FindHeaderColumn(wsSrc, srcLastCol, Array("年度"))
@@ -5475,9 +5486,7 @@ Private Function CanonicalHeaderName(ByVal headerName As String) As String
 
     Dim normalized As String
 
-    normalized = Trim(CStr(headerName))
-    normalized = Replace(normalized, " ", "")
-    normalized = Replace(normalized, "　", "")
+    normalized = NormalizeHeaderToken(CStr(headerName))
 
     Select Case normalized
         Case "分類名1", "分類名１"
@@ -6180,7 +6189,6 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
     Dim westernYear As String
 
     If Target Is Nothing Then Exit Sub
-    If Target.CountLarge > 1000 Then Exit Sub
 
     On Error GoTo ExitHandler
     Application.EnableEvents = False
@@ -6278,6 +6286,122 @@ ExitHandler:
     Application.EnableEvents = True
 
 End Sub
+
+Public Sub 新ファイル基準表_年度と原課ID再補完( _
+    Optional ByVal wsEdit As Worksheet = Nothing, _
+    Optional ByVal startRow As Long = 2, _
+    Optional ByVal endRow As Long = 0, _
+    Optional ByVal logMissing As Boolean = False)
+
+    Dim lastCol As Long
+    Dim lastRow As Long
+    Dim warekiCol As Long
+    Dim yearCol As Long
+    Dim genkaCol As Long
+    Dim genkaIdCol As Long
+    Dim prevEnableEvents As Boolean
+    Dim serialCol As Long
+    Dim titleCol As Long
+    Dim r As Long
+    Dim warekiText As String
+    Dim genkaText As String
+    Dim yearVal As String
+    Dim genkaId As String
+    Dim missingItems As String
+
+    On Error GoTo ExitHandler
+
+    If wsEdit Is Nothing Then Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    If wsEdit Is Nothing Then Exit Sub
+
+    lastCol = GetLastUsedCol(wsEdit)
+    lastRow = GetLastUsedRow(wsEdit)
+    If lastCol <= 0 Or lastRow < 2 Then Exit Sub
+
+    If startRow < 2 Then startRow = 2
+    If endRow <= 0 Or endRow > lastRow Then endRow = lastRow
+    If endRow < startRow Then Exit Sub
+
+    warekiCol = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    yearCol = FindHeaderColumn(wsEdit, lastCol, Array("年度"))
+    genkaCol = FindHeaderColumn(wsEdit, lastCol, Array("原課"))
+    genkaIdCol = FindHeaderColumn(wsEdit, lastCol, Array("原課ID"))
+
+    prevEnableEvents = Application.EnableEvents
+    Application.EnableEvents = False
+
+    For r = startRow To endRow
+        missingItems = ""
+
+        If warekiCol > 0 And yearCol > 0 Then
+            warekiText = CStr(wsEdit.Cells(r, warekiCol).Value)
+            If Len(Trim$(warekiText)) > 0 And Len(Trim$(CStr(wsEdit.Cells(r, yearCol).Value))) = 0 Then
+                yearVal = ConvertReiwaToWesternYear(warekiText)
+                wsEdit.Cells(r, yearCol).Value = yearVal
+            End If
+            If Len(Trim$(warekiText)) > 0 And Len(Trim$(CStr(wsEdit.Cells(r, yearCol).Value))) = 0 Then
+                missingItems = AppendMissingItemName(missingItems, "年度")
+            End If
+        End If
+
+        If genkaCol > 0 And genkaIdCol > 0 Then
+            genkaText = CStr(wsEdit.Cells(r, genkaCol).Value)
+            If Len(Trim$(genkaText)) > 0 And Len(Trim$(CStr(wsEdit.Cells(r, genkaIdCol).Value))) = 0 Then
+                genkaId = GetCodeFromCodeMaster("原課", genkaText)
+                wsEdit.Cells(r, genkaIdCol).Value = genkaId
+            End If
+            If Len(Trim$(genkaText)) > 0 And Len(Trim$(CStr(wsEdit.Cells(r, genkaIdCol).Value))) = 0 Then
+                missingItems = AppendMissingItemName(missingItems, "原課ID")
+            End If
+        End If
+
+        If logMissing And Len(missingItems) > 0 Then
+            serialCol = FindHeaderColumn(wsEdit, lastCol, Array("通し番号"))
+            titleCol = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("タイトル"))
+            Debug.Print Build補完不足Log(wsEdit, r, serialCol, titleCol, genkaCol, warekiCol, missingItems)
+        End If
+    Next r
+
+ExitHandler:
+    Application.EnableEvents = prevEnableEvents
+
+End Sub
+
+Private Function AppendMissingItemName(ByVal currentValue As String, ByVal itemName As String) As String
+    If Len(currentValue) > 0 Then
+        AppendMissingItemName = currentValue & "," & itemName
+    Else
+        AppendMissingItemName = itemName
+    End If
+End Function
+
+Private Function Build補完不足Log( _
+    ByVal wsEdit As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal serialCol As Long, _
+    ByVal titleCol As Long, _
+    ByVal genkaCol As Long, _
+    ByVal warekiCol As Long, _
+    ByVal missingItems As String) As String
+
+    Dim serialVal As String
+    Dim titleVal As String
+    Dim genkaVal As String
+    Dim warekiVal As String
+
+    If serialCol > 0 Then serialVal = Trim$(CStr(wsEdit.Cells(rowNo, serialCol).Value))
+    If titleCol > 0 Then titleVal = Trim$(CStr(wsEdit.Cells(rowNo, titleCol).Value))
+    If genkaCol > 0 Then genkaVal = Trim$(CStr(wsEdit.Cells(rowNo, genkaCol).Value))
+    If warekiCol > 0 Then warekiVal = Trim$(CStr(wsEdit.Cells(rowNo, warekiCol).Value))
+
+    Build補完不足Log = "[補完不足] 行=" & CStr(rowNo) & _
+                      " 通し番号=" & serialVal & _
+                      " タイトル=" & titleVal & _
+                      " 原課=" & genkaVal & _
+                      " 年度（和暦）=" & warekiVal & _
+                      " 不足項目=" & missingItems
+
+End Function
 
 '========================================================
 ' 新ファイル基準表: 年度（和暦）/保存期間 変更時に廃棄年月日を自動計算
@@ -7004,35 +7128,67 @@ End Function
 Private Function GetCodeFromCodeMaster(ByVal kubunName As String, ByVal displayName As String) As String
 
     Dim wsMaster As Worksheet
-    Dim lastRow As Long
+    Dim rowStart As Long
+    Dim rowEnd As Long
+
+    GetCodeFromCodeMaster = ""
+    rowStart = 2
+    rowEnd = 0
+
+    On Error GoTo SafeExit
+    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    If wsMaster Is Nothing Then GoTo SafeExit
+    rowEnd = GetLastUsedRow(wsMaster)
+    If rowEnd < rowStart Then GoTo SafeExit
+
+    GetCodeFromCodeMaster = GetCodeFromCodeMasterInRows(kubunName, displayName, wsMaster, rowStart, rowEnd)
+
+SafeExit:
+    ' 見つからない場合やエラー時は空文字のまま返す
+
+End Function
+
+Private Function GetCodeFromCodeMasterInRows( _
+    ByVal kubunName As String, _
+    ByVal displayName As String, _
+    ByVal wsMaster As Worksheet, _
+    ByVal rowStart As Long, _
+    ByVal rowEnd As Long) As String
+
+    Dim masterValues As Variant
     Dim r As Long
     Dim kubunValue As String
     Dim nameValue As String
 
-    GetCodeFromCodeMaster = ""
+    GetCodeFromCodeMasterInRows = ""
+    If wsMaster Is Nothing Then Exit Function
+    If rowEnd < rowStart Then Exit Function
 
-    On Error GoTo SafeExit
-
-    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
-    If wsMaster Is Nothing Then GoTo SafeExit
-
-    lastRow = GetLastUsedRow(wsMaster)
-    If lastRow < 2 Then GoTo SafeExit
-
-    ' コード管理CSV仕様: A列=項目名 / B列=コード / C列=表示名
-    For r = 2 To lastRow
-        kubunValue = Trim(CStr(wsMaster.Cells(r, 1).value))
-        nameValue = Trim(CStr(wsMaster.Cells(r, 3).value))
-
-        If StrComp(kubunValue, Trim(kubunName), vbBinaryCompare) = 0 _
-           And StrComp(nameValue, Trim(displayName), vbBinaryCompare) = 0 Then
-            GetCodeFromCodeMaster = Trim(CStr(wsMaster.Cells(r, 2).value))
-            Exit For
+    masterValues = wsMaster.Range(wsMaster.Cells(rowStart, 1), wsMaster.Cells(rowEnd, 3)).Value2
+    For r = 1 To UBound(masterValues, 1)
+        kubunValue = NormalizeHeaderToken(CStr(masterValues(r, 1)))
+        nameValue = NormalizeHeaderToken(CStr(masterValues(r, 3)))
+        If StrComp(kubunValue, NormalizeHeaderToken(kubunName), vbTextCompare) = 0 _
+           And StrComp(nameValue, NormalizeHeaderToken(displayName), vbTextCompare) = 0 Then
+            GetCodeFromCodeMasterInRows = Trim$(CStr(masterValues(r, 2)))
+            Exit Function
         End If
     Next r
 
-SafeExit:
-    ' 見つからない場合やエラー時は空文字のまま返す
+End Function
+
+Private Function NormalizeHeaderToken(ByVal textValue As String) As String
+
+    Dim normalized As String
+
+    normalized = CStr(textValue)
+    normalized = Replace(normalized, vbCr, " ")
+    normalized = Replace(normalized, vbLf, " ")
+    normalized = Replace(normalized, vbTab, " ")
+    normalized = Application.WorksheetFunction.Trim(normalized)
+    normalized = Replace(normalized, " ", "")
+    normalized = Replace(normalized, "　", "")
+    NormalizeHeaderToken = normalized
 
 End Function
 
