@@ -2708,7 +2708,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     editLastCol = GetLastUsedCol(wsEdit)
 
     If editLastRow >= 2 Then
-        新ファイル基準表_コード補完一括再実行 wsEdit, 2, editLastRow, True
+        新ファイル基準表_年度と原課ID再補完 wsEdit, 2, editLastRow, True
         editLastCol = GetLastUsedCol(wsEdit)
     End If
 
@@ -6281,7 +6281,7 @@ ExitHandler:
 
 End Sub
 
-Public Sub 新ファイル基準表_コード補完一括再実行( _
+Public Sub 新ファイル基準表_年度と原課ID再補完( _
     Optional ByVal wsEdit As Worksheet = Nothing, _
     Optional ByVal startRow As Long = 2, _
     Optional ByVal endRow As Long = 0, _
@@ -6289,12 +6289,19 @@ Public Sub 新ファイル基準表_コード補完一括再実行( _
 
     Dim lastCol As Long
     Dim lastRow As Long
-    Dim targetRange As Range
+    Dim warekiCol As Long
+    Dim yearCol As Long
+    Dim genkaCol As Long
+    Dim genkaIdCol As Long
     Dim prevEnableEvents As Boolean
     Dim serialCol As Long
     Dim titleCol As Long
-    Dim missingLogs As Collection
-    Dim logItem As Variant
+    Dim r As Long
+    Dim warekiText As String
+    Dim genkaText As String
+    Dim yearVal As String
+    Dim genkaId As String
+    Dim missingItems As String
 
     On Error GoTo ExitHandler
 
@@ -6309,71 +6316,85 @@ Public Sub 新ファイル基準表_コード補完一括再実行( _
     If endRow <= 0 Or endRow > lastRow Then endRow = lastRow
     If endRow < startRow Then Exit Sub
 
-    Set targetRange = wsEdit.Range(wsEdit.Cells(startRow, 1), wsEdit.Cells(endRow, lastCol))
+    warekiCol = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    yearCol = FindHeaderColumn(wsEdit, lastCol, Array("年度"))
+    genkaCol = FindHeaderColumn(wsEdit, lastCol, Array("原課"))
+    genkaIdCol = FindHeaderColumn(wsEdit, lastCol, Array("原課ID"))
 
     prevEnableEvents = Application.EnableEvents
     Application.EnableEvents = False
-    新ファイル基準表_表示名からID自動補完 targetRange
-    新ファイル基準表_色名から2色名同期 targetRange, wsEdit
-    Application.EnableEvents = prevEnableEvents
 
-    If logMissing Then
-        serialCol = FindHeaderColumn(wsEdit, lastCol, Array("通し番号"))
-        titleCol = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("タイトル"))
-        Set missingLogs = GetCodeCompletionMissingLogs(wsEdit, startRow, endRow)
-        For Each logItem In missingLogs
-            Debug.Print BuildCodeCompletionMissingLogMessage(logItem, wsEdit, serialCol, titleCol)
-        Next logItem
-    End If
+    For r = startRow To endRow
+        missingItems = ""
+
+        If warekiCol > 0 And yearCol > 0 Then
+            warekiText = CStr(wsEdit.Cells(r, warekiCol).Value)
+            If Len(Trim$(warekiText)) > 0 And Len(Trim$(CStr(wsEdit.Cells(r, yearCol).Value))) = 0 Then
+                yearVal = ConvertReiwaToWesternYear(warekiText)
+                wsEdit.Cells(r, yearCol).Value = yearVal
+            End If
+            If Len(Trim$(warekiText)) > 0 And Len(Trim$(CStr(wsEdit.Cells(r, yearCol).Value))) = 0 Then
+                missingItems = AppendMissingItemName(missingItems, "年度")
+            End If
+        End If
+
+        If genkaCol > 0 And genkaIdCol > 0 Then
+            genkaText = CStr(wsEdit.Cells(r, genkaCol).Value)
+            If Len(Trim$(genkaText)) > 0 And Len(Trim$(CStr(wsEdit.Cells(r, genkaIdCol).Value))) = 0 Then
+                genkaId = GetCodeFromCodeMaster("原課", genkaText)
+                wsEdit.Cells(r, genkaIdCol).Value = genkaId
+            End If
+            If Len(Trim$(genkaText)) > 0 And Len(Trim$(CStr(wsEdit.Cells(r, genkaIdCol).Value))) = 0 Then
+                missingItems = AppendMissingItemName(missingItems, "原課ID")
+            End If
+        End If
+
+        If logMissing And Len(missingItems) > 0 Then
+            serialCol = FindHeaderColumn(wsEdit, lastCol, Array("通し番号"))
+            titleCol = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("タイトル"))
+            Debug.Print Build補完不足Log(wsEdit, r, serialCol, titleCol, genkaCol, warekiCol, missingItems)
+        End If
+    Next r
 
 ExitHandler:
-    Application.EnableEvents = True
+    Application.EnableEvents = prevEnableEvents
 
 End Sub
 
-Private Function GetCodeCompletionMissingLogs(ByVal wsEdit As Worksheet, ByVal startRow As Long, ByVal endRow As Long) As Collection
-    Dim pairDefs As Variant
-    Dim i As Long
-    Dim rowNo As Long
-    Dim displayCol As Long, idCol As Long
-    Dim inputName As String, idValue As String
-    Dim missingRows As New Collection
-
-    pairDefs = Array( _
-        Array("原課", "原課ID"), _
-        Array("保存期間", "保存期間ID"), _
-        Array("分類名１", "分類コード１"), _
-        Array("分類名２", "分類コード２"), _
-        Array("分類名３", "分類コード３"), _
-        Array("媒体種別", "媒体種別ID"), _
-        Array("色名", "色ID") _
-    )
-
-    For i = LBound(pairDefs) To UBound(pairDefs)
-        displayCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates(CStr(pairDefs(i)(0))))
-        idCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates(CStr(pairDefs(i)(1))))
-        If displayCol > 0 And idCol > 0 Then
-            For rowNo = startRow To endRow
-                inputName = NormalizeHeaderToken(CStr(wsEdit.Cells(rowNo, displayCol).Value))
-                idValue = NormalizeHeaderToken(CStr(wsEdit.Cells(rowNo, idCol).Value))
-                If Len(inputName) > 0 And Len(idValue) = 0 Then
-                    missingRows.Add Array(CLng(rowNo), CStr(pairDefs(i)(0)), CStr(pairDefs(i)(1)))
-                End If
-            Next rowNo
-        End If
-    Next i
-
-    Set GetCodeCompletionMissingLogs = missingRows
+Private Function AppendMissingItemName(ByVal currentValue As String, ByVal itemName As String) As String
+    If Len(currentValue) > 0 Then
+        AppendMissingItemName = currentValue & "," & itemName
+    Else
+        AppendMissingItemName = itemName
+    End If
 End Function
 
-Private Function BuildCodeCompletionMissingLogMessage(ByVal missingItem As Variant, ByVal wsEdit As Worksheet, ByVal serialCol As Long, ByVal titleCol As Long) As String
-    Dim rowNo As Long
+Private Function Build補完不足Log( _
+    ByVal wsEdit As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal serialCol As Long, _
+    ByVal titleCol As Long, _
+    ByVal genkaCol As Long, _
+    ByVal warekiCol As Long, _
+    ByVal missingItems As String) As String
+
     Dim serialVal As String
     Dim titleVal As String
-    rowNo = CLng(missingItem(0))
+    Dim genkaVal As String
+    Dim warekiVal As String
+
     If serialCol > 0 Then serialVal = Trim$(CStr(wsEdit.Cells(rowNo, serialCol).Value))
     If titleCol > 0 Then titleVal = Trim$(CStr(wsEdit.Cells(rowNo, titleCol).Value))
-    BuildCodeCompletionMissingLogMessage = "[コード補完未完了] 行=" & rowNo & " 通し番号=" & serialVal & " タイトル=" & titleVal & " 項目=" & CStr(missingItem(1)) & "->" & CStr(missingItem(2))
+    If genkaCol > 0 Then genkaVal = Trim$(CStr(wsEdit.Cells(rowNo, genkaCol).Value))
+    If warekiCol > 0 Then warekiVal = Trim$(CStr(wsEdit.Cells(rowNo, warekiCol).Value))
+
+    Build補完不足Log = "[補完不足] 行=" & CStr(rowNo) & _
+                      " 通し番号=" & serialVal & _
+                      " タイトル=" & titleVal & _
+                      " 原課=" & genkaVal & _
+                      " 年度（和暦）=" & warekiVal & _
+                      " 不足項目=" & missingItems
+
 End Function
 
 '========================================================
