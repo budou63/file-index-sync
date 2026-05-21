@@ -2335,7 +2335,7 @@ Public Sub 手順5_差分インポートCSVを外部出力する()
     defaultFileName = "差分インポートCSV_" & Format(Now, "yyyymmdd_hhnnss") & ".csv"
     savePath = Application.GetSaveAsFilename( _
         InitialFileName:=defaultFileName, _
-        FileFilter:="CSV UTF-8 (*.csv),*.csv,CSV (Comma delimited) (*.csv),*.csv", _
+        FileFilter:="CSV (コンマ区切り) (*.csv),*.csv", _
         Title:="差分インポートCSV の保存先を選択してください")
 
     If VarType(savePath) = vbBoolean Then
@@ -2371,10 +2371,16 @@ Public Sub 手順5_差分インポートCSVを外部出力する()
     Application.DisplayAlerts = False
 
     On Error Resume Next
-    wbExport.SaveAs Filename:=finalPath, FileFormat:=62, Local:=True ' xlCSVUTF8
+    wbExport.SaveAs Filename:=finalPath, FileFormat:=xlCSV, Local:=True
     If Err.Number <> 0 Then
         Err.Clear
-        wbExport.SaveAs Filename:=finalPath, FileFormat:=xlCSV, Local:=True
+        wbExport.SaveAs Filename:=finalPath, FileFormat:=6, Local:=True
+    End If
+    If Err.Number <> 0 Then
+        Dim saveErrDesc As String
+        saveErrDesc = Err.Description
+        On Error GoTo ErrorHandler
+        Err.Raise vbObjectError + 2402, , "CSV保存に失敗しました: " & saveErrDesc
     End If
     On Error GoTo ErrorHandler
 
