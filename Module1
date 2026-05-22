@@ -5200,6 +5200,9 @@ Private Sub UpdateRowFromSourceByHeader( _
             afterCompare = NormalizeValueForUpdateCompare(CStr(key), afterValue)
             targetCell.Value = afterValue
             If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
+                ' CSV整形で実際に更新されたセルは常に太字化する
+                ' （ENABLE_UPDATE_COMMENT / ENABLE_UPDATE_HIGHLIGHT の設定有無に依存しない）
+                targetCell.Font.Bold = True
                 ApplyChangedCellHighlightAndComment targetCell, beforeValue, afterValue
             Else
                 targetCell.Value = afterValue
@@ -5360,6 +5363,50 @@ Private Sub SafeAddComment(ByVal targetCell As Range, ByVal commentText As Strin
 
     On Error Resume Next
     targetCell.AddComment commentText
+    ResizeCommentToFit targetCell
+    On Error GoTo 0
+
+End Sub
+
+'--------------------------------------------------------
+' コメント枠を内容に合わせて調整（見切れ防止）
+' - AutoSize後、極端な横長/縦長を避けるため上限を設定
+'--------------------------------------------------------
+Private Sub ResizeCommentToFit(ByVal targetCell As Range)
+
+    Const MIN_WIDTH As Double = 300
+    Const MAX_WIDTH As Double = 500
+    Const MIN_HEIGHT As Double = 100
+    Const MAX_HEIGHT As Double = 300
+
+    Dim commentShape As Shape
+    Dim currentWidth As Double
+    Dim currentHeight As Double
+
+    If targetCell Is Nothing Then Exit Sub
+    If targetCell.Comment Is Nothing Then Exit Sub
+
+    On Error GoTo SafeExit
+
+    Set commentShape = targetCell.Comment.Shape
+    If commentShape Is Nothing Then GoTo SafeExit
+
+    commentShape.TextFrame.AutoSize = True
+
+    currentWidth = commentShape.Width
+    currentHeight = commentShape.Height
+
+    If currentWidth < MIN_WIDTH Then currentWidth = MIN_WIDTH
+    If currentWidth > MAX_WIDTH Then currentWidth = MAX_WIDTH
+    commentShape.Width = currentWidth
+
+    commentShape.TextFrame.AutoSize = True
+    currentHeight = commentShape.Height
+    If currentHeight < MIN_HEIGHT Then currentHeight = MIN_HEIGHT
+    If currentHeight > MAX_HEIGHT Then currentHeight = MAX_HEIGHT
+    commentShape.Height = currentHeight
+
+SafeExit:
     On Error GoTo 0
 
 End Sub
