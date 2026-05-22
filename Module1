@@ -4847,20 +4847,16 @@ Private Function GetChangedHeaderNamesFromSourceByHeader( _
 
     For Each key In srcToDstMap.Keys
         If srcHeaderMap.Exists(CStr(key)) Then
+            If IsStep2UpdateExcludedHeader(CStr(key)) Then GoTo ContinueNextChangedHeader
             srcCol = CLng(srcHeaderMap(CStr(key)))
             dstCol = CLng(srcToDstMap(CStr(key)))
 
             beforeCompare = NormalizeValueForUpdateCompare(CStr(key), wsDst.Cells(dstRow, dstCol).Value)
             afterCompare = NormalizeValueForUpdateCompare(CStr(key), wsSrc.Cells(srcRow, srcCol).Value)
 
-            If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
-                If IsExcelAuthoritativeHeader(CStr(key)) Then
-                    changedHeaders = AppendHeaderNameText(changedHeaders, CStr(key) & "（上書き禁止列差異）")
-                Else
-                    changedHeaders = AppendHeaderNameText(changedHeaders, CStr(key))
-                End If
-            End If
+            If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then changedHeaders = AppendHeaderNameText(changedHeaders, CStr(key))
         End If
+ContinueNextChangedHeader:
     Next key
 
     GetChangedHeaderNamesFromSourceByHeader = changedHeaders
@@ -5042,6 +5038,7 @@ Private Function RowDiffersFromSourceByHeader( _
 
     For Each key In srcToDstMap.Keys
         If srcHeaderMap.Exists(CStr(key)) Then
+            If IsStep2UpdateExcludedHeader(CStr(key)) Then GoTo ContinueNextRowDiffHeader
             srcCol = CLng(srcHeaderMap(CStr(key)))
             dstCol = CLng(srcToDstMap(CStr(key)))
 
@@ -5053,6 +5050,7 @@ Private Function RowDiffersFromSourceByHeader( _
                 Exit Function
             End If
         End If
+ContinueNextRowDiffHeader:
     Next key
 
 End Function
@@ -5189,6 +5187,7 @@ Private Sub UpdateRowFromSourceByHeader( _
         If srcHeaderMap.Exists(CStr(key)) Then
             srcCol = CLng(srcHeaderMap(CStr(key)))
             dstCol = CLng(srcToDstMap(CStr(key)))
+            If IsStep2UpdateExcludedHeader(CStr(key)) Then GoTo ContinueNextUpdateHeader
 
             Set targetCell = wsDst.Cells(dstRow, dstCol)
             beforeValue = targetCell.Value
@@ -5198,12 +5197,9 @@ Private Sub UpdateRowFromSourceByHeader( _
             ' （毎年度利用区分は 1/2 と 毎年作成/単年のみ を同値として扱う）
             beforeCompare = NormalizeValueForUpdateCompare(CStr(key), beforeValue)
             afterCompare = NormalizeValueForUpdateCompare(CStr(key), afterValue)
-            If IsExcelAuthoritativeHeader(CStr(key)) Then
-                If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
-                    AddOrAppendAuthoritativeDiffComment targetCell, CStr(key), beforeValue, afterValue
-                    ApplyAuthoritativeDiffCellHighlight targetCell
-                    colorDiffDetectedCount = colorDiffDetectedCount + 1
-                End If
+            targetCell.Value = afterValue
+            If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
+                ApplyChangedCellHighlightAndComment targetCell, beforeValue, afterValue
             Else
                 targetCell.Value = afterValue
                 If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
@@ -5213,65 +5209,24 @@ Private Sub UpdateRowFromSourceByHeader( _
                 End If
             End If
         End If
+ContinueNextUpdateHeader:
     Next key
 
 End Sub
 
-Private Function IsExcelAuthoritativeHeader(ByVal headerName As String) As Boolean
+Private Function IsStep2UpdateExcludedHeader(ByVal headerName As String) As Boolean
 
     Dim canonical As String
     canonical = CanonicalHeaderName(headerName)
 
     Select Case canonical
         Case CanonicalHeaderName("色名"), CanonicalHeaderName("2色名")
-            IsExcelAuthoritativeHeader = True
+            IsStep2UpdateExcludedHeader = True
         Case Else
-            IsExcelAuthoritativeHeader = False
+            IsStep2UpdateExcludedHeader = False
     End Select
 
 End Function
-
-Private Sub AddOrAppendAuthoritativeDiffComment( _
-    ByVal targetCell As Range, _
-    ByVal headerName As String, _
-    ByVal excelValue As Variant, _
-    ByVal csvValue As Variant)
-
-    Dim marker As String
-    Dim baseMessage As String
-    Dim existingComment As String
-
-    If targetCell Is Nothing Then Exit Sub
-
-    marker = "【上書き禁止列差異:" & CanonicalHeaderName(headerName) & "】"
-    baseMessage = marker & vbCrLf & _
-                  "新ファイル基準表側値: " & CStr(excelValue) & vbCrLf & _
-                  "目録CSV側値: " & CStr(csvValue) & vbCrLf & _
-                  "検出日時: " & Format$(Now, "yyyy/mm/dd hh:nn:ss") & vbCrLf & _
-                  "色列は新ファイル基準表側の全体色ルールを正として保持"
-
-    existingComment = ""
-    On Error Resume Next
-    If Not targetCell.Comment Is Nothing Then existingComment = CStr(targetCell.Comment.Text)
-    On Error GoTo 0
-
-    If InStr(1, existingComment, marker, vbTextCompare) > 0 Then Exit Sub
-
-    If Len(existingComment) > 0 Then
-        SafeDeleteComment targetCell
-        SafeAddComment targetCell, existingComment & vbCrLf & vbCrLf & baseMessage
-    Else
-        SafeAddComment targetCell, baseMessage
-    End If
-
-End Sub
-
-Private Sub ApplyAuthoritativeDiffCellHighlight(ByVal targetCell As Range)
-    If targetCell Is Nothing Then Exit Sub
-    If targetCell.Interior.Pattern = xlSolid And targetCell.Interior.Color = CSV_DIFF_SERIAL_MARK_COLOR Then Exit Sub
-    targetCell.Interior.Pattern = xlSolid
-    targetCell.Interior.Color = RGB(255, 255, 153)
-End Sub
 
 Private Sub AppendRowFromSourceByHeader( _
     ByVal wsSrc As Worksheet, _
@@ -5288,10 +5243,12 @@ Private Sub AppendRowFromSourceByHeader( _
     ' 追加時は通常書式のまま値を書き込む（赤字・コメントは付与しない）
     For Each key In srcToDstMap.Keys
         If srcHeaderMap.Exists(CStr(key)) Then
+            If IsStep2UpdateExcludedHeader(CStr(key)) Then GoTo ContinueNextAppendHeader
             srcCol = CLng(srcHeaderMap(CStr(key)))
             dstCol = CLng(srcToDstMap(CStr(key)))
             wsDst.Cells(dstRow, dstCol).Value = wsSrc.Cells(srcRow, srcCol).Value
         End If
+ContinueNextAppendHeader:
     Next key
 
 End Sub
