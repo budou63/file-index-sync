@@ -3217,6 +3217,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim registrationToCurrentCount As Long
     Dim deletionPlannedRemainCount As Long
     Dim deletionPlannedDeletedCount As Long
+    Dim colorDiffDetectedCount As Long
 
     On Error GoTo ErrorHandler
 
@@ -3354,7 +3355,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         serialCommentMap(key) = BuildSerialDiffComment("変更", changedHeadersText, idCompletionHeadersText)
                     End If
                 End If
-                UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap
+                UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap, colorDiffDetectedCount
                 If beforeSyncStatus = "登録予定" Then
                     wsDst.Cells(targetRow, syncCol).Value = "現行"
                     visualDiffMap(key) = "登録予定現行"
@@ -3392,7 +3393,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                             hasRowDiff = RowDiffersFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
                             changedHeadersText = GetChangedHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
                             idCompletionHeadersText = GetIdentityCompletionHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap)
-                            UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap
+                            UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap, colorDiffDetectedCount
                             AppendRemarkOnce wsDst, targetRow, "システム同期済"
                             If key <> "" Then existingRowMap(key) = targetRow
                             ' 名称ベース同期が成立した行は、差分比較結果に関わらず今回の同期済み変更行として赤塗り対象にする
@@ -3521,6 +3522,7 @@ ContinueNextSourceRow:
                "内容変更件数: " & changedCount & " 件" & vbCrLf & _
                "名称ベース同期件数: " & nameSyncCount & " 件" & vbCrLf & _
                "判定困難件数: " & ambiguousSyncCount & " 件" & vbCrLf & _
+               "色列差異検出件数: " & colorDiffDetectedCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
@@ -3538,6 +3540,7 @@ ContinueNextSourceRow:
                "内容変更件数: " & changedCount & " 件" & vbCrLf & _
                "名称ベース同期件数: " & nameSyncCount & " 件" & vbCrLf & _
                "判定困難件数: " & ambiguousSyncCount & " 件" & vbCrLf & _
+               "色列差異検出件数: " & colorDiffDetectedCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
@@ -4851,7 +4854,11 @@ Private Function GetChangedHeaderNamesFromSourceByHeader( _
             afterCompare = NormalizeValueForUpdateCompare(CStr(key), wsSrc.Cells(srcRow, srcCol).Value)
 
             If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
-                changedHeaders = AppendHeaderNameText(changedHeaders, CStr(key))
+                If IsExcelAuthoritativeHeader(CStr(key)) Then
+                    changedHeaders = AppendHeaderNameText(changedHeaders, CStr(key) & "（上書き禁止列差異）")
+                Else
+                    changedHeaders = AppendHeaderNameText(changedHeaders, CStr(key))
+                End If
             End If
         End If
     Next key
@@ -5164,7 +5171,8 @@ Private Sub UpdateRowFromSourceByHeader( _
     ByVal srcRow As Long, _
     ByVal dstRow As Long, _
     ByVal srcHeaderMap As Object, _
-    ByVal srcToDstMap As Object)
+    ByVal srcToDstMap As Object, _
+    Optional ByRef colorDiffDetectedCount As Long = 0)
 
     Dim srcCol As Long
     Dim dstCol As Long
@@ -5190,17 +5198,79 @@ Private Sub UpdateRowFromSourceByHeader( _
             ' （毎年度利用区分は 1/2 と 毎年作成/単年のみ を同値として扱う）
             beforeCompare = NormalizeValueForUpdateCompare(CStr(key), beforeValue)
             afterCompare = NormalizeValueForUpdateCompare(CStr(key), afterValue)
-
-            targetCell.Value = afterValue
-
-            If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
-                ApplyChangedCellHighlightAndComment targetCell, beforeValue, afterValue
+            If IsExcelAuthoritativeHeader(CStr(key)) Then
+                If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
+                    AddOrAppendAuthoritativeDiffComment targetCell, CStr(key), beforeValue, afterValue
+                    ApplyAuthoritativeDiffCellHighlight targetCell
+                    colorDiffDetectedCount = colorDiffDetectedCount + 1
+                End If
             Else
-                ClearChangedCellHighlightAndComment targetCell
+                targetCell.Value = afterValue
+                If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
+                    ApplyChangedCellHighlightAndComment targetCell, beforeValue, afterValue
+                Else
+                    ClearChangedCellHighlightAndComment targetCell
+                End If
             End If
         End If
     Next key
 
+End Sub
+
+Private Function IsExcelAuthoritativeHeader(ByVal headerName As String) As Boolean
+
+    Dim canonical As String
+    canonical = CanonicalHeaderName(headerName)
+
+    Select Case canonical
+        Case CanonicalHeaderName("色名"), CanonicalHeaderName("2色名")
+            IsExcelAuthoritativeHeader = True
+        Case Else
+            IsExcelAuthoritativeHeader = False
+    End Select
+
+End Function
+
+Private Sub AddOrAppendAuthoritativeDiffComment( _
+    ByVal targetCell As Range, _
+    ByVal headerName As String, _
+    ByVal excelValue As Variant, _
+    ByVal csvValue As Variant)
+
+    Dim marker As String
+    Dim baseMessage As String
+    Dim existingComment As String
+
+    If targetCell Is Nothing Then Exit Sub
+
+    marker = "【上書き禁止列差異:" & CanonicalHeaderName(headerName) & "】"
+    baseMessage = marker & vbCrLf & _
+                  "新ファイル基準表側値: " & CStr(excelValue) & vbCrLf & _
+                  "目録CSV側値: " & CStr(csvValue) & vbCrLf & _
+                  "検出日時: " & Format$(Now, "yyyy/mm/dd hh:nn:ss") & vbCrLf & _
+                  "色列は新ファイル基準表側の全体色ルールを正として保持"
+
+    existingComment = ""
+    On Error Resume Next
+    If Not targetCell.Comment Is Nothing Then existingComment = CStr(targetCell.Comment.Text)
+    On Error GoTo 0
+
+    If InStr(1, existingComment, marker, vbTextCompare) > 0 Then Exit Sub
+
+    If Len(existingComment) > 0 Then
+        SafeDeleteComment targetCell
+        SafeAddComment targetCell, existingComment & vbCrLf & vbCrLf & baseMessage
+    Else
+        SafeAddComment targetCell, baseMessage
+    End If
+
+End Sub
+
+Private Sub ApplyAuthoritativeDiffCellHighlight(ByVal targetCell As Range)
+    If targetCell Is Nothing Then Exit Sub
+    If targetCell.Interior.Pattern = xlSolid And targetCell.Interior.Color = CSV_DIFF_SERIAL_MARK_COLOR Then Exit Sub
+    targetCell.Interior.Pattern = xlSolid
+    targetCell.Interior.Color = RGB(255, 255, 153)
 End Sub
 
 Private Sub AppendRowFromSourceByHeader( _
