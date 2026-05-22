@@ -3217,6 +3217,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim registrationToCurrentCount As Long
     Dim deletionPlannedRemainCount As Long
     Dim deletionPlannedDeletedCount As Long
+    Dim colorDiffDetectedCount As Long
 
     On Error GoTo ErrorHandler
 
@@ -3354,7 +3355,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         serialCommentMap(key) = BuildSerialDiffComment("変更", changedHeadersText, idCompletionHeadersText)
                     End If
                 End If
-                UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap
+                UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap, colorDiffDetectedCount
                 If beforeSyncStatus = "登録予定" Then
                     wsDst.Cells(targetRow, syncCol).Value = "現行"
                     visualDiffMap(key) = "登録予定現行"
@@ -3392,7 +3393,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                             hasRowDiff = RowDiffersFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
                             changedHeadersText = GetChangedHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
                             idCompletionHeadersText = GetIdentityCompletionHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap)
-                            UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap
+                            UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap, colorDiffDetectedCount
                             AppendRemarkOnce wsDst, targetRow, "システム同期済"
                             If key <> "" Then existingRowMap(key) = targetRow
                             ' 名称ベース同期が成立した行は、差分比較結果に関わらず今回の同期済み変更行として赤塗り対象にする
@@ -3521,6 +3522,7 @@ ContinueNextSourceRow:
                "内容変更件数: " & changedCount & " 件" & vbCrLf & _
                "名称ベース同期件数: " & nameSyncCount & " 件" & vbCrLf & _
                "判定困難件数: " & ambiguousSyncCount & " 件" & vbCrLf & _
+               "色列差異検出件数: " & colorDiffDetectedCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
@@ -3538,6 +3540,7 @@ ContinueNextSourceRow:
                "内容変更件数: " & changedCount & " 件" & vbCrLf & _
                "名称ベース同期件数: " & nameSyncCount & " 件" & vbCrLf & _
                "判定困難件数: " & ambiguousSyncCount & " 件" & vbCrLf & _
+               "色列差異検出件数: " & colorDiffDetectedCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
@@ -5166,7 +5169,8 @@ Private Sub UpdateRowFromSourceByHeader( _
     ByVal srcRow As Long, _
     ByVal dstRow As Long, _
     ByVal srcHeaderMap As Object, _
-    ByVal srcToDstMap As Object)
+    ByVal srcToDstMap As Object, _
+    Optional ByRef colorDiffDetectedCount As Long = 0)
 
     Dim srcCol As Long
     Dim dstCol As Long
@@ -5197,7 +5201,12 @@ Private Sub UpdateRowFromSourceByHeader( _
             If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
                 ApplyChangedCellHighlightAndComment targetCell, beforeValue, afterValue
             Else
-                ClearChangedCellHighlightAndComment targetCell
+                targetCell.Value = afterValue
+                If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
+                    ApplyChangedCellHighlightAndComment targetCell, beforeValue, afterValue
+                Else
+                    ClearChangedCellHighlightAndComment targetCell
+                End If
             End If
         End If
 ContinueNextUpdateHeader:
