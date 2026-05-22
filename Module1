@@ -2694,6 +2694,14 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim bikoColEdit As Long
     Dim bikoVal As String
     Dim excludedMacroInsertCount As Long
+    Dim syncStatusColEdit As Long
+    Dim fileIdColEdit As Long
+    Dim fileNoColEdit As Long
+    Dim barcodeColEdit As Long
+    Dim registrationStatusAlerts As Collection
+    Dim alertLine As Variant
+    Dim serialColEdit As Long
+    Dim rowSyncStatus As String
 
     On Error GoTo ErrorHandler
 
@@ -2704,6 +2712,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Set usedSrcRows = CreateObject("Scripting.Dictionary")
     Set editHeaderMap = CreateObject("Scripting.Dictionary")
     Set outputSourceMap = CreateObject("Scripting.Dictionary")
+    Set registrationStatusAlerts = New Collection
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -2732,6 +2741,11 @@ Public Sub 手順4_差分インポートCSVを作成する()
     keyMediaEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("媒体種別"))
     keyPeriodEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("保存期間"))
     bikoColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("備考"))
+    syncStatusColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("同期状態"))
+    fileIdColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイルID"))
+    fileNoColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイル番号"))
+    barcodeColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("バーコード番号"))
+    serialColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("通し番号"))
 
     If (keyYearSrc = 0 And keyYearSrcWestern = 0) Or keyTitleSrc = 0 Or keyCategory2Src = 0 Or keyMediaSrc = 0 Or keyPeriodSrc = 0 Then
         Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列（年度（和暦）または年度/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
@@ -2871,6 +2885,15 @@ Public Sub 手順4_差分インポートCSVを作成する()
         ' C. キー一致なし -> 新規行として出力
         Else
             WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
+            If IsStep4NewRegistrationCandidate(wsEdit, r, syncStatusColEdit, fileIdColEdit, fileNoColEdit, barcodeColEdit) Then
+                rowSyncStatus = ""
+                If syncStatusColEdit > 0 Then rowSyncStatus = Trim$(CStr(wsEdit.Cells(r, syncStatusColEdit).Value))
+                If StrComp(NormalizeCellValue(rowSyncStatus), NormalizeCellValue("登録予定"), vbTextCompare) <> 0 Then
+                    registrationStatusAlerts.Add "通し番号=" & CStr(IIf(serialColEdit > 0, wsEdit.Cells(r, serialColEdit).Value, "")) & _
+                                               " / タイトル=" & titleVal & _
+                                               " / 同期状態=" & rowSyncStatus
+                End If
+            End If
             outRow = outRow + 1
         End If
 
@@ -2887,6 +2910,16 @@ ContinueNextEditRow:
     MsgBox "差分抽出が完了しました。" & vbCrLf & _
            "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & "件", vbInformation
 
+    If registrationStatusAlerts.Count > 0 Then
+        Dim warnText As String
+        warnText = "新規登録候補ですが、同期状態が登録予定ではありません。確認してください。" & vbCrLf & _
+                   "該当件数: " & CStr(registrationStatusAlerts.Count) & "件"
+        For Each alertLine In registrationStatusAlerts
+            warnText = warnText & vbCrLf & "・" & CStr(alertLine)
+        Next alertLine
+        MsgBox warnText, vbExclamation
+    End If
+
 SafeExit:
     Application.ScreenUpdating = True
     Application.EnableEvents = True
@@ -2897,6 +2930,32 @@ ErrorHandler:
     Resume SafeExit
 
 End Sub
+
+Private Function IsStep4NewRegistrationCandidate( _
+    ByVal wsEdit As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal syncStatusCol As Long, _
+    ByVal fileIdCol As Long, _
+    ByVal fileNoCol As Long, _
+    ByVal barcodeCol As Long) As Boolean
+
+    Dim fileIdVal As String
+    Dim fileNoVal As String
+    Dim barcodeVal As String
+
+    If wsEdit Is Nothing Then Exit Function
+    If rowNo < 2 Then Exit Function
+
+    fileIdVal = ""
+    fileNoVal = ""
+    barcodeVal = ""
+    If fileIdCol > 0 Then fileIdVal = NormalizeCellValue(wsEdit.Cells(rowNo, fileIdCol).Value)
+    If fileNoCol > 0 Then fileNoVal = NormalizeCellValue(wsEdit.Cells(rowNo, fileNoCol).Value)
+    If barcodeCol > 0 Then barcodeVal = NormalizeCellValue(wsEdit.Cells(rowNo, barcodeCol).Value)
+
+    IsStep4NewRegistrationCandidate = (fileIdVal = "" And fileNoVal = "" And barcodeVal = "")
+
+End Function
 
 Private Sub AddRowToKeyBucket(ByVal bucketDict As Object, ByVal key As String, ByVal rowNumber As Long)
 
