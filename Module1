@@ -3981,7 +3981,8 @@ Private Sub ApplyStep2PostProcessToTouchedRows(ByVal wsDst As Worksheet, ByVal t
     For Each key In touchedRowMap.Keys
         rowNo = CLng(touchedRowMap(key))
         ConvertAnnualUseDivisionValues wsDst, rowNo, rowNo
-        SyncSecondColorNameFromColor wsDst, rowNo, rowNo
+        ' 方針: CSV整形（手順2）では色名/2色名を一切変更しない
+        ' SyncSecondColorNameFromColor はここでは呼ばない
     Next key
 
 End Sub
