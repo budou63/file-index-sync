@@ -2822,12 +2822,20 @@ Public Sub 手順4_差分インポートCSVを作成する()
 
     ' ② 新ファイル基準表を1行ずつ処理
     For r = 2 To editLastRow
-        ' 備考列が存在し、値が「マクロ差込」の行は差分判定対象外
+        ' 同期状態=管理対象外、または備考に「マクロ差込」を含む行は差分判定対象外
+        If syncStatusColEdit > 0 Then
+            If NormalizeSyncStatusValue(wsEdit.Cells(r, syncStatusColEdit).Value) = "管理対象外" Then
+                excludedMacroInsertCount = excludedMacroInsertCount + 1
+                Debug.Print "行" & r & " は同期状態=管理対象外 のため差分抽出対象外"
+                GoTo ContinueNextEditRow
+            End If
+        End If
+
         If bikoColEdit > 0 Then
             bikoVal = NormalizeCellValue(wsEdit.Cells(r, bikoColEdit).Value)
-            If bikoVal = "マクロ差込" Then
+            If InStr(1, bikoVal, NormalizeCellValue("マクロ差込"), vbTextCompare) > 0 Then
                 excludedMacroInsertCount = excludedMacroInsertCount + 1
-                Debug.Print "行" & r & " は備考=マクロ差込 のため差分抽出対象外"
+                Debug.Print "行" & r & " は備考にマクロ差込を含むため差分抽出対象外"
                 GoTo ContinueNextEditRow
             End If
         End If
@@ -3416,13 +3424,13 @@ Public Sub 手順2_新ファイル基準表を作成する()
                 End If
                 UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap, colorDiffDetectedCount
                 If beforeSyncStatus = "登録予定" Then
-                    wsDst.Cells(targetRow, syncCol).Value = "現行"
+                    wsDst.Cells(targetRow, syncCol).Value = "同期済"
                     visualDiffMap(key) = "登録予定現行"
                     serialCommentMap(key) = BuildSerialDiffComment("登録予定現行", changedHeadersText, idCompletionHeadersText)
                     registrationToCurrentCount = registrationToCurrentCount + 1
                 Else
                     updatedCount = updatedCount + 1
-                    If beforeSyncStatus = "現行" Then currentSyncCount = currentSyncCount + 1
+                    If beforeSyncStatus = "同期済" Then currentSyncCount = currentSyncCount + 1
                 End If
                 If Not touchedTargetRowMap.Exists(CStr(targetRow)) Then touchedTargetRowMap.Add CStr(targetRow), targetRow
 
@@ -3461,7 +3469,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                                 If beforeSyncStatus = "登録予定" Then
                                     visualDiffMap(key) = "登録予定現行"
                                     serialCommentMap(key) = BuildSerialDiffComment("登録予定現行", changedHeadersText, idCompletionHeadersText)
-                                    wsDst.Cells(targetRow, syncCol).Value = "現行"
+                                    wsDst.Cells(targetRow, syncCol).Value = "同期済"
                                     registrationToCurrentCount = registrationToCurrentCount + 1
                                 Else
                                     visualDiffMap(key) = "名称同期"
@@ -3572,9 +3580,9 @@ ContinueNextSourceRow:
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
                "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
-               "現行更新件数: " & currentSyncCount & " 件" & vbCrLf & _
+               "同期済更新件数: " & currentSyncCount & " 件" & vbCrLf & _
                "登録予定のまま残った件数: " & registrationPlannedCount & " 件" & vbCrLf & _
-               "登録予定から現行になった件数: " & registrationToCurrentCount & " 件" & vbCrLf & _
+               "登録予定から同期済になった件数: " & registrationToCurrentCount & " 件" & vbCrLf & _
                "削除予定のまま残った件数: " & deletionPlannedRemainCount & " 件" & vbCrLf & _
                "削除可候補件数: " & deletionPlannedDeletedCount & " 件" & vbCrLf & _
                "新規追加件数: " & appendedCount & " 件" & vbCrLf & _
@@ -3590,9 +3598,9 @@ ContinueNextSourceRow:
     Else
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
                "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
-               "現行更新件数: " & currentSyncCount & " 件" & vbCrLf & _
+               "同期済更新件数: " & currentSyncCount & " 件" & vbCrLf & _
                "登録予定のまま残った件数: " & registrationPlannedCount & " 件" & vbCrLf & _
-               "登録予定から現行になった件数: " & registrationToCurrentCount & " 件" & vbCrLf & _
+               "登録予定から同期済になった件数: " & registrationToCurrentCount & " 件" & vbCrLf & _
                "削除予定のまま残った件数: " & deletionPlannedRemainCount & " 件" & vbCrLf & _
                "削除可候補件数: " & deletionPlannedDeletedCount & " 件" & vbCrLf & _
                "新規追加件数: " & appendedCount & " 件" & vbCrLf & _
@@ -3681,12 +3689,14 @@ Private Function NormalizeSyncStatusValue(ByVal rawValue As Variant) As String
     s = Replace(s, " ", "")
 
     Select Case s
-        Case "現行"
-            NormalizeSyncStatusValue = "現行"
+        Case "現行", "同期済"
+            NormalizeSyncStatusValue = "同期済"
         Case "登録予定", "未登録"
             NormalizeSyncStatusValue = "登録予定"
         Case "削除予定", "削除候補"
             NormalizeSyncStatusValue = "削除予定"
+        Case "管理対象外"
+            NormalizeSyncStatusValue = "管理対象外"
         Case Else
             NormalizeSyncStatusValue = s
     End Select
@@ -3741,6 +3751,7 @@ Private Sub ProcessPendingSyncStatusRows( _
         End If
 
         statusValue = GetSyncStatusValue(wsDst, rowNo, syncCol)
+        If statusValue = "管理対象外" Then GoTo ContinueNextPendingRow
         If statusValue <> "登録予定" And statusValue <> "削除予定" Then GoTo ContinueNextPendingRow
 
         key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
@@ -5009,8 +5020,8 @@ Private Function BuildSerialDiffComment( _
                 "新システム側で未登録の可能性があります。"
             Exit Function
         Case "登録予定現行"
-            commentText = "【登録予定→現行】" & vbCrLf & _
-                "登録予定のフォルダが目録CSVに存在したため、目録CSV側の正式データで上書きし、同期状態を現行に変更しました。"
+            commentText = "【登録予定→同期済】" & vbCrLf & _
+                "登録予定のフォルダが目録CSVに存在したため、目録CSV側の正式データで上書きし、同期状態を同期済に変更しました。"
             If Len(changedHeadersText) > 0 Then commentText = commentText & vbCrLf & "上書き項目：" & changedHeadersText
         Case "削除予定"
             BuildSerialDiffComment = "【削除予定】" & vbCrLf & _
@@ -5140,16 +5151,24 @@ Private Function ShouldExcludeRowFromStep2VisualDiff(ByVal ws As Worksheet, ByVa
 
     Dim remarksCol As Long
     Dim lastCol As Long
+    Dim syncCol As Long
 
     ShouldExcludeRowFromStep2VisualDiff = False
     If ws Is Nothing Then Exit Function
     If rowNo < 2 Then Exit Function
 
     lastCol = GetLastUsedCol(ws)
+    syncCol = FindHeaderColumn(ws, lastCol, Array("同期状態"))
+    If syncCol > 0 Then
+        If NormalizeSyncStatusValue(ws.Cells(rowNo, syncCol).Value) = "管理対象外" Then
+            ShouldExcludeRowFromStep2VisualDiff = True
+            Exit Function
+        End If
+    End If
     remarksCol = FindHeaderColumn(ws, lastCol, Array("備考"))
     If remarksCol <= 0 Then Exit Function
 
-    ShouldExcludeRowFromStep2VisualDiff = (NormalizeCellValue(ws.Cells(rowNo, remarksCol).Value) = "マクロ差込")
+    ShouldExcludeRowFromStep2VisualDiff = (InStr(1, NormalizeCellValue(ws.Cells(rowNo, remarksCol).Value), NormalizeCellValue("マクロ差込"), vbTextCompare) > 0)
 
 End Function
 
@@ -5563,12 +5582,14 @@ Private Sub UpdateSyncStatusColumn( _
         End If
 
         Select Case GetSyncStatusValue(wsDst, rowNo, syncCol)
-            Case "現行"
-                wsDst.Cells(rowNo, syncCol).Value = "現行"
+            Case "同期済"
+                wsDst.Cells(rowNo, syncCol).Value = "同期済"
             Case "登録予定"
                 wsDst.Cells(rowNo, syncCol).Value = "登録予定"
             Case "削除予定"
                 wsDst.Cells(rowNo, syncCol).Value = "削除予定"
+            Case "管理対象外"
+                wsDst.Cells(rowNo, syncCol).Value = "管理対象外"
             Case Else
                 ' 空欄は同期状態を管理しない通常行として扱い、自動入力しない
         End Select
@@ -8382,6 +8403,7 @@ Public Sub 旧基準表_継続文書移行()
     Dim newColCreatedWareki As Long
     Dim newColTitle As Long
     Dim newColBiko As Long
+    Dim newColSyncStatus As Long
     Dim newColMediaType As Long
 
     Dim oldLastRow As Long
@@ -8458,7 +8480,13 @@ Public Sub 旧基準表_継続文書移行()
     newColCreatedWareki = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "作成年度（和暦）")
     newColTitle = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "タイトル")
     newColBiko = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "備考")
+    newColSyncStatus = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "同期状態")
     newColMediaType = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "媒体種別")
+
+    If newColSyncStatus = 0 Then
+        newColSyncStatus = wsNew.Cells(newHeaderRow, wsNew.Columns.Count).End(xlToLeft).Column + 1
+        wsNew.Cells(newHeaderRow, newColSyncStatus).Value = "同期状態"
+    End If
 
     If oldColKeizoku = 0 Then StopWithMissingColumn "継続"
     If oldColGuide1 = 0 Then StopWithMissingColumn "第１ガイド"
@@ -8476,10 +8504,11 @@ Public Sub 旧基準表_継続文書移行()
     If newColCreatedWareki = 0 Then StopWithMissingColumn "作成年度（和暦）"
     If newColTitle = 0 Then StopWithMissingColumn "タイトル"
     If newColBiko = 0 Then StopWithMissingColumn "備考"
+    If newColSyncStatus = 0 Then StopWithMissingColumn "同期状態"
     If newColMediaType = 0 Then StopWithMissingColumn "媒体種別"
 
     DebugLog "[列番号][旧] 継続=" & oldColKeizoku & " 第１ガイド=" & oldColGuide1 & " １色=" & oldColColor1 & " 第２ガイド=" & oldColGuide2 & " ２色=" & oldColColor2 & " 年度=" & oldColNendo & " 個別フォルダー=" & oldColKobetsu & " 媒体=" & oldColMedia
-    DebugLog "[列番号][新] 分類名２=" & newColClass2 & " 色名=" & newColColor & " 分類名３=" & newColClass3 & " 2色名=" & newColColor2 & " 年度（和暦）=" & newColWareki & " 作成年度（和暦）=" & newColCreatedWareki & " タイトル=" & newColTitle & " 備考=" & newColBiko & " 媒体種別=" & newColMediaType
+    DebugLog "[列番号][新] 分類名２=" & newColClass2 & " 色名=" & newColColor & " 分類名３=" & newColClass3 & " 2色名=" & newColColor2 & " 年度（和暦）=" & newColWareki & " 作成年度（和暦）=" & newColCreatedWareki & " タイトル=" & newColTitle & " 備考=" & newColBiko & " 同期状態=" & newColSyncStatus & " 媒体種別=" & newColMediaType
 
     oldLastRow = wsOld.Cells(wsOld.Rows.Count, 1).End(xlUp).Row
     If oldLastRow < oldDataStartRow Then
@@ -8569,7 +8598,7 @@ NextRowMigImport:
                 wsNew.Cells(insertRow + j - 1, newColCreatedWareki).Value = rec(4)
                 wsNew.Cells(insertRow + j - 1, newColTitle).Value = rec(5)
                 wsNew.Cells(insertRow + j - 1, newColMediaType).Value = Trim$(CStr(rec(6)))
-                wsNew.Cells(insertRow + j - 1, newColBiko).Value = "マクロ差込"
+                wsNew.Cells(insertRow + j - 1, newColSyncStatus).Value = "管理対象外"
                 movedCount = movedCount + 1
             Next j
         End If
