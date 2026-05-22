@@ -3530,7 +3530,7 @@ ContinueNextSourceRow:
     ' 6) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
     ApplyStep2PostProcessToTouchedRows wsDst, touchedTargetRowMap
 
-    ' 7-1) 登録予定/削除予定の残存確認と、目録CSVから消えた削除予定行の削除を行う
+    ' 7-1) 登録予定/削除予定の残存確認と、目録CSVから消えた削除予定行の削除可候補化を行う
     ProcessPendingSyncStatusRows wsDst, syncCol, sourceKeyMap, sourceNameSyncMap, visualDiffMap, serialCommentMap, _
         targetYearValue, registrationPlannedCount, deletionPlannedRemainCount, deletionPlannedDeletedCount
 
@@ -3576,7 +3576,7 @@ ContinueNextSourceRow:
                "登録予定のまま残った件数: " & registrationPlannedCount & " 件" & vbCrLf & _
                "登録予定から現行になった件数: " & registrationToCurrentCount & " 件" & vbCrLf & _
                "削除予定のまま残った件数: " & deletionPlannedRemainCount & " 件" & vbCrLf & _
-               "削除予定から削除した件数: " & deletionPlannedDeletedCount & " 件" & vbCrLf & _
+               "削除可候補件数: " & deletionPlannedDeletedCount & " 件" & vbCrLf & _
                "新規追加件数: " & appendedCount & " 件" & vbCrLf & _
                "内容変更件数: " & changedCount & " 件" & vbCrLf & _
                "名称ベース同期件数: " & nameSyncCount & " 件" & vbCrLf & _
@@ -3594,7 +3594,7 @@ ContinueNextSourceRow:
                "登録予定のまま残った件数: " & registrationPlannedCount & " 件" & vbCrLf & _
                "登録予定から現行になった件数: " & registrationToCurrentCount & " 件" & vbCrLf & _
                "削除予定のまま残った件数: " & deletionPlannedRemainCount & " 件" & vbCrLf & _
-               "削除予定から削除した件数: " & deletionPlannedDeletedCount & " 件" & vbCrLf & _
+               "削除可候補件数: " & deletionPlannedDeletedCount & " 件" & vbCrLf & _
                "新規追加件数: " & appendedCount & " 件" & vbCrLf & _
                "内容変更件数: " & changedCount & " 件" & vbCrLf & _
                "名称ベース同期件数: " & nameSyncCount & " 件" & vbCrLf & _
@@ -3716,6 +3716,9 @@ Private Sub ProcessPendingSyncStatusRows( _
     Dim warekiYearCol As Long
     Dim westernYearCol As Long
     Dim existsInSource As Boolean
+    Dim remarksCol As Long
+    Dim serialCol As Long
+    Dim markRange As Range
 
     If wsDst Is Nothing Then Exit Sub
     If syncCol <= 0 Then Exit Sub
@@ -3729,6 +3732,8 @@ Private Sub ProcessPendingSyncStatusRows( _
 
     warekiYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度（和暦）", "年度(和暦)"))
     westernYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度"))
+    remarksCol = FindHeaderColumn(wsDst, lastCol, Array("備考"))
+    serialCol = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates("通し番号"))
 
     For rowNo = lastRow To 2 Step -1
         If targetYearValue > 0 Then
@@ -3762,7 +3767,18 @@ Private Sub ProcessPendingSyncStatusRows( _
                 End If
                 deletionPlannedRemainCount = deletionPlannedRemainCount + 1
             Else
-                wsDst.Rows(rowNo).Delete
+                Set markRange = wsDst.Range(wsDst.Cells(rowNo, 1), wsDst.Cells(rowNo, lastCol))
+                markRange.Interior.Color = RGB(217, 217, 217)
+                If remarksCol > 0 Then AppendRemarkOnce wsDst, rowNo, "削除可：目録CSVに存在しないため手動削除確認"
+                If serialCol > 0 Then
+                    SafeDeleteComment wsDst.Cells(rowNo, serialCol)
+                    SafeAddComment wsDst.Cells(rowNo, serialCol), BuildSerialDiffComment("削除可", "", "")
+                End If
+                markKey = BuildVisualMarkerKey(key, nameKey)
+                If markKey <> "" Then
+                    visualDiffMap(markKey) = "削除可"
+                    serialCommentMap(markKey) = BuildSerialDiffComment("削除可", "", "")
+                End If
                 deletionPlannedDeletedCount = deletionPlannedDeletedCount + 1
             End If
         End If
@@ -5000,6 +5016,11 @@ Private Function BuildSerialDiffComment( _
             BuildSerialDiffComment = "【削除予定】" & vbCrLf & _
                 "この行は削除予定ですが、今回の目録CSVにまだ存在しています。" & vbCrLf & _
                 "新システム側で削除されていない可能性があります。"
+            Exit Function
+        Case "削除可"
+            BuildSerialDiffComment = "【削除可】" & vbCrLf & _
+                "同期状態が削除予定であり、今回の目録CSVに存在しません。" & vbCrLf & _
+                "新システム側から削除済みと考えられるため、手動削除してよい候補です。"
             Exit Function
         Case "判定困難"
             BuildSerialDiffComment = "【判定困難】" & vbCrLf & _
