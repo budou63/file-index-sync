@@ -5298,18 +5298,15 @@ Private Sub UpdateRowFromSourceByHeader( _
             beforeCompare = NormalizeValueForUpdateCompare(CStr(key), beforeValue)
             afterCompare = NormalizeValueForUpdateCompare(CStr(key), afterValue)
             targetCell.Value = afterValue
+
             If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
-                ' CSV整形で実際に更新されたセルは常に太字化する
-                ' （ENABLE_UPDATE_COMMENT / ENABLE_UPDATE_HIGHLIGHT の設定有無に依存しない）
+                ' CSV整形で今回変更されたセルだけ常に太字化する
+                ' （コメント/赤字は ENABLE_UPDATE_COMMENT / ENABLE_UPDATE_HIGHLIGHT がONの場合のみ）
                 targetCell.Font.Bold = True
                 ApplyChangedCellHighlightAndComment targetCell, beforeValue, afterValue
             Else
-                targetCell.Value = afterValue
-                If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
-                    ApplyChangedCellHighlightAndComment targetCell, beforeValue, afterValue
-                Else
-                    ClearChangedCellHighlightAndComment targetCell
-                End If
+                ' 差分なしセルは直近実行分の差分表示だけを消す
+                ClearChangedCellHighlightAndComment targetCell
             End If
         End If
 ContinueNextUpdateHeader:
@@ -5434,13 +5431,41 @@ Private Sub ClearChangedCellHighlightAndComment(ByVal targetCell As Range)
 
     If targetCell Is Nothing Then Exit Sub
 
-    ' 高速化対応: 設定ON時のみ戻し処理を実行
+    ' 差分表示は直近のCSV整形結果だけにする
+    targetCell.Font.Bold = False
+
+    ' 赤字表示を使っている場合だけ文字色を戻す
     If ENABLE_UPDATE_HIGHLIGHT Then
         targetCell.Font.ColorIndex = xlColorIndexAutomatic
     End If
-    If ENABLE_UPDATE_COMMENT Then
-        SafeDeleteComment targetCell
+
+    ' CSV整形で付けた差分コメントだけ削除する
+    SafeDeleteCsvDiffComment targetCell
+
+End Sub
+
+'--------------------------------------------------------
+' CSV整形由来の差分コメントだけを安全に削除する
+'--------------------------------------------------------
+Private Sub SafeDeleteCsvDiffComment(ByVal targetCell As Range)
+
+    Dim commentText As String
+
+    On Error Resume Next
+
+    If targetCell Is Nothing Then Exit Sub
+    If targetCell.Comment Is Nothing Then Exit Sub
+
+    commentText = targetCell.Comment.Text
+
+    ' CSV整形の差分コメントだけ削除する
+    If InStr(1, commentText, "更新前:", vbTextCompare) > 0 _
+       And InStr(1, commentText, "更新後:", vbTextCompare) > 0 _
+       And InStr(1, commentText, "更新日時:", vbTextCompare) > 0 Then
+        targetCell.Comment.Delete
     End If
+
+    On Error GoTo 0
 
 End Sub
 
