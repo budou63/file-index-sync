@@ -3285,11 +3285,13 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim deletionPlannedRemainCount As Long
     Dim deletionPlannedDeletedCount As Long
     Dim colorDiffDetectedCount As Long
+    Dim newFileStandardColumnWidths As Object
 
     On Error GoTo ErrorHandler
 
     Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
     Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    Set newFileStandardColumnWidths = CaptureColumnWidthsByHeader(wsDst)
     Set srcToDstMap = CreateObject("Scripting.Dictionary")
     Set srcHeaderMap = CreateObject("Scripting.Dictionary")
     Set existingDstHeaders = CreateObject("Scripting.Dictionary")
@@ -3554,7 +3556,7 @@ ContinueNextSourceRow:
             .Font.Bold = True
             .Interior.Color = RGB(242, 242, 242)
         End With
-        wsDst.Range(wsDst.Columns(1), wsDst.Columns(leftFixedCount)).EntireColumn.AutoFit
+        ' 列幅は利用者が手動調整した値を維持するため、自動調整しない。
     End If
 
     SortNewFileStandardByFiscalYear wsDst
@@ -3576,6 +3578,9 @@ ContinueNextSourceRow:
 
     ' CSV整形完了時点の使用範囲へ、見出し行フィルターを正しい範囲で設定し直す
     ApplyAutoFilterToNewFileStandard wsDst
+
+    ' マクロ実行中に列順変更や書式再適用があっても、既存列の手動幅を最終的に戻す。
+    RestoreColumnWidthsByHeader wsDst, newFileStandardColumnWidths
 
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
@@ -3615,6 +3620,7 @@ ContinueNextSourceRow:
 
 SafeExit:
     On Error Resume Next
+    RestoreColumnWidthsByHeader wsDst, newFileStandardColumnWidths
     If Not wsValidationTemplate Is Nothing Then
         Application.DisplayAlerts = False
         wsValidationTemplate.Delete
@@ -5935,6 +5941,64 @@ SafeExit:
     HasArrayElements = False
 
 End Function
+
+Private Function CaptureColumnWidthsByHeader(ByVal ws As Worksheet) As Object
+
+    Dim widthMap As Object
+    Dim lastCol As Long
+    Dim c As Long
+    Dim headerText As String
+    Dim canonical As String
+
+    Set widthMap = CreateObject("Scripting.Dictionary")
+
+    If ws Is Nothing Then
+        Set CaptureColumnWidthsByHeader = widthMap
+        Exit Function
+    End If
+
+    lastCol = GetLastUsedCol(ws)
+    For c = 1 To lastCol
+        headerText = Trim$(CStr(ws.Cells(1, c).Value))
+        If Len(headerText) > 0 Then
+            canonical = CanonicalHeaderName(headerText)
+            If Not widthMap.Exists(canonical) Then
+                widthMap.Add canonical, ws.Columns(c).ColumnWidth
+            End If
+        End If
+    Next c
+
+    Set CaptureColumnWidthsByHeader = widthMap
+
+End Function
+
+Private Sub RestoreColumnWidthsByHeader(ByVal ws As Worksheet, ByVal widthMap As Object)
+
+    Dim lastCol As Long
+    Dim c As Long
+    Dim headerText As String
+    Dim canonical As String
+    Dim wasHidden As Boolean
+
+    If ws Is Nothing Then Exit Sub
+    If widthMap Is Nothing Then Exit Sub
+    If widthMap.Count = 0 Then Exit Sub
+
+    lastCol = GetLastUsedCol(ws)
+    For c = 1 To lastCol
+        headerText = Trim$(CStr(ws.Cells(1, c).Value))
+        If Len(headerText) > 0 Then
+            canonical = CanonicalHeaderName(headerText)
+            If widthMap.Exists(canonical) Then
+                wasHidden = ws.Columns(c).Hidden
+                ws.Columns(c).ColumnWidth = CDbl(widthMap(canonical))
+                ws.Columns(c).Hidden = wasHidden
+            End If
+        End If
+    Next c
+
+End Sub
+
 
 Private Sub CreateFormatAndWidthTemplate( _
     ByVal wsDst As Worksheet, _
