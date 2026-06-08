@@ -4,6 +4,7 @@ Private Const SHEET_MOKUROKU_CSV As String = "目録CSV"
 Private Const SHEET_NEW_FILE_STANDARD As String = "新ファイル基準表"
 Private Const SHEET_CODE_MANAGEMENT As String = "コード管理CSV"
 Private Const SHEET_DIFF_IMPORT As String = "差分インポートCSV"
+Private Const SHEET_LOG As String = "ログ"
 Private Const DEBUG_MODE As Boolean = False
 ' 高速化対応: 差分更新時のコメント/強調を既定で無効化
 Private Const ENABLE_UPDATE_COMMENT As Boolean = False
@@ -49,6 +50,60 @@ Private gRowMoveSelectionAnchorRow As Long
 Private gRowMoveClickModeActive As Boolean
 Private gRowMoveClickStartRow As Long
 Private gRowMoveClickEndRow As Long
+
+Public Sub WriteProcessLog( _
+    ByVal macroName As String, _
+    Optional ByVal targetCsv As String = "", _
+    Optional ByVal targetYear As String = "", _
+    Optional ByVal processCount As Long = 0, _
+    Optional ByVal resultText As String = "成功", _
+    Optional ByVal note As String = "")
+
+    Dim wsLog As Worksheet
+    Dim lastCell As Range
+    Dim nextRow As Long
+    Dim oldEnableEvents As Boolean
+
+    On Error GoTo SafeExit
+
+    oldEnableEvents = Application.EnableEvents
+    Application.EnableEvents = False
+
+    On Error Resume Next
+    Set wsLog = ThisWorkbook.Worksheets(SHEET_LOG)
+    On Error GoTo SafeExit
+
+    If wsLog Is Nothing Then
+        Set wsLog = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        wsLog.Name = SHEET_LOG
+    End If
+
+    If Application.WorksheetFunction.CountA(wsLog.Range("A1:H1")) = 0 Then
+        wsLog.Range("A1:H1").Value = Array("日時", "誰", "動作マクロ", "対象CSV", "対象年度", "処理件数", "結果", "備考")
+    End If
+
+    Set lastCell = wsLog.Range("A:H").Find(What:="*", LookIn:=xlFormulas, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    If lastCell Is Nothing Then
+        nextRow = 2
+    Else
+        nextRow = lastCell.Row + 1
+        If nextRow < 2 Then nextRow = 2
+    End If
+
+    wsLog.Cells(nextRow, 1).Value = Now
+    wsLog.Cells(nextRow, 2).Value = Environ$("Username")
+    wsLog.Cells(nextRow, 3).Value = macroName
+    wsLog.Cells(nextRow, 4).Value = targetCsv
+    wsLog.Cells(nextRow, 5).Value = targetYear
+    wsLog.Cells(nextRow, 6).Value = processCount
+    wsLog.Cells(nextRow, 7).Value = resultText
+    wsLog.Cells(nextRow, 8).Value = note
+
+SafeExit:
+    On Error Resume Next
+    Application.EnableEvents = oldEnableEvents
+
+End Sub
 
 Public Sub 新ファイル基準表生成()
 
@@ -1419,6 +1474,8 @@ Public Sub CSV取込_シンプル版()
     Dim targetFiscalYearValue As Long
     Dim rowYear As String
     Dim rowYearValue As Long
+    Dim errNumber As Long
+    Dim errDescription As String
 
     On Error GoTo ErrorHandler
 
@@ -1543,6 +1600,8 @@ Public Sub CSV取込_シンプル版()
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
     
+    WriteProcessLog "CSV取込", CStr(filePath), "", appendedCount, "成功", "目録CSVシートへ取込"
+
     MsgBox "CSV取込完了" & vbCrLf & _
            "対象年度: " & targetFiscalYear & vbCrLf & _
            "削除件数: " & deletedCount & " 件" & vbCrLf & _
@@ -1551,12 +1610,15 @@ Public Sub CSV取込_シンプル版()
     Exit Sub
 
 ErrorHandler:
+    errNumber = Err.Number
+    errDescription = Err.Description
     On Error Resume Next
     If Not wbCSV Is Nothing Then wbCSV.Close False
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
     On Error GoTo 0
-    MsgBox "CSV取込中にエラーが発生しました: " & Err.Description, vbExclamation
+    WriteProcessLog "CSV取込", CStr(filePath), "", appendedCount, "失敗", "Err " & CStr(errNumber) & ": " & errDescription
+    MsgBox "CSV取込中にエラーが発生しました: " & errDescription, vbExclamation
 
 End Sub
 
@@ -2702,6 +2764,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim alertLine As Variant
     Dim serialColEdit As Long
     Dim rowSyncStatus As String
+    Dim errNumber As Long
+    Dim errDescription As String
 
     On Error GoTo ErrorHandler
 
@@ -2915,6 +2979,9 @@ ContinueNextEditRow:
     End With
     wsOut.Columns(1).Resize(, UBound(fixedHeaders) - LBound(fixedHeaders) + 1).EntireColumn.AutoFit
 
+    WriteProcessLog "差分インポート抽出", SHEET_DIFF_IMPORT, "", outRow - 2, "成功", _
+        "差分インポートCSVを出力（差分" & CStr(outRow - 2) & "件、マクロ差込除外" & CStr(excludedMacroInsertCount) & "件）"
+
     MsgBox "差分抽出が完了しました。" & vbCrLf & _
            "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & "件", vbInformation
 
@@ -2934,7 +3001,11 @@ SafeExit:
     Exit Sub
 
 ErrorHandler:
-    MsgBox "差分インポートCSV の作成中にエラーが発生しました: " & Err.Description, vbExclamation
+    errNumber = Err.Number
+    errDescription = Err.Description
+    WriteProcessLog "差分インポート抽出", SHEET_DIFF_IMPORT, "", IIf(outRow >= 2, outRow - 2, 0), "失敗", _
+        "Err " & CStr(errNumber) & ": " & errDescription
+    MsgBox "差分インポートCSV の作成中にエラーが発生しました: " & errDescription, vbExclamation
     Resume SafeExit
 
 End Sub
@@ -3286,6 +3357,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim deletionPlannedDeletedCount As Long
     Dim colorDiffDetectedCount As Long
     Dim newFileStandardColumnWidths As Object
+    Dim errNumber As Long
+    Dim errDescription As String
 
     On Error GoTo ErrorHandler
 
@@ -3582,6 +3655,9 @@ ContinueNextSourceRow:
     ' マクロ実行中に列順変更や書式再適用があっても、既存列の手動幅を最終的に戻す。
     RestoreColumnWidthsByHeader wsDst, newFileStandardColumnWidths
 
+    WriteProcessLog "CSV整形（新ファイル基準表作成）", SHEET_MOKUROKU_CSV, targetYearRaw, _
+        appendedCount + updatedCount + nameSyncCount, "成功", "新ファイル基準表を作成"
+
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
                "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
@@ -3639,7 +3715,11 @@ SafeExit:
     Exit Sub
 
 ErrorHandler:
-    MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & Err.Description, vbCritical
+    errNumber = Err.Number
+    errDescription = Err.Description
+    WriteProcessLog "CSV整形（新ファイル基準表作成）", SHEET_MOKUROKU_CSV, targetYearRaw, _
+        appendedCount + updatedCount + nameSyncCount, "失敗", "Err " & CStr(errNumber) & ": " & errDescription
+    MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & errDescription, vbCritical
     Resume SafeExit
 
 
