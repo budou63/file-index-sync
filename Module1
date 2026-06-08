@@ -6726,10 +6726,13 @@ Public Sub 新ファイル基準表_分類コード再補完( _
     Dim pairDefs As Variant
     Dim displayCols() As Long
     Dim codeCols() As Long
+    Dim syncCol As Long
     Dim i As Long
     Dim r As Long
     Dim inputName As String
     Dim codeValue As String
+    Dim currentCode As String
+    Dim isRegistrationRow As Boolean
 
     prevEnableEvents = Application.EnableEvents
     On Error GoTo ExitHandler
@@ -6754,20 +6757,42 @@ Public Sub 新ファイル基準表_分類コード再補完( _
     ReDim displayCols(LBound(pairDefs) To UBound(pairDefs))
     ReDim codeCols(LBound(pairDefs) To UBound(pairDefs))
 
+    syncCol = FindHeaderColumn(wsEdit, lastCol, Array("同期状態"))
     For i = LBound(pairDefs) To UBound(pairDefs)
         displayCols(i) = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates(CStr(pairDefs(i)(0))))
         codeCols(i) = FindHeaderColumn(wsEdit, lastCol, Array(CStr(pairDefs(i)(1))))
     Next i
 
     For r = startRow To endRow
+        isRegistrationRow = False
+        If syncCol > 0 Then
+            isRegistrationRow = (NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) = NormalizeCellValue("登録予定"))
+        End If
+
         For i = LBound(pairDefs) To UBound(pairDefs)
             If displayCols(i) > 0 And codeCols(i) > 0 Then
                 inputName = Trim$(CStr(wsEdit.Cells(r, displayCols(i)).Value))
+                currentCode = Trim$(CStr(wsEdit.Cells(r, codeCols(i)).Value))
+
                 If Len(inputName) = 0 Then
-                    wsEdit.Cells(r, codeCols(i)).Value = ""
+                    If isRegistrationRow Then
+                        wsEdit.Cells(r, codeCols(i)).Value = ""
+                    End If
                 Else
                     codeValue = GetCodeFromCodeMaster(CStr(pairDefs(i)(0)), inputName)
-                    wsEdit.Cells(r, codeCols(i)).Value = codeValue
+                    If isRegistrationRow Then
+                        ' 登録予定行は差分インポートで新規登録するため、分類名から引き直した値で上書きする。
+                        wsEdit.Cells(r, codeCols(i)).Value = codeValue
+                    ElseIf Len(currentCode) = 0 Then
+                        ' 既存行は分類コードが空欄の場合のみ補完する。既存値は原則維持する。
+                        If Len(codeValue) > 0 Then wsEdit.Cells(r, codeCols(i)).Value = codeValue
+                    ElseIf Len(codeValue) > 0 And NormalizeCellValue(currentCode) <> NormalizeCellValue(codeValue) Then
+                        ' 既存行の不一致は自動変更せず、運用確認用にログへ残す。
+                        WriteProcessLog "差分インポート抽出", SHEET_NEW_FILE_STANDARD, "", 0, "警告", _
+                            "分類コード不一致（自動変更なし） / 項目名=" & CStr(pairDefs(i)(0)) & _
+                            " / 表示名=" & inputName & " / 既存コード=" & currentCode & _
+                            " / コード管理CSVコード=" & codeValue & " / 対象行番号=" & CStr(r)
+                    End If
                 End If
             End If
         Next i
