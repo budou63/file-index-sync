@@ -2787,6 +2787,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     editLastCol = GetLastUsedCol(wsEdit)
 
     If editLastRow >= 2 Then
+        If ConfirmAndMarkStep4NewRegistrationCandidates(wsEdit, 2, editLastRow) < 0 Then GoTo SafeExit
         新ファイル基準表_年度と原課ID再補完 wsEdit, 2, editLastRow, True
         新ファイル基準表_分類コード再補完 wsEdit, 2, editLastRow
         新ファイル基準表_登録予定分類コード採番 wsEdit, 2, editLastRow
@@ -3012,6 +3013,120 @@ ErrorHandler:
     Resume SafeExit
 
 End Sub
+
+Private Function ConfirmAndMarkStep4NewRegistrationCandidates( _
+    ByVal wsEdit As Worksheet, _
+    ByVal startRow As Long, _
+    ByVal endRow As Long) As Long
+
+    Dim lastCol As Long
+    Dim lastRow As Long
+    Dim fileIdCol As Long
+    Dim fileNoCol As Long
+    Dim barcodeCol As Long
+    Dim titleCol As Long
+    Dim guideCol As Long
+    Dim syncCol As Long
+    Dim serialCol As Long
+    Dim r As Long
+    Dim targetRows As Collection
+    Dim rowNo As Variant
+    Dim messageText As String
+    Dim lineText As String
+    Dim syncText As String
+    Dim serialText As String
+    Dim changedCount As Long
+
+    ConfirmAndMarkStep4NewRegistrationCandidates = 0
+    If wsEdit Is Nothing Then Exit Function
+
+    lastCol = GetLastUsedCol(wsEdit)
+    lastRow = GetLastUsedRow(wsEdit)
+    If lastCol <= 0 Or lastRow < 2 Then Exit Function
+
+    If startRow < 2 Then startRow = 2
+    If endRow <= 0 Or endRow > lastRow Then endRow = lastRow
+    If endRow < startRow Then Exit Function
+
+    fileIdCol = FindHeaderColumn(wsEdit, lastCol, Array("ファイルID"))
+    fileNoCol = FindHeaderColumn(wsEdit, lastCol, Array("ファイル番号"))
+    barcodeCol = FindHeaderColumn(wsEdit, lastCol, Array("バーコード番号"))
+    titleCol = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("タイトル"))
+    guideCol = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("分類名２"))
+    syncCol = FindHeaderColumn(wsEdit, lastCol, Array("同期状態"))
+    serialCol = FindHeaderColumn(wsEdit, lastCol, Array("通し番号"))
+
+    If fileIdCol <= 0 Or fileNoCol <= 0 Or barcodeCol <= 0 Or titleCol <= 0 Or guideCol <= 0 Or syncCol <= 0 Then Exit Function
+
+    Set targetRows = New Collection
+    For r = startRow To endRow
+        If IsStep4UnmarkedNewRegistrationCandidate(wsEdit, r, fileIdCol, fileNoCol, barcodeCol, titleCol, guideCol, syncCol) Then
+            targetRows.Add r
+        End If
+    Next r
+
+    If targetRows.Count = 0 Then Exit Function
+
+    messageText = "以下の行は新規登録候補ですが、同期状態が「登録予定」ではありません。" & vbCrLf & _
+                  "OKを押すと、該当行の同期状態を「登録予定」に変更して処理を続行します。" & vbCrLf & _
+                  "キャンセルを押すと、差分インポートCSVの作成を中断します。" & vbCrLf & vbCrLf & _
+                  "該当件数：" & CStr(targetRows.Count) & "件"
+
+    For Each rowNo In targetRows
+        syncText = Trim$(CStr(wsEdit.Cells(CLng(rowNo), syncCol).Value))
+        serialText = ""
+        If serialCol > 0 Then serialText = CStr(wsEdit.Cells(CLng(rowNo), serialCol).Value)
+        lineText = "・通し番号=" & serialText & _
+                   " / 第1ガイド=" & CStr(wsEdit.Cells(CLng(rowNo), guideCol).Value) & _
+                   " / タイトル=" & CStr(wsEdit.Cells(CLng(rowNo), titleCol).Value) & _
+                   " / 現在の同期状態=" & syncText
+        messageText = messageText & vbCrLf & lineText
+    Next rowNo
+
+    If MsgBox(messageText, vbOKCancel + vbExclamation, "新規登録候補の同期状態確認") <> vbOK Then
+        ConfirmAndMarkStep4NewRegistrationCandidates = -1
+        Exit Function
+    End If
+
+    For Each rowNo In targetRows
+        wsEdit.Cells(CLng(rowNo), syncCol).Value = "登録予定"
+        changedCount = changedCount + 1
+    Next rowNo
+
+    ConfirmAndMarkStep4NewRegistrationCandidates = changedCount
+    WriteProcessLog "差分インポート抽出", SHEET_NEW_FILE_STANDARD, "", changedCount, "成功", _
+        "新規登録候補の同期状態を登録予定へ自動変更"
+
+End Function
+
+Private Function IsStep4UnmarkedNewRegistrationCandidate( _
+    ByVal wsEdit As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal fileIdCol As Long, _
+    ByVal fileNoCol As Long, _
+    ByVal barcodeCol As Long, _
+    ByVal titleCol As Long, _
+    ByVal guideCol As Long, _
+    ByVal syncCol As Long) As Boolean
+
+    Dim syncText As String
+
+    If wsEdit Is Nothing Then Exit Function
+    If rowNo < 2 Then Exit Function
+
+    If NormalizeCellValue(wsEdit.Cells(rowNo, fileIdCol).Value) <> "" Then Exit Function
+    If NormalizeCellValue(wsEdit.Cells(rowNo, fileNoCol).Value) <> "" Then Exit Function
+    If NormalizeCellValue(wsEdit.Cells(rowNo, barcodeCol).Value) <> "" Then Exit Function
+    If NormalizeCellValue(wsEdit.Cells(rowNo, titleCol).Value) = "" Then Exit Function
+    If NormalizeCellValue(wsEdit.Cells(rowNo, guideCol).Value) = "" Then Exit Function
+
+    syncText = NormalizeCellValue(wsEdit.Cells(rowNo, syncCol).Value)
+    If syncText = NormalizeCellValue("管理対象外") Then Exit Function
+    If syncText = NormalizeCellValue("登録予定") Then Exit Function
+
+    IsStep4UnmarkedNewRegistrationCandidate = True
+
+End Function
 
 Private Function IsStep4NewRegistrationCandidate( _
     ByVal wsEdit As Worksheet, _
