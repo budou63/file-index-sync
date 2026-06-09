@@ -6943,6 +6943,14 @@ Public Sub 新ファイル基準表_登録予定分類コード採番( _
     Dim usedCode2 As Object
     Dim code3ByName As Object
     Dim usedCode3 As Object
+    Dim pendingGuide2Rows As Object
+    Dim pendingGuide2Names As Object
+    Dim pendingGuide2Order As Collection
+    Dim guideRows As Collection
+    Dim guideRow As Variant
+    Dim guideKeyValue As Variant
+    Dim firstGuideRow As Long
+    Dim targetRowsText As String
     Dim errNumber As Long
     Dim errDescription As String
 
@@ -6972,42 +6980,79 @@ Public Sub 新ファイル基準表_登録予定分類コード採番( _
     Set code2ByName = BuildCodeMasterNameCodeMap("分類名２", usedCode2)
     Set code3ByName = BuildCodeMasterNameCodeMap("分類名３", usedCode3)
 
+    Set pendingGuide2Rows = CreateObject("Scripting.Dictionary")
+    Set pendingGuide2Names = CreateObject("Scripting.Dictionary")
+    Set pendingGuide2Order = New Collection
+
+    ' 分類コード２は第1ガイド名単位で処理する。同名の登録予定行には同じコードを反映する。
     For r = startRow To endRow
-        If NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) <> NormalizeCellValue("登録予定") Then GoTo ContinueNextRow
+        If NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) <> NormalizeCellValue("登録予定") Then GoTo ContinueCollectGuide2
 
         guideName = Trim$(CStr(wsEdit.Cells(r, guide2Col).Value))
         If Len(guideName) > 0 Then
-            guideKey = NormalizeHeaderToken(guideName)
+            guideKey = NormalizeClassificationGuideKey(guideName)
             If code2ByName.Exists(guideKey) Then
                 wsEdit.Cells(r, code2Col).Value = CStr(code2ByName(guideKey))
             Else
-                upperCode = FindNearestClassificationCode(wsEdit, guide2Col, r - 1, startRow, -1, code2ByName)
-                lowerCode = FindNearestClassificationCode(wsEdit, guide2Col, r + 1, endRow, 1, code2ByName)
-                assignedCode = AllocateClassificationCode2(upperCode, lowerCode, usedCode2)
-
-                If assignedCode <= 0 Then
-                    failureText = failureText & vbCrLf & _
-                        "行" & CStr(r) & " 第1ガイド=""" & guideName & """（上側コード=" & CodeTextForLog(upperCode) & _
-                        " / 下側コード=" & CodeTextForLog(lowerCode) & "）"
-                Else
-                    codeValue = CStr(assignedCode)
-                    AppendCodeMasterRecord "分類名２", codeValue, guideName
-                    code2ByName.Add guideKey, codeValue
-                    usedCode2(codeValue) = True
-                    wsEdit.Cells(r, code2Col).Value = codeValue
-                    WriteProcessLog "差分インポート抽出", SHEET_CODE_MANAGEMENT, "", 1, "成功", _
-                        "分類コード自動採番 / 項目名=分類名２ / 採番コード=" & codeValue & _
-                        " / 表示名=" & guideName & " / 対象行番号=" & CStr(r)
+                If Not pendingGuide2Rows.Exists(guideKey) Then
+                    Set guideRows = New Collection
+                    pendingGuide2Rows.Add guideKey, guideRows
+                    pendingGuide2Names.Add guideKey, guideName
+                    pendingGuide2Order.Add guideKey
                 End If
+                pendingGuide2Rows(guideKey).Add r
             End If
         End If
+
+ContinueCollectGuide2:
+    Next r
+
+    For Each guideKeyValue In pendingGuide2Order
+        guideKey = CStr(guideKeyValue)
+        Set guideRows = pendingGuide2Rows(guideKey)
+        guideName = CStr(pendingGuide2Names(guideKey))
+        firstGuideRow = CLng(guideRows(1))
+        targetRowsText = CollectionToCsv(guideRows)
+
+        If code2ByName.Exists(guideKey) Then
+            codeValue = CStr(code2ByName(guideKey))
+            For Each guideRow In guideRows
+                wsEdit.Cells(CLng(guideRow), code2Col).Value = codeValue
+            Next guideRow
+        Else
+            upperCode = FindNearestClassificationCode(wsEdit, guide2Col, firstGuideRow - 1, startRow, -1, code2ByName)
+            lowerCode = FindNearestClassificationCode(wsEdit, guide2Col, firstGuideRow + 1, endRow, 1, code2ByName)
+            assignedCode = AllocateClassificationCode2(upperCode, lowerCode, usedCode2)
+
+            If assignedCode <= 0 Then
+                failureText = failureText & vbCrLf & _
+                    "第1ガイド=""" & guideName & """ 対象行=" & targetRowsText & _
+                    " 上側コード=" & CodeTextForLog(upperCode) & _
+                    " 下側コード=" & CodeTextForLog(lowerCode)
+            Else
+                codeValue = CStr(assignedCode)
+                AppendCodeMasterRecord "分類名２", codeValue, guideName
+                code2ByName.Add guideKey, codeValue
+                usedCode2(codeValue) = True
+                For Each guideRow In guideRows
+                    wsEdit.Cells(CLng(guideRow), code2Col).Value = codeValue
+                Next guideRow
+                WriteProcessLog "差分インポート抽出", SHEET_CODE_MANAGEMENT, "", guideRows.Count, "成功", _
+                    "分類コード自動採番 / 項目名=分類名２ / 採番コード=" & codeValue & _
+                    " / 表示名=" & guideName & " / 対象行番号=" & targetRowsText
+            End If
+        End If
+    Next guideKeyValue
+
+    For r = startRow To endRow
+        If NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) <> NormalizeCellValue("登録予定") Then GoTo ContinueNextRow
 
         If guide3Col > 0 And code3Col > 0 Then
             guideName = Trim$(CStr(wsEdit.Cells(r, guide3Col).Value))
             If Len(guideName) = 0 Then
                 wsEdit.Cells(r, code3Col).Value = ""
             Else
-                guideKey = NormalizeHeaderToken(guideName)
+                guideKey = NormalizeClassificationGuideKey(guideName)
                 If code3ByName.Exists(guideKey) Then
                     wsEdit.Cells(r, code3Col).Value = CStr(code3ByName(guideKey))
                 Else
@@ -7071,7 +7116,7 @@ Private Function BuildCodeMasterNameCodeMap(ByVal itemName As String, ByRef used
         If StrComp(itemValue, NormalizeHeaderToken(itemName), vbTextCompare) = 0 Then
             codeValue = Trim$(CStr(masterValues(r, 2)))
             displayName = Trim$(CStr(masterValues(r, 3)))
-            displayKey = NormalizeHeaderToken(displayName)
+            displayKey = NormalizeClassificationGuideKey(displayName)
             If Len(displayKey) > 0 And Not nameCodeMap.Exists(displayKey) Then
                 nameCodeMap.Add displayKey, codeValue
             End If
@@ -7104,7 +7149,7 @@ Private Function FindNearestClassificationCode( _
     Do While (stepValue < 0 And r >= limitRow) Or (stepValue > 0 And r <= limitRow)
         guideName = Trim$(CStr(ws.Cells(r, guideCol).Value))
         If Len(guideName) > 0 Then
-            guideKey = NormalizeHeaderToken(guideName)
+            guideKey = NormalizeClassificationGuideKey(guideName)
             If nameCodeMap.Exists(guideKey) Then
                 codeValue = CStr(nameCodeMap(guideKey))
                 If IsNumeric(codeValue) Then
@@ -7189,6 +7234,35 @@ Private Function CodeTextForLog(ByVal codeValue As Long) As String
     Else
         CodeTextForLog = "なし"
     End If
+
+End Function
+
+Private Function NormalizeClassificationGuideKey(ByVal value As Variant) As String
+
+    Dim normalized As String
+
+    normalized = NormalizeForFolderNameSyncKey(value)
+    normalized = Replace(normalized, "・", "/")
+    normalized = Replace(normalized, "･", "/")
+    normalized = Replace(normalized, "／", "/")
+    normalized = Replace(normalized, " ", "")
+    NormalizeClassificationGuideKey = normalized
+
+End Function
+
+Private Function CollectionToCsv(ByVal values As Collection) As String
+
+    Dim item As Variant
+    Dim result As String
+
+    If values Is Nothing Then Exit Function
+
+    For Each item In values
+        If Len(result) > 0 Then result = result & ","
+        result = result & CStr(item)
+    Next item
+
+    CollectionToCsv = result
 
 End Function
 
@@ -7992,9 +8066,9 @@ Private Function GetCodeFromCodeMasterInRows( _
     masterValues = wsMaster.Range(wsMaster.Cells(rowStart, 1), wsMaster.Cells(rowEnd, 3)).Value2
     For r = 1 To UBound(masterValues, 1)
         kubunValue = NormalizeHeaderToken(CStr(masterValues(r, 1)))
-        nameValue = NormalizeHeaderToken(CStr(masterValues(r, 3)))
+        nameValue = NormalizeClassificationGuideKey(CStr(masterValues(r, 3)))
         If StrComp(kubunValue, NormalizeHeaderToken(kubunName), vbTextCompare) = 0 _
-           And StrComp(nameValue, NormalizeHeaderToken(displayName), vbTextCompare) = 0 Then
+           And StrComp(nameValue, NormalizeClassificationGuideKey(displayName), vbTextCompare) = 0 Then
             GetCodeFromCodeMasterInRows = Trim$(CStr(masterValues(r, 2)))
             Exit Function
         End If
