@@ -3087,8 +3087,6 @@ Private Function ConfirmAndMarkStep4NewRegistrationCandidates( _
     Next rowNo
 
     ConfirmAndMarkStep4NewRegistrationCandidates = changedCount
-    WriteProcessLog "差分インポート抽出", SHEET_NEW_FILE_STANDARD, "", changedCount, "成功", _
-        "差分出力対象の新規登録候補の同期状態を登録予定へ自動変更"
 
 End Function
 
@@ -6927,9 +6925,8 @@ Public Sub 新ファイル基準表_分類コード再補完( _
                         ' 既存行は分類コードが空欄の場合のみ補完する。既存値は原則維持する。
                         If Len(codeValue) > 0 Then wsEdit.Cells(r, codeCols(i)).Value = codeValue
                     ElseIf Len(codeValue) > 0 And NormalizeCellValue(currentCode) <> NormalizeCellValue(codeValue) Then
-                        ' 既存行の不一致は自動変更せず、運用確認用にログへ残す。
-                        WriteProcessLog "差分インポート抽出", SHEET_NEW_FILE_STANDARD, "", 0, "警告", _
-                            "分類コード不一致（自動変更なし） / 項目名=" & CStr(pairDefs(i)(0)) & _
+                        ' 既存行の不一致は自動変更せず、デバッグ出力に留める（ログシートはメインマクロのみ記録）。
+                        Debug.Print "分類コード不一致（自動変更なし） / 項目名=" & CStr(pairDefs(i)(0)) & _
                             " / 表示名=" & inputName & " / 既存コード=" & currentCode & _
                             " / コード管理CSVコード=" & codeValue & " / 対象行番号=" & CStr(r)
                     End If
@@ -7068,8 +7065,7 @@ ContinueCollectGuide2:
                 For Each guideRow In guideRows
                     wsEdit.Cells(CLng(guideRow), code2Col).Value = codeValue
                 Next guideRow
-                WriteProcessLog "差分インポート抽出", SHEET_CODE_MANAGEMENT, "", guideRows.Count, "成功", _
-                    "分類コード自動採番 / 項目名=分類名２ / 採番コード=" & codeValue & _
+                Debug.Print "分類コード自動採番 / 項目名=分類名２ / 採番コード=" & codeValue & _
                     " / 表示名=" & guideName & " / 対象行番号=" & targetRowsText
             End If
         End If
@@ -7094,8 +7090,7 @@ ContinueCollectGuide2:
                     code3ByName.Add guideKey, codeValue
                     usedCode3(codeValue) = True
                     wsEdit.Cells(r, code3Col).Value = codeValue
-                    WriteProcessLog "差分インポート抽出", SHEET_CODE_MANAGEMENT, "", 1, "成功", _
-                        "分類コード自動採番 / 項目名=分類名３ / 採番コード=" & codeValue & _
+                    Debug.Print "分類コード自動採番 / 項目名=分類名３ / 採番コード=" & codeValue & _
                         " / 表示名=" & guideName & " / 対象行番号=" & CStr(r)
                 End If
             End If
