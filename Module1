@@ -2764,11 +2764,16 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim targetRow As Variant
     Dim syncStatusChangedCount As Long
     Dim serialColEdit As Long
+    Dim class1ColSrc As Long
     Dim class1ColEdit As Long
-    Dim code1ColEdit As Long
-    Dim guideSeatCheckRows As Object
+    Dim existingGuide1Dict As Object
+    Dim existingGuide2Dict As Object
+    Dim guideSeatCheckReasons As Object
+    Dim guideSeatCheckReason As String
     Dim guideSeatCheckCount As Long
     Dim outputLastCol As Long
+    Dim guide1Val As String
+    Dim guide2Val As String
     Dim rowSyncStatus As String
     Dim errNumber As Long
     Dim errDescription As String
@@ -2783,7 +2788,9 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Set editHeaderMap = CreateObject("Scripting.Dictionary")
     Set outputSourceMap = CreateObject("Scripting.Dictionary")
     Set targetRows = New Collection
-    Set guideSeatCheckRows = CreateObject("Scripting.Dictionary")
+    Set existingGuide1Dict = CreateObject("Scripting.Dictionary")
+    Set existingGuide2Dict = CreateObject("Scripting.Dictionary")
+    Set guideSeatCheckReasons = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -2812,8 +2819,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     fileNoColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイル番号"))
     barcodeColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("バーコード番号"))
     serialColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("通し番号"))
+    class1ColSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名１"))
     class1ColEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名１"))
-    code1ColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("分類コード１"))
 
     If (keyYearSrc = 0 And keyYearSrcWestern = 0) Or keyTitleSrc = 0 Or keyCategory2Src = 0 Or keyMediaSrc = 0 Or keyPeriodSrc = 0 Then
         Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列（年度（和暦）または年度/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
@@ -2872,6 +2879,16 @@ Public Sub 手順4_差分インポートCSVを作成する()
         category2Val = GetTrimmedCell(wsSrc, r, keyCategory2Src)
         mediaVal = GetTrimmedCell(wsSrc, r, keyMediaSrc)
         periodVal = GetTrimmedCell(wsSrc, r, keyPeriodSrc)
+        guide1Val = GetTrimmedCell(wsSrc, r, class1ColSrc)
+        guide2Val = category2Val
+
+        If Len(NormalizeForDiffCompare(guide1Val)) > 0 Then
+            existingGuide1Dict(NormalizeForDiffCompare(guide1Val)) = True
+        End If
+        If Len(NormalizeForDiffCompare(guide1Val)) > 0 And Len(NormalizeForDiffCompare(guide2Val)) > 0 Then
+            existingGuide2Dict(BuildNormalizedGuidePairKey(guide1Val, guide2Val)) = True
+        End If
+
         ' キー一意性を高めるため媒体種別・保存期間も含める
         key = BuildHeaderBasedKey(yearVal, titleVal, category2Val, mediaVal, periodVal)
 
@@ -2960,8 +2977,15 @@ ContinueNextEditRow:
 
     If targetRows.Count > 0 Then
         For Each targetRow In targetRows
-            If IsStep4GuideSeatCheckCandidate(wsEdit, CLng(targetRow), class1ColEdit, code1ColEdit) Then
-                guideSeatCheckRows(CStr(CLng(targetRow))) = True
+            guideSeatCheckReason = GetStep4GuideSeatCheckReason( _
+                wsEdit, _
+                CLng(targetRow), _
+                class1ColEdit, _
+                keyCategory2Edit, _
+                existingGuide1Dict, _
+                existingGuide2Dict)
+            If Len(guideSeatCheckReason) > 0 Then
+                guideSeatCheckReasons(CStr(CLng(targetRow))) = guideSeatCheckReason
             End If
         Next targetRow
 
@@ -2987,9 +3011,10 @@ ContinueNextEditRow:
         For Each targetRow In targetRows
             新ファイル基準表_分類コード再補完 wsEdit, CLng(targetRow), CLng(targetRow)
             WriteRowByFixedLayout wsEdit, wsOut, CLng(targetRow), outRow, fixedHeaders, editHeaderMap, outputSourceMap
-            If guideSeatCheckRows.Exists(CStr(CLng(targetRow))) And Len(Trim$(CStr(wsEdit.Cells(CLng(targetRow), code1ColEdit).Value))) > 0 Then
+            If guideSeatCheckReasons.Exists(CStr(CLng(targetRow))) Then
                 outputLastCol = UBound(fixedHeaders) - LBound(fixedHeaders) + 1
                 wsOut.Range(wsOut.Cells(outRow, 1), wsOut.Cells(outRow, outputLastCol)).Interior.Color = RGB(255, 255, 0)
+                SetCellCommentText wsOut.Cells(outRow, 1), "座作成要確認：" & CStr(guideSeatCheckReasons(CStr(CLng(targetRow))))
                 guideSeatCheckCount = guideSeatCheckCount + 1
             End If
             outRow = outRow + 1
@@ -3005,11 +3030,11 @@ ContinueNextEditRow:
 
     WriteProcessLog "差分インポート抽出", SHEET_DIFF_IMPORT, "", outRow - 2, "成功", _
         "差分インポートCSVを出力（差分" & CStr(outRow - 2) & "件、マクロ差込除外" & CStr(excludedMacroInsertCount) & _
-        "件、第1ガイド座作成要確認" & CStr(guideSeatCheckCount) & "件）"
+        "件、座作成要確認" & CStr(guideSeatCheckCount) & "件）"
 
     MsgBox "差分抽出が完了しました。" & vbCrLf & _
            "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & _
-           "件、第1ガイド座作成要確認" & guideSeatCheckCount & "件", vbInformation
+           "件、座作成要確認" & guideSeatCheckCount & "件", vbInformation
 
 SafeExit:
     Application.ScreenUpdating = True
@@ -3111,28 +3136,60 @@ Private Function ConfirmAndMarkStep4NewRegistrationCandidates( _
 
 End Function
 
-Private Function IsStep4GuideSeatCheckCandidate( _
-    ByVal wsEdit As Worksheet, _
-    ByVal rowNo As Long, _
-    ByVal class1Col As Long, _
-    ByVal code1Col As Long) As Boolean
+Private Function BuildNormalizedGuidePairKey(ByVal guide1Name As String, ByVal guide2Name As String) As String
 
-    Dim className As String
-    Dim currentCode As String
-
-    If wsEdit Is Nothing Then Exit Function
-    If rowNo < 2 Or class1Col <= 0 Or code1Col <= 0 Then Exit Function
-
-    currentCode = Trim$(CStr(wsEdit.Cells(rowNo, code1Col).Value))
-    If Len(currentCode) > 0 Then Exit Function
-
-    className = Trim$(CStr(wsEdit.Cells(rowNo, class1Col).Value))
-    If Len(className) = 0 Then Exit Function
-
-    ' 既存のコード管理CSVから分類コード１を取得できる行は、事前の座作成確認対象にしない。
-    IsStep4GuideSeatCheckCandidate = (Len(GetCodeFromCodeMaster("分類名１", className)) = 0)
+    BuildNormalizedGuidePairKey = NormalizeForDiffCompare(guide1Name) & "|" & NormalizeForDiffCompare(guide2Name)
 
 End Function
+
+Private Function GetStep4GuideSeatCheckReason( _
+    ByVal wsEdit As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal guide1Col As Long, _
+    ByVal guide2Col As Long, _
+    ByVal existingGuide1Dict As Object, _
+    ByVal existingGuide2Dict As Object) As String
+
+    Dim guide1Name As String
+    Dim guide2Name As String
+    Dim isNewGuide1 As Boolean
+    Dim isNewGuide2 As Boolean
+
+    If wsEdit Is Nothing Then Exit Function
+    If rowNo < 2 Then Exit Function
+
+    If guide1Col > 0 Then guide1Name = Trim$(CStr(wsEdit.Cells(rowNo, guide1Col).Value))
+    If guide2Col > 0 Then guide2Name = Trim$(CStr(wsEdit.Cells(rowNo, guide2Col).Value))
+
+    If Len(NormalizeForDiffCompare(guide1Name)) > 0 Then
+        isNewGuide1 = Not existingGuide1Dict.Exists(NormalizeForDiffCompare(guide1Name))
+    End If
+
+    If Len(NormalizeForDiffCompare(guide1Name)) > 0 And Len(NormalizeForDiffCompare(guide2Name)) > 0 Then
+        isNewGuide2 = Not existingGuide2Dict.Exists(BuildNormalizedGuidePairKey(guide1Name, guide2Name))
+    End If
+
+    If isNewGuide1 And isNewGuide2 Then
+        GetStep4GuideSeatCheckReason = "第1ガイド・第2ガイド完全新規"
+    ElseIf isNewGuide1 Then
+        GetStep4GuideSeatCheckReason = "第1ガイド完全新規"
+    ElseIf isNewGuide2 Then
+        GetStep4GuideSeatCheckReason = "第2ガイド完全新規"
+    End If
+
+End Function
+
+Private Sub SetCellCommentText(ByVal targetCell As Range, ByVal commentText As String)
+
+    If targetCell Is Nothing Then Exit Sub
+    If Len(commentText) = 0 Then Exit Sub
+
+    On Error Resume Next
+    targetCell.ClearComments
+    targetCell.AddComment commentText
+    On Error GoTo 0
+
+End Sub
 
 Private Function GetCellTextIfColumnExists(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As String
 
