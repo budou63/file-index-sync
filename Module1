@@ -2764,6 +2764,11 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim targetRow As Variant
     Dim syncStatusChangedCount As Long
     Dim serialColEdit As Long
+    Dim class1ColEdit As Long
+    Dim code1ColEdit As Long
+    Dim guideSeatCheckRows As Object
+    Dim guideSeatCheckCount As Long
+    Dim outputLastCol As Long
     Dim rowSyncStatus As String
     Dim errNumber As Long
     Dim errDescription As String
@@ -2778,6 +2783,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Set editHeaderMap = CreateObject("Scripting.Dictionary")
     Set outputSourceMap = CreateObject("Scripting.Dictionary")
     Set targetRows = New Collection
+    Set guideSeatCheckRows = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -2806,6 +2812,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     fileNoColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイル番号"))
     barcodeColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("バーコード番号"))
     serialColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("通し番号"))
+    class1ColEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名１"))
+    code1ColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("分類コード１"))
 
     If (keyYearSrc = 0 And keyYearSrcWestern = 0) Or keyTitleSrc = 0 Or keyCategory2Src = 0 Or keyMediaSrc = 0 Or keyPeriodSrc = 0 Then
         Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列（年度（和暦）または年度/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
@@ -2951,6 +2959,12 @@ ContinueNextEditRow:
     Next r
 
     If targetRows.Count > 0 Then
+        For Each targetRow In targetRows
+            If IsStep4GuideSeatCheckCandidate(wsEdit, CLng(targetRow), class1ColEdit, code1ColEdit) Then
+                guideSeatCheckRows(CStr(CLng(targetRow))) = True
+            End If
+        Next targetRow
+
         syncStatusChangedCount = ConfirmAndMarkStep4NewRegistrationCandidates(wsEdit, targetRows)
         If syncStatusChangedCount < 0 Then GoTo SafeExit
 
@@ -2973,6 +2987,11 @@ ContinueNextEditRow:
         For Each targetRow In targetRows
             新ファイル基準表_分類コード再補完 wsEdit, CLng(targetRow), CLng(targetRow)
             WriteRowByFixedLayout wsEdit, wsOut, CLng(targetRow), outRow, fixedHeaders, editHeaderMap, outputSourceMap
+            If guideSeatCheckRows.Exists(CStr(CLng(targetRow))) And Len(Trim$(CStr(wsEdit.Cells(CLng(targetRow), code1ColEdit).Value))) > 0 Then
+                outputLastCol = UBound(fixedHeaders) - LBound(fixedHeaders) + 1
+                wsOut.Range(wsOut.Cells(outRow, 1), wsOut.Cells(outRow, outputLastCol)).Interior.Color = RGB(255, 255, 0)
+                guideSeatCheckCount = guideSeatCheckCount + 1
+            End If
             outRow = outRow + 1
         Next targetRow
     End If
@@ -2985,10 +3004,12 @@ ContinueNextEditRow:
     wsOut.Columns(1).Resize(, UBound(fixedHeaders) - LBound(fixedHeaders) + 1).EntireColumn.AutoFit
 
     WriteProcessLog "差分インポート抽出", SHEET_DIFF_IMPORT, "", outRow - 2, "成功", _
-        "差分インポートCSVを出力（差分" & CStr(outRow - 2) & "件、マクロ差込除外" & CStr(excludedMacroInsertCount) & "件）"
+        "差分インポートCSVを出力（差分" & CStr(outRow - 2) & "件、マクロ差込除外" & CStr(excludedMacroInsertCount) & _
+        "件、第1ガイド座作成要確認" & CStr(guideSeatCheckCount) & "件）"
 
     MsgBox "差分抽出が完了しました。" & vbCrLf & _
-           "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & "件", vbInformation
+           "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & _
+           "件、第1ガイド座作成要確認" & guideSeatCheckCount & "件", vbInformation
 
 SafeExit:
     Application.ScreenUpdating = True
@@ -3087,6 +3108,29 @@ Private Function ConfirmAndMarkStep4NewRegistrationCandidates( _
     Next rowNo
 
     ConfirmAndMarkStep4NewRegistrationCandidates = changedCount
+
+End Function
+
+Private Function IsStep4GuideSeatCheckCandidate( _
+    ByVal wsEdit As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal class1Col As Long, _
+    ByVal code1Col As Long) As Boolean
+
+    Dim className As String
+    Dim currentCode As String
+
+    If wsEdit Is Nothing Then Exit Function
+    If rowNo < 2 Or class1Col <= 0 Or code1Col <= 0 Then Exit Function
+
+    currentCode = Trim$(CStr(wsEdit.Cells(rowNo, code1Col).Value))
+    If Len(currentCode) > 0 Then Exit Function
+
+    className = Trim$(CStr(wsEdit.Cells(rowNo, class1Col).Value))
+    If Len(className) = 0 Then Exit Function
+
+    ' 既存のコード管理CSVから分類コード１を取得できる行は、事前の座作成確認対象にしない。
+    IsStep4GuideSeatCheckCandidate = (Len(GetCodeFromCodeMaster("分類名１", className)) = 0)
 
 End Function
 
