@@ -2756,6 +2756,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim bikoColEdit As Long
     Dim bikoVal As String
     Dim excludedMacroInsertCount As Long
+    Dim macroInsertStatusChangedCount As Long
     Dim syncStatusColEdit As Long
     Dim fileIdColEdit As Long
     Dim fileNoColEdit As Long
@@ -2900,20 +2901,27 @@ Public Sub 手順4_差分インポートCSVを作成する()
 
     ' ② 新ファイル基準表を1行ずつ処理し、まず差分インポートCSVの出力候補行だけを集める
     For r = 2 To editLastRow
-        ' 同期状態=管理対象外、または備考に「マクロ差込」を含む行は差分判定対象外
-        If syncStatusColEdit > 0 Then
-            If NormalizeSyncStatusValue(wsEdit.Cells(r, syncStatusColEdit).Value) = "管理対象外" Then
+        ' 備考に「マクロ差込」を含む行は差分判定対象外とし、同期状態を文書管理対象外へ統一する。
+        If bikoColEdit > 0 Then
+            bikoVal = NormalizeCellValue(wsEdit.Cells(r, bikoColEdit).Value)
+            If ContainsMacroInsertRemark(bikoVal) Then
                 excludedMacroInsertCount = excludedMacroInsertCount + 1
-                Debug.Print "行" & r & " は同期状態=管理対象外 のため差分抽出対象外"
+                If syncStatusColEdit > 0 Then
+                    If NormalizeCellValue(wsEdit.Cells(r, syncStatusColEdit).Value) <> NormalizeCellValue("文書管理対象外") Then
+                        wsEdit.Cells(r, syncStatusColEdit).Value = "文書管理対象外"
+                        macroInsertStatusChangedCount = macroInsertStatusChangedCount + 1
+                    End If
+                End If
+                Debug.Print "行" & r & " は備考にマクロ差込を含むため差分抽出対象外"
                 GoTo ContinueNextEditRow
             End If
         End If
 
-        If bikoColEdit > 0 Then
-            bikoVal = NormalizeCellValue(wsEdit.Cells(r, bikoColEdit).Value)
-            If InStr(1, bikoVal, NormalizeCellValue("マクロ差込"), vbTextCompare) > 0 Then
-                excludedMacroInsertCount = excludedMacroInsertCount + 1
-                Debug.Print "行" & r & " は備考にマクロ差込を含むため差分抽出対象外"
+        ' 同期状態=管理対象外/文書管理対象外 の行は差分判定対象外
+        If syncStatusColEdit > 0 Then
+            rowSyncStatus = NormalizeSyncStatusValue(wsEdit.Cells(r, syncStatusColEdit).Value)
+            If rowSyncStatus = "管理対象外" Or rowSyncStatus = "文書管理対象外" Then
+                Debug.Print "行" & r & " は同期状態=" & rowSyncStatus & " のため差分抽出対象外"
                 GoTo ContinueNextEditRow
             End If
         End If
@@ -3030,10 +3038,12 @@ ContinueNextEditRow:
 
     WriteProcessLog "差分インポート抽出", SHEET_DIFF_IMPORT, "", outRow - 2, "成功", _
         "差分インポートCSVを出力（差分" & CStr(outRow - 2) & "件、マクロ差込除外" & CStr(excludedMacroInsertCount) & _
+        "件、マクロ差込を文書管理対象外へ変更" & CStr(macroInsertStatusChangedCount) & _
         "件、座作成要確認" & CStr(guideSeatCheckCount) & "件）"
 
     MsgBox "差分抽出が完了しました。" & vbCrLf & _
            "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & _
+           "件、マクロ差込を文書管理対象外へ変更" & macroInsertStatusChangedCount & _
            "件、座作成要確認" & guideSeatCheckCount & "件", vbInformation
 
 SafeExit:
@@ -3051,6 +3061,12 @@ ErrorHandler:
 
 End Sub
 
+Private Function ContainsMacroInsertRemark(ByVal remarkValue As Variant) As Boolean
+
+    ContainsMacroInsertRemark = (InStr(1, NormalizeCellValue(remarkValue), NormalizeCellValue("マクロ差込"), vbTextCompare) > 0)
+
+End Function
+
 Private Function ConfirmAndMarkStep4NewRegistrationCandidates( _
     ByVal wsEdit As Worksheet, _
     ByVal targetRows As Collection) As Long
@@ -3065,6 +3081,7 @@ Private Function ConfirmAndMarkStep4NewRegistrationCandidates( _
     Dim guide3Col As Long
     Dim syncCol As Long
     Dim serialCol As Long
+    Dim bikoCol As Long
     Dim targetRow As Variant
     Dim targetRowsToMark As Collection
     Dim rowNo As Variant
@@ -3091,16 +3108,21 @@ Private Function ConfirmAndMarkStep4NewRegistrationCandidates( _
     guide3Col = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("分類名３"))
     syncCol = FindHeaderColumn(wsEdit, lastCol, Array("同期状態"))
     serialCol = FindHeaderColumn(wsEdit, lastCol, Array("通し番号"))
+    bikoCol = FindHeaderColumn(wsEdit, lastCol, Array("備考"))
 
     If fileIdCol <= 0 Or fileNoCol <= 0 Or barcodeCol <= 0 Or titleCol <= 0 Or guideCol <= 0 Or syncCol <= 0 Then Exit Function
 
     Set targetRowsToMark = New Collection
     For Each targetRow In targetRows
         If CLng(targetRow) >= 2 And CLng(targetRow) <= lastRow Then
+            If bikoCol > 0 Then
+                If ContainsMacroInsertRemark(wsEdit.Cells(CLng(targetRow), bikoCol).Value) Then GoTo ContinueConfirmTargetRow
+            End If
             If IsStep4UnmarkedNewRegistrationCandidate(wsEdit, CLng(targetRow), fileIdCol, fileNoCol, barcodeCol, titleCol, guideCol, syncCol) Then
                 targetRowsToMark.Add CLng(targetRow)
             End If
         End If
+ContinueConfirmTargetRow:
     Next targetRow
 
     If targetRowsToMark.Count = 0 Then Exit Function
@@ -3246,6 +3268,7 @@ Private Function IsStep4UnmarkedNewRegistrationCandidate( _
 
     syncText = NormalizeCellValue(wsEdit.Cells(rowNo, syncCol).Value)
     If syncText = NormalizeCellValue("管理対象外") Then Exit Function
+    If syncText = NormalizeCellValue("文書管理対象外") Then Exit Function
     If syncText = NormalizeCellValue("登録予定") Then Exit Function
 
     IsStep4UnmarkedNewRegistrationCandidate = True
