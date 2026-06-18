@@ -30,7 +30,7 @@ Private Sub Worksheet_Change(ByVal Target As Range)
     ' 年度（和暦）/保存期間 の変更時は廃棄年月日を自動計算
     新ファイル基準表_廃棄年月日自動計算 Target
     ' 追記: 色名が変更された行は 2色名 へ同値同期
-    新ファイル基準表_色名から2色名同期 Target, Me
+    ' 新ファイル基準表_色名から2色名同期 Target, Me
 
     ' 呼び出し先でイベント状態が変わる可能性に備えて再度OFF
     Application.EnableEvents = False
