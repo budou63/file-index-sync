@@ -3858,6 +3858,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                     End If
                 Else
                     AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
+                    AutoFillColorForRow wsDst, appendRow
                     If key <> "" Then existingRowMap.Add key, appendRow
                     If key <> "" Then
                         visualDiffMap(key) = "追加"
@@ -4631,6 +4632,7 @@ ContinueNextNPlus1Row:
         wsDst.Cells(appendRow, colSyncStatus).Value = "未登録"
         wsDst.Cells(appendRow, colHaiki).ClearContents
         wsDst.Cells(appendRow, colNPlus1).ClearContents
+        AutoFillColorForRow wsDst, appendRow
 
         generatedCount = generatedCount + 1
     Next rowNo
@@ -9906,6 +9908,179 @@ Private Function IsPaperMedia(ByVal rawValue As String) As Boolean
 
 End Function
 
+
+
+'========================================================
+' 新ファイル基準表: 新規行向けの色自動入力（既存色は上書きしない）
+'========================================================
+Public Sub AutoFillColorForRow(ByVal ws As Worksheet, ByVal targetRow As Long)
+
+    Dim lastCol As Long
+    Dim colorCol As Long
+    Dim autoColor As String
+
+    If ws Is Nothing Then Exit Sub
+    If targetRow < 2 Then Exit Sub
+
+    lastCol = GetLastUsedCol(ws)
+    If lastCol <= 0 Then Exit Sub
+
+    colorCol = FindHeaderColumn(ws, lastCol, Array("色", "色名", "１色", "1色"))
+    If colorCol <= 0 Then Exit Sub
+    If Len(NormalizeText_ColorRule(CStr(ws.Cells(targetRow, colorCol).Value))) > 0 Then Exit Sub
+
+    autoColor = GetAutoColorForRow(ws, targetRow)
+    If Len(autoColor) = 0 Then Exit Sub
+
+    ws.Cells(targetRow, colorCol).Value = autoColor
+
+End Sub
+
+Public Function GetAutoColorForRow(ByVal ws As Worksheet, ByVal targetRow As Long) As String
+
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim guide1Col As Long
+    Dim colorCol As Long
+    Dim guide1Text As String
+    Dim guide1Key As String
+    Dim rowNo As Long
+    Dim rowGuideKey As String
+    Dim rowColor As String
+    Dim sameGuideColors As Object
+    Dim sameGuideColorKeys As Variant
+    Dim previousColor As String
+    Dim nextColor As String
+
+    If ws Is Nothing Then Exit Function
+    If targetRow < 2 Then Exit Function
+
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+    If lastRow < 2 Or lastCol <= 0 Then Exit Function
+
+    guide1Col = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("第1ガイド"))
+    colorCol = FindHeaderColumn(ws, lastCol, Array("色", "色名", "１色", "1色"))
+    If guide1Col <= 0 Or colorCol <= 0 Then Exit Function
+    If Len(NormalizeText_ColorRule(CStr(ws.Cells(targetRow, colorCol).Value))) > 0 Then Exit Function
+
+    guide1Text = Trim$(CStr(ws.Cells(targetRow, guide1Col).Value))
+    guide1Key = BuildGuideKey_ColorRule(guide1Text)
+    If Len(guide1Key) = 0 Then Exit Function
+
+    Set sameGuideColors = CreateObject("Scripting.Dictionary")
+    For rowNo = 2 To lastRow
+        If rowNo <> targetRow Then
+            rowGuideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, guide1Col).Value)
+            If StrComp(rowGuideKey, guide1Key, vbBinaryCompare) = 0 Then
+                rowColor = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colorCol).Value))
+                If Len(rowColor) > 0 Then
+                    If Not sameGuideColors.Exists(rowColor) Then sameGuideColors.Add rowColor, True
+                End If
+            End If
+        End If
+    Next rowNo
+
+    If sameGuideColors.Count = 1 Then
+        sameGuideColorKeys = sameGuideColors.Keys
+        GetAutoColorForRow = CStr(sameGuideColorKeys(LBound(sameGuideColorKeys)))
+        Exit Function
+    ElseIf sameGuideColors.Count > 1 Then
+        MsgBox "同じ第1ガイドに複数の色が存在するため、色を自動判定できません。" & vbCrLf & _
+               "先に色チェックを実行し、既存データを修正してください。" & vbCrLf & _
+               "対象行: " & CStr(targetRow) & vbCrLf & _
+               "第1ガイド: " & guide1Text, vbExclamation
+        Exit Function
+    End If
+
+    previousColor = FindAdjacentDifferentGuideColor_ColorRule(ws, targetRow, guide1Col, colorCol, -1, guide1Key)
+    nextColor = FindAdjacentDifferentGuideColor_ColorRule(ws, targetRow, guide1Col, colorCol, 1, guide1Key)
+    GetAutoColorForRow = SelectAutoColorAvoiding_ColorRule(previousColor, nextColor)
+
+End Function
+
+Private Function FindAdjacentDifferentGuideColor_ColorRule( _
+    ByVal ws As Worksheet, _
+    ByVal targetRow As Long, _
+    ByVal guide1Col As Long, _
+    ByVal colorCol As Long, _
+    ByVal stepValue As Long, _
+    ByVal targetGuideKey As String) As String
+
+    Dim rowNo As Long
+    Dim lastRow As Long
+    Dim rowGuideKey As String
+    Dim rowColor As String
+
+    If ws Is Nothing Then Exit Function
+    If stepValue = 0 Then Exit Function
+
+    lastRow = GetLastUsedRow(ws)
+    rowNo = targetRow + stepValue
+
+    Do While rowNo >= 2 And rowNo <= lastRow
+        rowGuideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, guide1Col).Value)
+        rowColor = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colorCol).Value))
+        If Len(rowGuideKey) > 0 And StrComp(rowGuideKey, targetGuideKey, vbBinaryCompare) <> 0 And Len(rowColor) > 0 Then
+            FindAdjacentDifferentGuideColor_ColorRule = rowColor
+            Exit Function
+        End If
+        rowNo = rowNo + stepValue
+    Loop
+
+End Function
+
+Private Function SelectAutoColorAvoiding_ColorRule(ByVal previousColor As String, ByVal nextColor As String) As String
+
+    Dim colors As Variant
+    Dim startIndex As Long
+    Dim i As Long
+    Dim candidate As String
+
+    colors = GetColorRotationList_ColorRule()
+    previousColor = NormalizeColorName_ColorRule(previousColor)
+    nextColor = NormalizeColorName_ColorRule(nextColor)
+    startIndex = NextColorStartIndex_ColorRule(colors, previousColor)
+
+    For i = 0 To UBound(colors) - LBound(colors)
+        candidate = CStr(colors((startIndex + i) Mod (UBound(colors) - LBound(colors) + 1)))
+        If StrComp(candidate, previousColor, vbBinaryCompare) <> 0 And StrComp(candidate, nextColor, vbBinaryCompare) <> 0 Then
+            SelectAutoColorAvoiding_ColorRule = candidate
+            Exit Function
+        End If
+    Next i
+
+    For i = LBound(colors) To UBound(colors)
+        candidate = CStr(colors(i))
+        If StrComp(candidate, previousColor, vbBinaryCompare) <> 0 Then
+            SelectAutoColorAvoiding_ColorRule = candidate
+            Exit Function
+        End If
+    Next i
+
+    SelectAutoColorAvoiding_ColorRule = CStr(colors(LBound(colors)))
+
+End Function
+
+Private Function NextColorStartIndex_ColorRule(ByVal colors As Variant, ByVal previousColor As String) As Long
+
+    Dim i As Long
+
+    previousColor = NormalizeColorName_ColorRule(previousColor)
+    For i = LBound(colors) To UBound(colors)
+        If StrComp(CStr(colors(i)), previousColor, vbBinaryCompare) = 0 Then
+            NextColorStartIndex_ColorRule = (i + 1) Mod (UBound(colors) - LBound(colors) + 1)
+            Exit Function
+        End If
+    Next i
+
+    NextColorStartIndex_ColorRule = LBound(colors)
+
+End Function
+
+Private Function GetColorRotationList_ColorRule() As Variant
+    GetColorRotationList_ColorRule = Array("白色", "赤色", "青色", "黄色", "緑色")
+End Function
 
 '========================================================
 ' 新ファイル基準表: 色ルールチェック（結果出力のみ・値は変更しない）
