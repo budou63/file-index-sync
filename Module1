@@ -2757,6 +2757,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim bikoVal As String
     Dim excludedMacroInsertCount As Long
     Dim macroInsertStatusChangedCount As Long
+    Dim ignoredUnknownStatusCount As Long
     Dim syncStatusColEdit As Long
     Dim fileIdColEdit As Long
     Dim fileNoColEdit As Long
@@ -2920,6 +2921,11 @@ Public Sub 手順4_差分インポートCSVを作成する()
         ' 同期状態=管理対象外/文書管理対象外 の行は差分判定対象外
         If syncStatusColEdit > 0 Then
             rowSyncStatus = NormalizeSyncStatusValue(wsEdit.Cells(r, syncStatusColEdit).Value)
+            If IsIgnoredBySyncStatus(rowSyncStatus) Then
+                ignoredUnknownStatusCount = ignoredUnknownStatusCount + 1
+                Debug.Print "行" & r & " は同期状態=不明 のため差分抽出対象外"
+                GoTo ContinueNextEditRow
+            End If
             If rowSyncStatus = "管理対象外" Or rowSyncStatus = "文書管理対象外" Then
                 Debug.Print "行" & r & " は同期状態=" & rowSyncStatus & " のため差分抽出対象外"
                 GoTo ContinueNextEditRow
@@ -3039,11 +3045,13 @@ ContinueNextEditRow:
     WriteProcessLog "差分インポート抽出", SHEET_DIFF_IMPORT, "", outRow - 2, "成功", _
         "差分インポートCSVを出力（差分" & CStr(outRow - 2) & "件、マクロ差込除外" & CStr(excludedMacroInsertCount) & _
         "件、マクロ差込を文書管理対象外へ変更" & CStr(macroInsertStatusChangedCount) & _
+        "件、同期状態=不明除外" & CStr(ignoredUnknownStatusCount) & _
         "件、座作成要確認" & CStr(guideSeatCheckCount) & "件）"
 
     MsgBox "差分抽出が完了しました。" & vbCrLf & _
            "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & _
            "件、マクロ差込を文書管理対象外へ変更" & macroInsertStatusChangedCount & _
+           "件、同期状態=不明除外" & ignoredUnknownStatusCount & _
            "件、座作成要確認" & guideSeatCheckCount & "件", vbInformation
 
 SafeExit:
@@ -3267,6 +3275,7 @@ Private Function IsStep4UnmarkedNewRegistrationCandidate( _
     If NormalizeCellValue(wsEdit.Cells(rowNo, guideCol).Value) = "" Then Exit Function
 
     syncText = NormalizeCellValue(wsEdit.Cells(rowNo, syncCol).Value)
+    If IsIgnoredBySyncStatus(syncText) Then Exit Function
     If syncText = NormalizeCellValue("管理対象外") Then Exit Function
     If syncText = NormalizeCellValue("文書管理対象外") Then Exit Function
     If syncText = NormalizeCellValue("登録予定") Then Exit Function
@@ -3746,6 +3755,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
             If existingRowMap.Exists(key) Then
                 targetRow = CLng(existingRowMap(key))
                 beforeSyncStatus = GetSyncStatusValue(wsDst, targetRow, syncCol)
+                If IsIgnoredBySyncStatus(beforeSyncStatus) Then GoTo ContinueNextSourceRow
                 If beforeSyncStatus = "削除予定" Then
                     visualDiffMap(key) = "削除予定"
                     serialCommentMap(key) = BuildSerialDiffComment("削除予定", "", "")
@@ -3791,6 +3801,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         If nameSyncRows.Count = 1 Then
                             targetRow = CLng(nameSyncRows.Item(1))
                             beforeSyncStatus = GetSyncStatusValue(wsDst, targetRow, syncCol)
+                            If IsIgnoredBySyncStatus(beforeSyncStatus) Then GoTo ContinueNextSourceRow
                             If beforeSyncStatus = "削除予定" Then
                                 visualDiffMap("NAME|" & nameSyncKey) = "削除予定"
                                 serialCommentMap("NAME|" & nameSyncKey) = BuildSerialDiffComment("削除予定", "", "")
@@ -4031,6 +4042,12 @@ Private Function GetSyncStatusValue(ByVal ws As Worksheet, ByVal rowNo As Long, 
 
 End Function
 
+Public Function IsIgnoredBySyncStatus(ByVal syncStatus As String) As Boolean
+
+    IsIgnoredBySyncStatus = (NormalizeSyncStatusValue(syncStatus) = "不明")
+
+End Function
+
 Private Function NormalizeSyncStatusValue(ByVal rawValue As Variant) As String
 
     Dim s As String
@@ -4048,6 +4065,8 @@ Private Function NormalizeSyncStatusValue(ByVal rawValue As Variant) As String
             NormalizeSyncStatusValue = "削除予定"
         Case "管理対象外"
             NormalizeSyncStatusValue = "管理対象外"
+        Case "不明"
+            NormalizeSyncStatusValue = "不明"
         Case Else
             NormalizeSyncStatusValue = s
     End Select
@@ -4102,6 +4121,7 @@ Private Sub ProcessPendingSyncStatusRows( _
         End If
 
         statusValue = GetSyncStatusValue(wsDst, rowNo, syncCol)
+        If IsIgnoredBySyncStatus(statusValue) Then GoTo ContinueNextPendingRow
         If statusValue = "管理対象外" Then GoTo ContinueNextPendingRow
         If statusValue <> "登録予定" And statusValue <> "削除予定" Then GoTo ContinueNextPendingRow
 
@@ -4244,6 +4264,7 @@ Private Sub BuildDestinationNameSyncMap( _
     Dim rowYearValue As Long
     Dim warekiYearCol As Long
     Dim westernYearCol As Long
+    Dim syncCol As Long
 
     If nameSyncMap Is Nothing Then Exit Sub
     nameSyncMap.RemoveAll
@@ -4252,10 +4273,14 @@ Private Sub BuildDestinationNameSyncMap( _
 
     warekiYearCol = FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("年度（和暦）"))
     westernYearCol = FindHeaderColumn(wsDst, dstLastCol, Array("年度"))
+    syncCol = FindHeaderColumn(wsDst, dstLastCol, Array("同期状態"))
 
     For dstRow = 2 To dstLastRow
         rowYearValue = GetNormalizedYearFromRow(wsDst, dstRow, warekiYearCol, westernYearCol)
         If targetYearValue > 0 And rowYearValue <> targetYearValue Then GoTo ContinueNextDestinationNameRow
+        If syncCol > 0 Then
+            If IsIgnoredBySyncStatus(CStr(wsDst.Cells(dstRow, syncCol).Value)) Then GoTo ContinueNextDestinationNameRow
+        End If
 
         key = BuildFolderNameSyncKeyFromSheetRow(wsDst, dstRow, dstLastCol)
         If key <> "" Then AddRowToMultiValueMap nameSyncMap, key, dstRow
@@ -4565,9 +4590,11 @@ Public Sub nPlus1_次年度フォルダ生成()
     End If
 
     For rowNo = 2 To lastRow
+        If IsIgnoredBySyncStatus(CStr(wsDst.Cells(rowNo, colSyncStatus).Value)) Then GoTo ContinueNextNPlus1Row
         If IsNPlus1Flag(GetTrimmedCell(wsDst, rowNo, colNPlus1)) Then
             targetRows.Add rowNo
         End If
+ContinueNextNPlus1Row:
     Next rowNo
 
     targetCount = targetRows.Count
@@ -5511,6 +5538,10 @@ Private Function ShouldExcludeRowFromStep2VisualDiff(ByVal ws As Worksheet, ByVa
     lastCol = GetLastUsedCol(ws)
     syncCol = FindHeaderColumn(ws, lastCol, Array("同期状態"))
     If syncCol > 0 Then
+        If IsIgnoredBySyncStatus(CStr(ws.Cells(rowNo, syncCol).Value)) Then
+            ShouldExcludeRowFromStep2VisualDiff = True
+            Exit Function
+        End If
         If NormalizeSyncStatusValue(ws.Cells(rowNo, syncCol).Value) = "管理対象外" Then
             ShouldExcludeRowFromStep2VisualDiff = True
             Exit Function
@@ -5529,6 +5560,7 @@ Private Sub ClearSerialDiffMarksForTargetYear(ByVal ws As Worksheet, ByVal seria
     Dim rowNo As Long
     Dim warekiYearCol As Long
     Dim westernYearCol As Long
+    Dim syncCol As Long
 
     If ws Is Nothing Then Exit Sub
     If serialCol <= 0 Then Exit Sub
@@ -5538,12 +5570,17 @@ Private Sub ClearSerialDiffMarksForTargetYear(ByVal ws As Worksheet, ByVal seria
 
     warekiYearCol = FindHeaderColumn(ws, GetLastUsedCol(ws), Array("年度（和暦）", "年度(和暦)"))
     westernYearCol = FindHeaderColumn(ws, GetLastUsedCol(ws), Array("年度"))
+    syncCol = FindHeaderColumn(ws, GetLastUsedCol(ws), Array("同期状態"))
 
     For rowNo = 2 To lastRow
+        If syncCol > 0 Then
+            If IsIgnoredBySyncStatus(CStr(ws.Cells(rowNo, syncCol).Value)) Then GoTo ContinueNextClearSerialRow
+        End If
         If targetYearValue <= 0 Or GetNormalizedYearFromRow(ws, rowNo, warekiYearCol, westernYearCol) = targetYearValue Then
             ws.Cells(rowNo, serialCol).Interior.Pattern = xlNone
             SafeDeleteComment ws.Cells(rowNo, serialCol)
         End If
+ContinueNextClearSerialRow:
     Next rowNo
 
 End Sub
@@ -5956,6 +5993,8 @@ Private Sub UpdateSyncStatusColumn( _
         If targetYearValue > 0 Then
             If GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol) <> targetYearValue Then GoTo ContinueNextSyncRow
         End If
+
+        If IsIgnoredBySyncStatus(CStr(wsDst.Cells(rowNo, syncCol).Value)) Then GoTo ContinueNextSyncRow
 
         Select Case GetSyncStatusValue(wsDst, rowNo, syncCol)
             Case "同期済"
@@ -7026,6 +7065,10 @@ Public Sub 新ファイル基準表_分類コード再補完( _
     Next i
 
     For r = startRow To endRow
+        If syncCol > 0 Then
+            If IsIgnoredBySyncStatus(CStr(wsEdit.Cells(r, syncCol).Value)) Then GoTo ContinueNextClassificationRow
+        End If
+
         isRegistrationRow = False
         If syncCol > 0 Then
             isRegistrationRow = (NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) = NormalizeCellValue("登録予定"))
@@ -7057,6 +7100,7 @@ Public Sub 新ファイル基準表_分類コード再補完( _
                 End If
             End If
         Next i
+ContinueNextClassificationRow:
     Next r
 
 ExitHandler:
@@ -7138,6 +7182,7 @@ Public Sub 新ファイル基準表_登録予定分類コード採番( _
     ' 分類コード２は第1ガイド名単位で処理する。同名の登録予定行には同じコードを反映する。
     For Each targetRow In rowsToProcess
         r = CLng(targetRow)
+        If IsIgnoredBySyncStatus(CStr(wsEdit.Cells(r, syncCol).Value)) Then GoTo ContinueCollectGuide2
         If NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) <> NormalizeCellValue("登録予定") Then GoTo ContinueCollectGuide2
 
         guideName = Trim$(CStr(wsEdit.Cells(r, guide2Col).Value))
@@ -7197,6 +7242,7 @@ ContinueCollectGuide2:
 
     For Each targetRow In rowsToProcess
         r = CLng(targetRow)
+        If IsIgnoredBySyncStatus(CStr(wsEdit.Cells(r, syncCol).Value)) Then GoTo ContinueNextRow
         If NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) <> NormalizeCellValue("登録予定") Then GoTo ContinueNextRow
 
         If guide3Col > 0 And code3Col > 0 Then
