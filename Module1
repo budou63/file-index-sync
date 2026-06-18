@@ -8585,6 +8585,7 @@ Private Sub キャビネット別第1ガイド抽出_続きルール適用_NewSp
     Dim oneCabGuides As Object
     Dim childDict As Object
     Dim childOrder As Collection
+    Dim outputFillMap As Object
     Dim outGuide As String
 
     On Error GoTo ErrorHandler
@@ -8613,6 +8614,7 @@ Private Sub キャビネット別第1ガイド抽出_続きルール適用_NewSp
     Set mapCabGuides = CreateObject("Scripting.Dictionary")
     Set mapGuideMinCab = CreateObject("Scripting.Dictionary")
     Set mapGuideDisplay = CreateObject("Scripting.Dictionary")
+    Set outputFillMap = CreateObject("Scripting.Dictionary")
 
     rowSeq = 0
     For r = DATA_START To lastRow
@@ -8646,11 +8648,18 @@ Private Sub キャビネット別第1ガイド抽出_続きルール適用_NewSp
         If oneCabGuides.Exists(guideKey) Then
             item = oneCabGuides(guideKey)
             item(1) = CLng(item(1)) + 1
-            If Len(CStr(item(3))) = 0 And Len(colorVal) > 0 Then item(3) = colorVal
+            If Len(CStr(item(3))) = 0 And Len(colorVal) > 0 Then
+                item(3) = colorVal
+                item(6) = wsSrc.Cells(r, colorCol).Interior.Color
+                item(7) = HasCellFill_ColorCopy(wsSrc.Cells(r, colorCol))
+            ElseIf Not CBool(item(7)) And HasCellFill_ColorCopy(wsSrc.Cells(r, colorCol)) Then
+                item(6) = wsSrc.Cells(r, colorCol).Interior.Color
+                item(7) = True
+            End If
         Else
             Set childDict = CreateObject("Scripting.Dictionary")
             Set childOrder = New Collection
-            item = Array(guideVal, 1, rowSeq, colorVal, childDict, childOrder)
+            item = Array(guideVal, 1, rowSeq, colorVal, childDict, childOrder, wsSrc.Cells(r, colorCol).Interior.Color, HasCellFill_ColorCopy(wsSrc.Cells(r, colorCol)))
             oneCabGuides.Add guideKey, item
         End If
 
@@ -8660,12 +8669,18 @@ Private Sub キャビネット別第1ガイド抽出_続きルール適用_NewSp
         If Len(guide2Val) > 0 Then
             guide2Key = NormalizeText(guide2Val)
             If Not childDict.Exists(guide2Key) Then
-                childDict.Add guide2Key, Array(color2Val, guide2Val)
+                childDict.Add guide2Key, Array(color2Val, guide2Val, wsSrc.Cells(r, color2Col).Interior.Color, HasCellFill_ColorCopy(wsSrc.Cells(r, color2Col)))
                 childOrder.Add guide2Key
             Else
                 childItem = childDict(guide2Key)
                 If Len(CStr(childItem(0))) = 0 And Len(color2Val) > 0 Then
                     childItem(0) = color2Val
+                    childItem(2) = wsSrc.Cells(r, color2Col).Interior.Color
+                    childItem(3) = HasCellFill_ColorCopy(wsSrc.Cells(r, color2Col))
+                    childDict(guide2Key) = childItem
+                ElseIf Not CBool(childItem(3)) And HasCellFill_ColorCopy(wsSrc.Cells(r, color2Col)) Then
+                    childItem(2) = wsSrc.Cells(r, color2Col).Interior.Color
+                    childItem(3) = True
                     childDict(guide2Key) = childItem
                 End If
             End If
@@ -8705,6 +8720,7 @@ ContinueRow:
 
                 wsDst.Cells(outRow, 1).Value = mapCabinets(cabKey)
                 wsDst.Cells(outRow, 2).Value = CStr(item(3))
+                If CBool(item(7)) Then outputFillMap(CStr(outRow) & "|2") = CLng(item(6))
                 wsDst.Cells(outRow, 3).Value = outGuide
                 wsDst.Cells(outRow, 4).Value = CLng(item(1))
 
@@ -8716,10 +8732,12 @@ ContinueRow:
                         childItem = childDict(guide2Key)
                         If childIndex = 1 Then
                             wsDst.Cells(outRow, 5).Value = CStr(childItem(0))
+                            If CBool(childItem(3)) Then outputFillMap(CStr(outRow) & "|5") = CLng(childItem(2))
                             wsDst.Cells(outRow, 6).Value = CStr(childItem(1))
                         Else
                             outRow = outRow + 1
                             wsDst.Cells(outRow, 5).Value = CStr(childItem(0))
+                            If CBool(childItem(3)) Then outputFillMap(CStr(outRow) & "|5") = CLng(childItem(2))
                             wsDst.Cells(outRow, 6).Value = CStr(childItem(1))
                         End If
                     Next childIndex
@@ -8735,12 +8753,39 @@ ContinueRow:
         .Borders.Weight = xlThin
     End With
     ApplyCabinetBanding wsDst, 2, 1
+    ApplyOutputFillMap_ColorCopy wsDst, outputFillMap
 
     MsgBox "「" & DST_SHEET & "」を作成しました。", vbInformation
     Exit Sub
 
 ErrorHandler:
     MsgBox "キャビネット別第1ガイド抽出でエラーが発生しました: " & Err.Description, vbExclamation
+
+End Sub
+
+Private Function HasCellFill_ColorCopy(ByVal targetCell As Range) As Boolean
+
+    If targetCell Is Nothing Then Exit Function
+    On Error Resume Next
+    HasCellFill_ColorCopy = (targetCell.Interior.Pattern <> xlNone)
+    On Error GoTo 0
+
+End Function
+
+Private Sub ApplyOutputFillMap_ColorCopy(ByVal ws As Worksheet, ByVal outputFillMap As Object)
+
+    Dim key As Variant
+    Dim parts As Variant
+
+    If ws Is Nothing Then Exit Sub
+    If outputFillMap Is Nothing Then Exit Sub
+
+    For Each key In outputFillMap.Keys
+        parts = Split(CStr(key), "|")
+        If UBound(parts) = 1 Then
+            ws.Cells(CLng(parts(0)), CLng(parts(1))).Interior.Color = CLng(outputFillMap(key))
+        End If
+    Next key
 
 End Sub
 
