@@ -54,6 +54,12 @@ Private Sub CommandButton7_Click()
 
 End Sub
 
+Private Sub cmdColorCheck_Click()
+
+    Call 色ルールチェック
+
+End Sub
+
 Private Sub btnDuplicateCheck_Click()
     ' 既存CommandButton互換
     Call 重複フォルダ候補をマーキングして並び替え
