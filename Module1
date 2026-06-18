@@ -9906,6 +9906,203 @@ Private Function IsPaperMedia(ByVal rawValue As String) As Boolean
 
 End Function
 
+
+'========================================================
+' 新ファイル基準表: 色ルールチェック（結果出力のみ・値は変更しない）
+'========================================================
+Public Sub 色ルールチェック()
+
+    Const RESULT_SHEET_NAME As String = "色チェック結果"
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim ws As Worksheet
+    Dim wsResult As Worksheet
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim colGuide1 As Long
+    Dim colGuide2 As Long
+    Dim colColor As Long
+    Dim rowNo As Long
+    Dim outRow As Long
+    Dim errorCount As Long
+    Dim warningCount As Long
+    Dim guide1Text As String
+    Dim guide2Text As String
+    Dim colorText As String
+    Dim guide1Key As String
+    Dim guide2Key As String
+    Dim groupKey As String
+    Dim previousGuide1Key As String
+    Dim previousColorText As String
+    Dim guide1Colors As Object
+    Dim groupColors As Object
+    Dim rule1MismatchRows As Object
+    Dim missingHeaders As String
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+
+    If lastRow < 2 Or lastCol <= 0 Then
+        MsgBox "新ファイル基準表にチェック対象データがありません。", vbInformation
+        GoTo SafeExit
+    End If
+
+    colGuide1 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("第1ガイド"))
+    colGuide2 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("第2ガイド"))
+    colColor = FindHeaderColumn(ws, lastCol, Array("色", "色名", "１色", "1色"))
+
+    If colGuide1 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "第1ガイド")
+    If colGuide2 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "第2ガイド")
+    If colColor = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "色")
+
+    If Len(missingHeaders) > 0 Then
+        MsgBox "色チェックを中止しました。" & vbCrLf & _
+               "不足している見出し:" & vbCrLf & missingHeaders, vbExclamation
+        GoTo SafeExit
+    End If
+
+    Set wsResult = GetOrCreateWorksheet_ColorCheck(RESULT_SHEET_NAME)
+    wsResult.Cells.Clear
+    wsResult.Range("A1:G1").Value = Array("区分", "行番号", "第1ガイド", "第2ガイド", "色", "内容", "修正案")
+    wsResult.Rows(1).Font.Bold = True
+    outRow = 2
+
+    Set guide1Colors = CreateObject("Scripting.Dictionary")
+    Set groupColors = CreateObject("Scripting.Dictionary")
+    Set rule1MismatchRows = CreateObject("Scripting.Dictionary")
+
+    For rowNo = 2 To lastRow
+        guide1Text = Trim$(CStr(ws.Cells(rowNo, colGuide1).Value))
+        guide2Text = Trim$(CStr(ws.Cells(rowNo, colGuide2).Value))
+        colorText = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor).Value))
+
+        If Len(guide1Text) = 0 And Len(guide2Text) = 0 And Len(colorText) = 0 Then GoTo ContinueNextColorCheckRow
+
+        guide1Key = BuildGuideKey_ColorRule(guide1Text)
+        guide2Key = BuildGuideKey_ColorRule(guide2Text)
+        groupKey = BuildGroupKey_ColorRule(guide1Key, guide2Key)
+
+        If Len(colorText) = 0 Then
+            AppendColorCheckResult wsResult, outRow, "エラー", rowNo, guide1Text, guide2Text, colorText, _
+                "色が未入力です。", "色を入力してください。"
+            errorCount = errorCount + 1
+        End If
+
+        If Len(guide1Key) > 0 And Len(colorText) > 0 Then
+            If guide1Colors.Exists(guide1Key) Then
+                If StrComp(CStr(guide1Colors(guide1Key)), colorText, vbBinaryCompare) <> 0 Then
+                    AppendColorCheckResult wsResult, outRow, "エラー", rowNo, guide1Text, guide2Text, colorText, _
+                        "同じ第1ガイド内で色が一致していません。", "同じ第1ガイドの色に統一してください。"
+                    errorCount = errorCount + 1
+                    rule1MismatchRows(CStr(rowNo)) = True
+                End If
+            Else
+                guide1Colors.Add guide1Key, colorText
+            End If
+        End If
+
+        If Len(guide1Key) > 0 And Len(guide2Key) > 0 And Len(colorText) > 0 Then
+            If groupColors.Exists(groupKey) Then
+                If StrComp(CStr(groupColors(groupKey)), colorText, vbBinaryCompare) <> 0 Then
+                    If Not rule1MismatchRows.Exists(CStr(rowNo)) Then
+                        AppendColorCheckResult wsResult, outRow, "エラー", rowNo, guide1Text, guide2Text, colorText, _
+                            "同じ第1ガイド・第2ガイドの組み合わせで色が一致していません。", "同じ第1ガイド・第2ガイドの色に統一してください。"
+                        errorCount = errorCount + 1
+                    End If
+                End If
+            Else
+                groupColors.Add groupKey, colorText
+            End If
+        End If
+
+        If Len(previousGuide1Key) > 0 And Len(guide1Key) > 0 Then
+            If StrComp(previousGuide1Key, guide1Key, vbBinaryCompare) <> 0 Then
+                If Len(colorText) > 0 And StrComp(previousColorText, colorText, vbBinaryCompare) = 0 Then
+                    AppendColorCheckResult wsResult, outRow, "注意", rowNo, guide1Text, guide2Text, colorText, _
+                        "第1ガイドが切り替わっていますが、色が直前のグループと連続しています。年度切替・削除・過年度落とし等による可能性があります。", _
+                        "必要に応じて別色へ変更してください。"
+                    warningCount = warningCount + 1
+                End If
+            End If
+        End If
+
+        If Len(guide1Key) > 0 Then
+            previousGuide1Key = guide1Key
+            previousColorText = colorText
+        End If
+
+ContinueNextColorCheckRow:
+    Next rowNo
+
+    wsResult.Columns("A:G").AutoFit
+
+    If errorCount = 0 And warningCount = 0 Then
+        MsgBox "色チェックが完了しました。" & vbCrLf & _
+               "問題は見つかりませんでした。", vbInformation
+    Else
+        MsgBox "色チェックが完了しました。" & vbCrLf & _
+               "エラー：" & CStr(errorCount) & "件" & vbCrLf & _
+               "注意：" & CStr(warningCount) & "件" & vbCrLf & vbCrLf & _
+               "詳細は「" & RESULT_SHEET_NAME & "」シートを確認してください。", vbInformation
+    End If
+
+SafeExit:
+    On Error Resume Next
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    On Error GoTo 0
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "色チェック中にエラーが発生しました。" & vbCrLf & Err.Description, vbExclamation
+    Resume SafeExit
+
+End Sub
+
+Private Function GetOrCreateWorksheet_ColorCheck(ByVal sheetName As String) As Worksheet
+
+    On Error Resume Next
+    Set GetOrCreateWorksheet_ColorCheck = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If GetOrCreateWorksheet_ColorCheck Is Nothing Then
+        Set GetOrCreateWorksheet_ColorCheck = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        GetOrCreateWorksheet_ColorCheck.Name = sheetName
+    End If
+
+End Function
+
+Private Sub AppendColorCheckResult( _
+    ByVal wsResult As Worksheet, _
+    ByRef outRow As Long, _
+    ByVal categoryText As String, _
+    ByVal sourceRow As Long, _
+    ByVal guide1Text As String, _
+    ByVal guide2Text As String, _
+    ByVal colorText As String, _
+    ByVal detailText As String, _
+    ByVal suggestionText As String)
+
+    wsResult.Cells(outRow, 1).Value = categoryText
+    wsResult.Cells(outRow, 2).Value = sourceRow
+    wsResult.Cells(outRow, 3).Value = guide1Text
+    wsResult.Cells(outRow, 4).Value = guide2Text
+    wsResult.Cells(outRow, 5).Value = colorText
+    wsResult.Cells(outRow, 6).Value = detailText
+    wsResult.Cells(outRow, 7).Value = suggestionText
+    outRow = outRow + 1
+
+End Sub
+
 '========================================================
 ' 新ファイル基準表: 旧ファイル基準表の考え方に基づく色ルール修正
 '========================================================
