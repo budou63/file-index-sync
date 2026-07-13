@@ -430,10 +430,17 @@ End Function
 
 Private Function ResolveFixedPrinter() As FixedPrinterInfo
     Dim svc As Object, printers As Object, p As Object
-    Dim hitCount As Long, hitSummary As String
+    Dim candidates() As FixedPrinterInfo
+    Dim uniqueCandidates() As FixedPrinterInfo
+    Dim candidateCount As Long
+    Dim uniqueCount As Long
+    Dim i As Long, existingIndex As Long
     Dim info As FixedPrinterInfo
+    Dim selectedInfo As FixedPrinterInfo
+
     Set svc = GetObject("winmgmts:\\.\root\cimv2")
     Set printers = svc.ExecQuery("SELECT Name, ServerName, PortName, DriverName FROM Win32_Printer")
+
     For Each p In printers
         If IsTargetPrinter(CStr(p.Name), CStr(Nz(p.ServerName)), CStr(Nz(p.PortName))) Then
             info.WindowsName = CStr(p.Name)
@@ -441,13 +448,102 @@ Private Function ResolveFixedPrinter() As FixedPrinterInfo
             info.DriverName = CStr(Nz(p.DriverName))
             info.ServerName = CStr(Nz(p.ServerName))
             info.ExcelName = BuildExcelActivePrinterName(info.WindowsName, info.PortName)
-            hitCount = hitCount + 1
-            hitSummary = hitSummary & vbCrLf & "- " & info.WindowsName & " / Port=" & info.PortName & " / Driver=" & info.DriverName
+            candidateCount = candidateCount + 1
+            ReDim Preserve candidates(1 To candidateCount)
+            candidates(candidateCount) = info
         End If
     Next
-    If hitCount = 0 Then Err.Raise vbObjectError + 5101, , "対象プリンター（土木課C4476R / PRTSV03.sojanet.local）がWindowsに登録されていません。"
-    If hitCount > 1 Then Err.Raise vbObjectError + 5102, , "対象プリンター候補が複数あり一意に決められないため印刷しません。" & hitSummary
-    ResolveFixedPrinter = info
+
+    If candidateCount = 0 Then Err.Raise vbObjectError + 5101, , "対象プリンター（土木課C4476R / PRTSV03.sojanet.local）がWindowsに登録されていません。"
+
+    For i = 1 To candidateCount
+        existingIndex = FindSamePhysicalPrinterIndex(uniqueCandidates, uniqueCount, candidates(i))
+        If existingIndex = 0 Then
+            uniqueCount = uniqueCount + 1
+            ReDim Preserve uniqueCandidates(1 To uniqueCount)
+            uniqueCandidates(uniqueCount) = candidates(i)
+        Else
+            uniqueCandidates(existingIndex) = ChoosePreferredPrinterCandidate(uniqueCandidates(existingIndex), candidates(i))
+        End If
+    Next i
+
+    If uniqueCount = 1 Then
+        selectedInfo = uniqueCandidates(1)
+        WriteFixedPrintLog "固定印刷プリンター選択", "成功", _
+            "BeforeDedup=" & CStr(candidateCount) & "; AfterDedup=" & CStr(uniqueCount) & "; Selected=" & selectedInfo.WindowsName
+        ResolveFixedPrinter = selectedInfo
+        Exit Function
+    End If
+
+    WriteFixedPrintLog "固定印刷プリンター選択", "失敗", _
+        "BeforeDedup=" & CStr(candidateCount) & "; AfterDedup=" & CStr(uniqueCount) & "; Selected=なし"
+    Err.Raise vbObjectError + 5102, , "対象プリンター候補が複数あり一意に決められないため印刷しません。" & BuildPrinterCandidateSummary(uniqueCandidates, uniqueCount)
+End Function
+
+Private Function FindSamePhysicalPrinterIndex(ByRef candidates() As FixedPrinterInfo, ByVal candidateCount As Long, ByRef target As FixedPrinterInfo) As Long
+    Dim i As Long
+    If candidateCount <= 0 Then Exit Function
+
+    For i = 1 To candidateCount
+        If IsSamePhysicalPrinter(candidates(i), target) Then
+            FindSamePhysicalPrinterIndex = i
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Function IsSamePhysicalPrinter(ByRef leftInfo As FixedPrinterInfo, ByRef rightInfo As FixedPrinterInfo) As Boolean
+    IsSamePhysicalPrinter = _
+        (StrComp(GetPrinterQueueName(leftInfo.WindowsName), GetPrinterQueueName(rightInfo.WindowsName), vbTextCompare) = 0) And _
+        (StrComp(leftInfo.PortName, rightInfo.PortName, vbTextCompare) = 0) And _
+        (StrComp(leftInfo.DriverName, rightInfo.DriverName, vbTextCompare) = 0) And _
+        (StrComp(GetPrinterIdentityServerName(leftInfo), GetPrinterIdentityServerName(rightInfo), vbTextCompare) = 0)
+End Function
+
+Private Function ChoosePreferredPrinterCandidate(ByRef currentInfo As FixedPrinterInfo, ByRef newInfo As FixedPrinterInfo) As FixedPrinterInfo
+    Dim activePrinterText As String
+
+    On Error Resume Next
+    activePrinterText = Application.ActivePrinter
+    On Error GoTo 0
+
+    If Len(activePrinterText) > 0 Then
+        If InStr(1, activePrinterText, currentInfo.WindowsName, vbTextCompare) > 0 Then
+            ChoosePreferredPrinterCandidate = currentInfo
+            Exit Function
+        End If
+        If InStr(1, activePrinterText, newInfo.WindowsName, vbTextCompare) > 0 Then
+            ChoosePreferredPrinterCandidate = newInfo
+            Exit Function
+        End If
+    End If
+
+    If CanSetExcelActivePrinter(newInfo) And Not CanSetExcelActivePrinter(currentInfo) Then
+        ChoosePreferredPrinterCandidate = newInfo
+    Else
+        ChoosePreferredPrinterCandidate = currentInfo
+    End If
+End Function
+
+Private Function CanSetExcelActivePrinter(ByRef info As FixedPrinterInfo) As Boolean
+    Dim oldActivePrinter As String
+    On Error Resume Next
+    oldActivePrinter = Application.ActivePrinter
+    Err.Clear
+    Application.ActivePrinter = info.ExcelName
+    CanSetExcelActivePrinter = (Err.Number = 0)
+    Err.Clear
+    If Len(oldActivePrinter) > 0 Then Application.ActivePrinter = oldActivePrinter
+    On Error GoTo 0
+End Function
+
+Private Function BuildPrinterCandidateSummary(ByRef candidates() As FixedPrinterInfo, ByVal candidateCount As Long) As String
+    Dim i As Long
+    For i = 1 To candidateCount
+        BuildPrinterCandidateSummary = BuildPrinterCandidateSummary & vbCrLf & _
+            "- " & candidates(i).WindowsName & " / Server=" & candidates(i).ServerName & _
+            " / Port=" & candidates(i).PortName & " / Driver=" & candidates(i).DriverName
+    Next i
 End Function
 
 Private Function IsTargetPrinter(ByVal printerName As String, ByVal serverName As String, ByVal portName As String) As Boolean
@@ -494,6 +590,62 @@ Private Function GetShortServerName(ByVal normalizedServer As String) As String
     Else
         GetShortServerName = normalizedServer
     End If
+End Function
+
+Private Function GetPrinterQueueName(ByVal printerName As String) As String
+    Dim normalized As String
+    Dim slashPos As Long
+    normalized = Replace(Trim$(printerName), "/", "\")
+    Do While Left$(normalized, 1) = "\"
+        normalized = Mid$(normalized, 2)
+    Loop
+    slashPos = InStrRev(normalized, "\")
+    If slashPos > 0 Then
+        GetPrinterQueueName = Mid$(normalized, slashPos + 1)
+    ElseIf InStr(1, normalized, FIXED_PRINTER_NAME, vbTextCompare) > 0 Then
+        GetPrinterQueueName = FIXED_PRINTER_NAME
+    Else
+        GetPrinterQueueName = normalized
+    End If
+End Function
+
+Private Function GetPrinterIdentityServerName(ByRef info As FixedPrinterInfo) As String
+    If Len(Trim$(info.ServerName)) > 0 Then
+        GetPrinterIdentityServerName = NormalizePrinterServerForIdentity(info.ServerName)
+    Else
+        GetPrinterIdentityServerName = NormalizePrinterServerForIdentity(ExtractServerNameFromPrinterName(info.WindowsName))
+    End If
+End Function
+
+Private Function ExtractServerNameFromPrinterName(ByVal printerName As String) As String
+    Dim normalized As String
+    Dim slashPos As Long
+    normalized = Replace(Trim$(printerName), "/", "\")
+    Do While Left$(normalized, 1) = "\"
+        normalized = Mid$(normalized, 2)
+    Loop
+    slashPos = InStr(1, normalized, "\", vbTextCompare)
+    If slashPos > 1 Then
+        ExtractServerNameFromPrinterName = Left$(normalized, slashPos - 1)
+    Else
+        ExtractServerNameFromPrinterName = normalized
+    End If
+End Function
+
+Private Function NormalizePrinterServerForIdentity(ByVal serverName As String) As String
+    Dim normalized As String
+    normalized = LCase$(Trim$(CStr(serverName)))
+    normalized = Replace(normalized, "/", "\")
+    Do While Left$(normalized, 1) = "\"
+        normalized = Mid$(normalized, 2)
+    Loop
+    Do While Right$(normalized, 1) = "\"
+        normalized = Left$(normalized, Len(normalized) - 1)
+    Loop
+    If Right$(normalized, Len(".sojanet.local")) = ".sojanet.local" Then
+        normalized = Left$(normalized, Len(normalized) - Len(".sojanet.local"))
+    End If
+    NormalizePrinterServerForIdentity = normalized
 End Function
 
 Private Function BuildExcelActivePrinterName(ByVal printerName As String, ByVal portName As String) As String
