@@ -77,8 +77,9 @@ Private Type FixedPrintProfile
 End Type
 
 Public Sub 固定印刷設定を登録する()
-    On Error GoTo ErrorHandler
-
+    Dim currentStage As String
+    Dim errNumber As Long
+    Dim errDescription As String
     Dim info As FixedPrinterInfo
     Dim devMode() As Byte
     Dim profile As FixedPrintProfile
@@ -86,6 +87,9 @@ Public Sub 固定印刷設定を登録する()
     Dim answer As VbMsgBoxResult
     Dim loaded As FixedPrintProfile
 
+    On Error GoTo ErrorHandler
+
+    currentStage = "対象プリンター検索"
     info = ResolveFixedPrinter()
     profilePath = GetProfileFilePath()
 
@@ -99,10 +103,20 @@ Public Sub 固定印刷設定を登録する()
     End If
     If answer <> vbYes Then Exit Sub
 
+    currentStage = "DEVMODE取得"
     devMode = GetUserDevModeBytes(info.WindowsName)
     profile = BuildProfile(info, devMode)
+
+    currentStage = "LOCALAPPDATAフォルダ作成"
+    EnsureProfileFolderExists
+
+    currentStage = "設定ファイル保存"
     SaveProfileToLocalAppData profile
+
+    currentStage = "保存ファイル再読込み"
     loaded = LoadProfileFromLocalAppData(False)
+
+    currentStage = "登録情報検証"
     ValidateProfileForCurrentPc loaded, info
     VerifyProfileData loaded
 
@@ -116,29 +130,44 @@ Public Sub 固定印刷設定を登録する()
     Exit Sub
 
 ErrorHandler:
-    WriteFixedPrintLog "固定印刷設定登録失敗", "失敗", Err.Description
-    MsgBox "固定印刷設定を登録できませんでした。" & vbCrLf & Err.Description, vbExclamation
+    errNumber = Err.Number
+    errDescription = Err.Description
+    WriteFixedPrintLog "固定印刷設定登録失敗", "失敗", BuildErrorLogNote(currentStage, errNumber, errDescription)
+    MsgBox "固定印刷設定を登録できませんでした。" & vbCrLf & vbCrLf & _
+           BuildErrorMessage(currentStage, errNumber, errDescription), vbExclamation
 End Sub
 
 Public Sub 固定印刷設定をテストする()
+    Dim currentStage As String
+    Dim errNumber As Long
+    Dim errDescription As String
     Dim info As FixedPrinterInfo
+    Dim profile As FixedPrintProfile
     Dim originalDevMode() As Byte
     Dim restoreDevMode As Boolean
     Dim restoreWarning As String
+    Dim msg As String
 
     On Error GoTo ErrorHandler
 
-    Dim profile As FixedPrintProfile
+    currentStage = "対象プリンター検索"
     info = ResolveFixedPrinter()
+    currentStage = "現在設定退避"
     originalDevMode = GetUserDevModeBytes(info.WindowsName)
     restoreDevMode = True
 
+    currentStage = "設定ファイル読込み"
     profile = LoadProfileFromLocalAppData(True)
+    currentStage = "登録情報検証"
     ValidateProfileForCurrentPc profile, info
+    currentStage = "固定DEVMODE適用"
     ApplyUserDevModeBytes info.WindowsName, profile.DevModeBytes
+    currentStage = "適用結果確認"
     VerifyAppliedDevMode info.WindowsName, profile.DevModeBytes
+    currentStage = "印刷前設定復元"
     If Not TryRestorePrinterDevMode(info.WindowsName, originalDevMode, restoreWarning) Then Err.Raise vbObjectError + 5201, , restoreWarning
     restoreDevMode = False
+    currentStage = "復元結果確認"
     VerifyAppliedDevMode info.WindowsName, originalDevMode
 
     WriteFixedPrintLog "固定設定テスト成功", "成功", info.WindowsName & "; Computer=" & GetComputerNameText() & "; User=" & GetWindowsUserNameText()
@@ -146,16 +175,67 @@ Public Sub 固定印刷設定をテストする()
     Exit Sub
 
 ErrorHandler:
-    Dim msg As String
-    msg = Err.Description
+    errNumber = Err.Number
+    errDescription = Err.Description
+    msg = BuildErrorMessage(currentStage, errNumber, errDescription)
     If restoreDevMode Then
         If Not TryRestorePrinterDevMode(info.WindowsName, originalDevMode, restoreWarning) Then msg = msg & vbCrLf & restoreWarning
     End If
-    WriteFixedPrintLog "固定設定テスト失敗", "失敗", msg
-    MsgBox "固定印刷設定テストに失敗しました。" & vbCrLf & msg, vbExclamation
+    WriteFixedPrintLog "固定設定テスト失敗", "失敗", BuildErrorLogNote(currentStage, errNumber, errDescription)
+    MsgBox "固定印刷設定テストに失敗しました。" & vbCrLf & vbCrLf & msg, vbExclamation
+End Sub
+
+Public Sub 固定印刷プリンター診断()
+    Dim currentStage As String
+    Dim errNumber As Long
+    Dim errDescription As String
+    Dim ws As Worksheet
+    Dim svc As Object, printers As Object, p As Object
+    Dim rowNo As Long
+
+    On Error GoTo ErrorHandler
+
+    currentStage = "診断シート作成"
+    Set ws = GetOrCreatePrinterDiagnosticSheet()
+    ws.Cells.Clear
+    ws.Range("A1:D1").Value = Array("Name", "ServerName", "PortName", "DriverName")
+
+    currentStage = "Win32_Printer検索"
+    rowNo = 2
+    Set svc = GetObject("winmgmts:\\.\root\cimv2")
+    Set printers = svc.ExecQuery("SELECT Name, ServerName, PortName, DriverName FROM Win32_Printer")
+    For Each p In printers
+        If InStr(CStr(p.Name), FIXED_PRINTER_NAME) > 0 Then
+            ws.Cells(rowNo, 1).Value = CStr(p.Name)
+            ws.Cells(rowNo, 2).Value = CStr(Nz(p.ServerName))
+            ws.Cells(rowNo, 3).Value = CStr(Nz(p.PortName))
+            ws.Cells(rowNo, 4).Value = CStr(Nz(p.DriverName))
+            rowNo = rowNo + 1
+        End If
+    Next
+    ws.Columns("A:D").AutoFit
+
+    If rowNo = 2 Then
+        MsgBox "名前に『" & FIXED_PRINTER_NAME & "』を含むプリンターはWin32_Printerに見つかりませんでした。" & vbCrLf & _
+               "診断シート: " & ws.Name, vbInformation
+    Else
+        MsgBox "プリンター診断が完了しました。" & vbCrLf & _
+               "診断シート『" & ws.Name & "』に Name / ServerName / PortName / DriverName を出力しました。", vbInformation
+    End If
+    Exit Sub
+
+ErrorHandler:
+    errNumber = Err.Number
+    errDescription = Err.Description
+    WriteFixedPrintLog "固定印刷プリンター診断失敗", "失敗", BuildErrorLogNote(currentStage, errNumber, errDescription)
+    MsgBox "固定印刷プリンター診断に失敗しました。" & vbCrLf & vbCrLf & _
+           BuildErrorMessage(currentStage, errNumber, errDescription), vbExclamation
 End Sub
 
 Public Sub 固定設定で印刷する()
+    Dim currentStage As String
+    Dim errNumber As Long
+    Dim errDescription As String
     Dim oldActivePrinter As String
     Dim oldScreenUpdating As Boolean, oldEnableEvents As Boolean, oldDisplayAlerts As Boolean
     Dim oldPrintCommunication As Boolean, canUsePrintCommunication As Boolean
@@ -168,10 +248,15 @@ Public Sub 固定設定で印刷する()
 
     On Error GoTo ErrorHandler
 
+    currentStage = "登録ファイル確認"
     If Not ProfileFileExists() Then Err.Raise vbObjectError + 5301, , GetProfileNotRegisteredMessage()
+    currentStage = "設定ファイル読込み"
     profile = LoadProfileFromLocalAppData(True)
+    currentStage = "対象プリンター検索"
     info = ResolveFixedPrinter()
+    currentStage = "登録情報検証"
     ValidateProfileForCurrentPc profile, info
+    currentStage = "印刷対象シート判定"
     Set targetSheet = ResolveSealPrintTargetSheet()
 
     oldActivePrinter = Application.ActivePrinter
@@ -190,13 +275,18 @@ Public Sub 固定設定で印刷する()
     Application.DisplayAlerts = False
     If canUsePrintCommunication Then Application.PrintCommunication = False
 
+    currentStage = "現在DEVMODE退避"
     originalDevMode = GetUserDevModeBytes(info.WindowsName)
     restoreDevMode = True
+    currentStage = "固定DEVMODE適用"
     ApplyUserDevModeBytes info.WindowsName, profile.DevModeBytes
+    currentStage = "適用結果確認"
     VerifyAppliedDevMode info.WindowsName, profile.DevModeBytes
 
     If canUsePrintCommunication Then Application.PrintCommunication = True
+    currentStage = "ActivePrinter切替"
     Application.ActivePrinter = info.ExcelName
+    currentStage = "PrintOut実行"
     targetSheet.PrintOut
 
     WriteFixedPrintLog "固定印刷成功", "成功", "Sheet=" & targetSheet.Name & "; Printer=" & info.WindowsName & "; Computer=" & GetComputerNameText() & "; User=" & GetWindowsUserNameText()
@@ -235,7 +325,9 @@ Cleanup:
     Exit Sub
 
 ErrorHandler:
-    mainError = Err.Description
+    errNumber = Err.Number
+    errDescription = Err.Description
+    mainError = BuildErrorMessage(currentStage, errNumber, errDescription)
     Resume Cleanup
 End Sub
 
@@ -324,6 +416,18 @@ Fallback:
     GetMultiSealPageCountFromPrintArea = 1
 End Function
 
+Private Function GetOrCreatePrinterDiagnosticSheet() As Worksheet
+    Const DIAGNOSTIC_SHEET_NAME As String = "固定印刷プリンター診断"
+
+    On Error Resume Next
+    Set GetOrCreatePrinterDiagnosticSheet = ThisWorkbook.Worksheets(DIAGNOSTIC_SHEET_NAME)
+    On Error GoTo 0
+    If GetOrCreatePrinterDiagnosticSheet Is Nothing Then
+        Set GetOrCreatePrinterDiagnosticSheet = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        GetOrCreatePrinterDiagnosticSheet.Name = DIAGNOSTIC_SHEET_NAME
+    End If
+End Function
+
 Private Function ResolveFixedPrinter() As FixedPrinterInfo
     Dim svc As Object, printers As Object, p As Object
     Dim hitCount As Long, hitSummary As String
@@ -347,9 +451,49 @@ Private Function ResolveFixedPrinter() As FixedPrinterInfo
 End Function
 
 Private Function IsTargetPrinter(ByVal printerName As String, ByVal serverName As String, ByVal portName As String) As Boolean
-    Dim allText As String
-    allText = LCase$(printerName & " " & serverName & " " & portName)
-    IsTargetPrinter = (InStr(printerName, FIXED_PRINTER_NAME) > 0 And InStr(allText, LCase$(FIXED_PRINTER_SERVER)) > 0)
+    If InStr(printerName, FIXED_PRINTER_NAME) = 0 Then Exit Function
+
+    IsTargetPrinter = _
+        IsSamePrinterServer(printerName, FIXED_PRINTER_SERVER) Or _
+        IsSamePrinterServer(serverName, FIXED_PRINTER_SERVER) Or _
+        IsSamePrinterServer(portName, FIXED_PRINTER_SERVER)
+End Function
+
+Private Function IsSamePrinterServer(ByVal candidateText As String, ByVal expectedServer As String) As Boolean
+    Dim candidate As String
+    Dim expectedShort As String
+    Dim expectedFqdn As String
+
+    candidate = NormalizePrinterServerText(candidateText)
+    expectedFqdn = NormalizePrinterServerText(expectedServer)
+    expectedShort = GetShortServerName(expectedFqdn)
+
+    IsSamePrinterServer = (InStr(candidate, expectedFqdn) > 0 Or InStr(candidate, expectedShort) > 0)
+End Function
+
+Private Function NormalizePrinterServerText(ByVal value As String) As String
+    Dim normalized As String
+    normalized = LCase$(Trim$(CStr(value)))
+    normalized = Replace(normalized, "\", " ")
+    normalized = Replace(normalized, "/", " ")
+    normalized = Replace(normalized, "(", " ")
+    normalized = Replace(normalized, ")", " ")
+    normalized = Replace(normalized, "　", " ")
+    Do While InStr(normalized, "  ") > 0
+        normalized = Replace(normalized, "  ", " ")
+    Loop
+    NormalizePrinterServerText = normalized
+End Function
+
+Private Function GetShortServerName(ByVal normalizedServer As String) As String
+    Dim dotPos As Long
+    normalizedServer = Trim$(normalizedServer)
+    dotPos = InStr(1, normalizedServer, ".", vbTextCompare)
+    If dotPos > 1 Then
+        GetShortServerName = Left$(normalizedServer, dotPos - 1)
+    Else
+        GetShortServerName = normalizedServer
+    End If
 End Function
 
 Private Function BuildExcelActivePrinterName(ByVal printerName As String, ByVal portName As String) As String
@@ -374,7 +518,6 @@ End Function
 
 Private Sub SaveProfileToLocalAppData(ByRef profile As FixedPrintProfile)
     Dim fso As Object, ts As Object, profileText As String
-    EnsureProfileFolderExists
     profileText = BuildProfileFileText(profile)
     Set fso = CreateObject("Scripting.FileSystemObject")
     Set ts = fso.CreateTextFile(GetProfileFilePath(), True, True)
@@ -384,6 +527,7 @@ End Sub
 
 Private Function LoadProfileFromLocalAppData(ByVal showNotRegisteredGuide As Boolean) As FixedPrintProfile
     Dim fso As Object, ts As Object, text As String
+    Dim profile As FixedPrintProfile
     If Not ProfileFileExists() Then
         If showNotRegisteredGuide Then
             Err.Raise vbObjectError + 5107, , GetProfileNotRegisteredMessage()
@@ -395,7 +539,6 @@ Private Function LoadProfileFromLocalAppData(ByVal showNotRegisteredGuide As Boo
     Set ts = fso.OpenTextFile(GetProfileFilePath(), 1, False, -1)
     text = ts.ReadAll
     ts.Close
-    Dim profile As FixedPrintProfile
     profile = ParseProfileFileText(text)
     VerifyProfileData profile
     LoadProfileFromLocalAppData = profile
@@ -662,6 +805,20 @@ End Function
 Private Sub RaiseApiError(ByVal apiName As String)
     Err.Raise vbObjectError + 5199, , apiName & " に失敗しました。GetLastError=" & CStr(GetLastError())
 End Sub
+
+Private Function BuildErrorMessage(ByVal stageName As String, ByVal errNumber As Long, ByVal errDescription As String) As String
+    If Len(stageName) = 0 Then stageName = "不明"
+    If Len(errDescription) = 0 Then errDescription = "（エラー内容が空です）"
+    BuildErrorMessage = "失敗した処理段階: " & stageName & vbCrLf & _
+                        "エラー番号: " & CStr(errNumber) & vbCrLf & _
+                        "エラー内容: " & errDescription
+End Function
+
+Private Function BuildErrorLogNote(ByVal stageName As String, ByVal errNumber As Long, ByVal errDescription As String) As String
+    If Len(stageName) = 0 Then stageName = "不明"
+    If Len(errDescription) = 0 Then errDescription = "（エラー内容が空です）"
+    BuildErrorLogNote = "Stage=" & stageName & "; Err=" & CStr(errNumber) & "; Description=" & errDescription
+End Function
 
 Private Sub WriteFixedPrintLog(ByVal macroName As String, ByVal resultText As String, ByVal note As String)
     On Error Resume Next

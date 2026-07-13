@@ -83,3 +83,9 @@ Excelの `frmSeal` からシールを印刷する場合だけ、各PC・各Windo
 - プリンタードライバーが登録時から変わっている場合は印刷せず、再登録を案内します。
 - 単件用・複数用の両方に印刷データがある場合は、安全側で印刷を中止します。
 - Cleanupでは、対象プリンターのDEVMODE、`Application.ActivePrinter`、`ScreenUpdating`、`EnableEvents`、`DisplayAlerts`、`PrintCommunication`、`CutCopyMode` の復元を試みます。
+
+## プリンター検索の診断
+
+対象プリンターが見つからない場合や、`ServerName` / `PortName` の表記を確認したい場合は、Publicマクロ `固定印刷プリンター診断` を実行してください。`Win32_Printer` から名前に `土木課C4476R` を含むプリンターを抽出し、診断シート `固定印刷プリンター診断` に `Name`、`ServerName`、`PortName`、`DriverName` を出力します。
+
+プリントサーバーは `PRTSV03.sojanet.local`、`PRTSV03`、`\\PRTSV03` などの表記揺れを正規化して同一サーバーとして判定します。ただし、プリンター名に `土木課C4476R` を含む条件は維持し、複数候補がある場合は自動選択せず印刷を中止します。
