@@ -54,6 +54,19 @@ Private Sub CommandButton7_Click()
 
 End Sub
 
+
+Private Sub btnRegisterFixedPrint_Click()
+
+    固定印刷設定を登録する
+
+End Sub
+
+Private Sub btnFixedPrint_Click()
+
+    固定設定で印刷する
+
+End Sub
+
 Private Sub cmdColorCheck_Click()
 
     Call 色ルールチェック
