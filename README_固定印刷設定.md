@@ -93,3 +93,9 @@ Excelの `frmSeal` からシールを印刷する場合だけ、各PC・各Windo
 ### 同一プリンター候補の重複排除
 
 `\\PRTSV03\土木課C4476R` と `\\PRTSV03.sojanet.local\土木課C4476R` のように、短いサーバー名とFQDNの違いだけで同じ物理プリンターが複数候補として返る場合があります。固定印刷設定では、共有キュー名、PortName、DriverName、正規化後のサーバー名が一致する候補を同一プリンターとして重複排除します。重複排除後に1件へ絞れた場合はそのプリンターを使用し、異なるPortNameまたはDriverNameの候補が複数残る場合は安全のため印刷を中止します。
+
+## PRINTER_INFO_9 が未作成の場合の登録・復元
+
+PCによっては、対象プリンターが正常に登録されていても、`GetPrinterW(Level 9)` の `PRINTER_INFO_9.pDevMode` が未作成（NULL）の場合があります。登録時は既存のユーザー別DEVMODEを前提にせず、`DocumentPropertiesW` の設定画面を表示し、利用者が `[OK]` で確定したDEVMODE全体を固定印刷プロファイルとして保存します。`[キャンセル]` の場合は正常な中止として扱い、既存の設定ファイルは上書きしません。
+
+固定印刷やテストでは、印刷前設定を「ユーザー別DEVMODEが存在したか」と「その時点の有効DEVMODE」に分けて退避します。元々ユーザー別DEVMODEがなかった場合は、復元時に `PRINTER_INFO_9.pDevMode = NULL` を `SetPrinterW(Level 9)` で戻すことを試みます。WindowsまたはドライバーがNULL復元を許可しない場合は、退避した有効DEVMODEを適用して見た目上の設定を復元し、その旨をログへ記録します。

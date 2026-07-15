@@ -20,7 +20,10 @@ Private Const SEAL_PAGE_ROWS_LOCAL As Long = 20
 Private Const PROFILE_LINE_SEPARATOR As String = vbLf
 Private Const PROFILE_KEY_VALUE_SEPARATOR As String = "="
 Private Const DM_OUT_BUFFER As Long = 2
+Private Const DM_IN_PROMPT As Long = 4
 Private Const DM_IN_BUFFER As Long = 8
+Private Const IDOK As Long = 1
+Private Const IDCANCEL As Long = 2
 
 #If VBA7 Then
     Private Declare PtrSafe Function OpenPrinterW Lib "winspool.drv" (ByVal pPrinterName As LongPtr, ByRef phPrinter As LongPtr, ByVal pDefault As LongPtr) As Long
@@ -62,6 +65,11 @@ Private Type FixedPrinterInfo
     ServerName As String
 End Type
 
+Private Type PrinterDevModeSnapshot
+    HasPerUserDevMode As Boolean
+    DevModeBytes() As Byte
+End Type
+
 Private Type FixedPrintProfile
     FormatVersion As String
     PrinterName As String
@@ -86,6 +94,7 @@ Public Sub 固定印刷設定を登録する()
     Dim profilePath As String
     Dim answer As VbMsgBoxResult
     Dim loaded As FixedPrintProfile
+    Dim wasCanceled As Boolean
 
     On Error GoTo ErrorHandler
 
@@ -103,8 +112,14 @@ Public Sub 固定印刷設定を登録する()
     End If
     If answer <> vbYes Then Exit Sub
 
-    currentStage = "DEVMODE取得"
-    devMode = GetUserDevModeBytes(info.WindowsName)
+    currentStage = "プリンター設定画面"
+    MsgBox "固定印刷で使用する設定を指定してください。" & vbCrLf & _
+           "設定後に［OK］を押すと、このPCの固定印刷設定として登録されます。", vbInformation
+    devMode = PromptUserDevModeBytes(info.WindowsName, wasCanceled)
+    If wasCanceled Then
+        MsgBox "固定印刷設定の登録をキャンセルしました。既存の設定ファイルは変更していません。", vbInformation
+        Exit Sub
+    End If
     profile = BuildProfile(info, devMode)
 
     currentStage = "LOCALAPPDATAフォルダ作成"
@@ -143,7 +158,7 @@ Public Sub 固定印刷設定をテストする()
     Dim errDescription As String
     Dim info As FixedPrinterInfo
     Dim profile As FixedPrintProfile
-    Dim originalDevMode() As Byte
+    Dim originalSnapshot As PrinterDevModeSnapshot
     Dim restoreDevMode As Boolean
     Dim restoreWarning As String
     Dim msg As String
@@ -153,7 +168,7 @@ Public Sub 固定印刷設定をテストする()
     currentStage = "対象プリンター検索"
     info = ResolveFixedPrinter()
     currentStage = "現在設定退避"
-    originalDevMode = GetUserDevModeBytes(info.WindowsName)
+    originalSnapshot = GetPrinterDevModeSnapshot(info.WindowsName)
     restoreDevMode = True
 
     currentStage = "設定ファイル読込み"
@@ -165,10 +180,10 @@ Public Sub 固定印刷設定をテストする()
     currentStage = "適用結果確認"
     VerifyAppliedDevMode info.WindowsName, profile.DevModeBytes
     currentStage = "印刷前設定復元"
-    If Not TryRestorePrinterDevMode(info.WindowsName, originalDevMode, restoreWarning) Then Err.Raise vbObjectError + 5201, , restoreWarning
+    If Not TryRestorePrinterSnapshot(info.WindowsName, originalSnapshot, restoreWarning) Then Err.Raise vbObjectError + 5201, , restoreWarning
     restoreDevMode = False
     currentStage = "復元結果確認"
-    VerifyAppliedDevMode info.WindowsName, originalDevMode
+    VerifyRestoredSnapshot info.WindowsName, originalSnapshot
 
     WriteFixedPrintLog "固定設定テスト成功", "成功", info.WindowsName & "; Computer=" & GetComputerNameText() & "; User=" & GetWindowsUserNameText()
     MsgBox "固定印刷設定の適用と復元を確認しました。実際の印刷は行っていません。", vbInformation
@@ -179,7 +194,7 @@ ErrorHandler:
     errDescription = Err.Description
     msg = BuildErrorMessage(currentStage, errNumber, errDescription)
     If restoreDevMode Then
-        If Not TryRestorePrinterDevMode(info.WindowsName, originalDevMode, restoreWarning) Then msg = msg & vbCrLf & restoreWarning
+        If Not TryRestorePrinterSnapshot(info.WindowsName, originalSnapshot, restoreWarning) Then msg = msg & vbCrLf & restoreWarning
     End If
     WriteFixedPrintLog "固定設定テスト失敗", "失敗", BuildErrorLogNote(currentStage, errNumber, errDescription)
     MsgBox "固定印刷設定テストに失敗しました。" & vbCrLf & vbCrLf & msg, vbExclamation
@@ -241,7 +256,7 @@ Public Sub 固定設定で印刷する()
     Dim oldPrintCommunication As Boolean, canUsePrintCommunication As Boolean
     Dim info As FixedPrinterInfo
     Dim profile As FixedPrintProfile
-    Dim originalDevMode() As Byte
+    Dim originalSnapshot As PrinterDevModeSnapshot
     Dim restoreDevMode As Boolean, restoreActivePrinter As Boolean
     Dim targetSheet As Worksheet
     Dim mainError As String, restoreWarning As String
@@ -276,7 +291,7 @@ Public Sub 固定設定で印刷する()
     If canUsePrintCommunication Then Application.PrintCommunication = False
 
     currentStage = "現在DEVMODE退避"
-    originalDevMode = GetUserDevModeBytes(info.WindowsName)
+    originalSnapshot = GetPrinterDevModeSnapshot(info.WindowsName)
     restoreDevMode = True
     currentStage = "固定DEVMODE適用"
     ApplyUserDevModeBytes info.WindowsName, profile.DevModeBytes
@@ -293,7 +308,7 @@ Public Sub 固定設定で印刷する()
 
 Cleanup:
     If restoreDevMode Then
-        If Not TryRestorePrinterDevMode(info.WindowsName, originalDevMode, restoreWarning) Then
+        If Not TryRestorePrinterSnapshot(info.WindowsName, originalSnapshot, restoreWarning) Then
             WriteFixedPrintLog "プリンター設定復元失敗", "失敗", restoreWarning
         End If
     End If
@@ -790,28 +805,86 @@ Private Function UnescapeProfileValue(ByVal value As String) As String
     UnescapeProfileValue = Replace(Replace(value, "%0A", vbLf), "%25", "%")
 End Function
 
-Private Function GetUserDevModeBytes(ByVal printerName As String) As Byte()
+Private Function PromptUserDevModeBytes(ByVal printerName As String, ByRef wasCanceled As Boolean) As Byte()
+#If VBA7 Then
+    Dim hPrinter As LongPtr, pDevMode As LongPtr
+#Else
+    Dim hPrinter As Long, pDevMode As Long
+#End If
+    Dim size As Long, result As Long, data() As Byte
+
+    wasCanceled = False
+    If OpenPrinterW(StrPtr(printerName), hPrinter, 0) = 0 Then RaiseApiError "OpenPrinterW"
+    On Error GoTo CleanFail
+
+    size = DocumentPropertiesW(0, hPrinter, StrPtr(printerName), 0, 0, 0)
+    If size <= 0 Then RaiseApiError "DocumentPropertiesW(size)"
+
+    pDevMode = GlobalAlloc(0, size)
+    If pDevMode = 0 Then Err.Raise vbObjectError + 5105, , "GlobalAlloc(DEVMODE)に失敗しました。"
+
+    result = DocumentPropertiesW(0, hPrinter, StrPtr(printerName), pDevMode, 0, DM_OUT_BUFFER Or DM_IN_PROMPT)
+    If result = IDCANCEL Then
+        wasCanceled = True
+        GoTo CleanExit
+    End If
+    If result <> IDOK Then
+        If result < 0 Then RaiseApiError "DocumentPropertiesW(prompt)"
+        Err.Raise vbObjectError + 5120, , "DocumentPropertiesW(prompt)が想定外の戻り値を返しました。Result=" & CStr(result)
+    End If
+
+    ReDim data(0 To size - 1) As Byte
+    CopyMemory VarPtr(data(0)), pDevMode, size
+    PromptUserDevModeBytes = data
+
+CleanExit:
+    On Error Resume Next
+    If pDevMode <> 0 Then GlobalFree pDevMode
+    If hPrinter <> 0 Then ClosePrinter hPrinter
+    Exit Function
+CleanFail:
+    Dim d As String, n As Long
+    d = Err.Description: n = Err.Number
+    On Error Resume Next
+    If pDevMode <> 0 Then GlobalFree pDevMode
+    If hPrinter <> 0 Then ClosePrinter hPrinter
+    Err.Raise n, , d
+End Function
+
+Private Function GetPrinterDevModeSnapshot(ByVal printerName As String) As PrinterDevModeSnapshot
 #If VBA7 Then
     Dim hPrinter As LongPtr, pBuf As LongPtr, pDevMode As LongPtr
 #Else
     Dim hPrinter As Long, pBuf As Long, pDevMode As Long
 #End If
     Dim needed As Long, pi9 As PrinterInfo9, size As Long, data() As Byte
+    Dim snapshot As PrinterDevModeSnapshot
+
     If OpenPrinterW(StrPtr(printerName), hPrinter, 0) = 0 Then RaiseApiError "OpenPrinterW"
     On Error GoTo CleanFail
+
     GetPrinterW hPrinter, 9, 0, 0, needed
-    If needed <= 0 Then RaiseApiError "GetPrinterW(level 9 size)"
-    pBuf = GlobalAlloc(0, needed)
-    If pBuf = 0 Then Err.Raise vbObjectError + 5103, , "GlobalAlloc(GetPrinterW)に失敗しました。"
-    If GetPrinterW(hPrinter, 9, pBuf, needed, needed) = 0 Then RaiseApiError "GetPrinterW(level 9)"
-    CopyMemory VarPtr(pi9), pBuf, LenB(pi9)
-    pDevMode = pi9.pDevMode
-    If pDevMode = 0 Then Err.Raise vbObjectError + 5104, , "PRINTER_INFO_9のpDevModeが空です。プリンターのユーザー別設定を開いてから再実行してください。"
-    size = DocumentPropertiesW(0, hPrinter, StrPtr(printerName), 0, pDevMode, 0)
-    If size <= 0 Then RaiseApiError "DocumentPropertiesW(size)"
-    ReDim data(0 To size - 1) As Byte
-    CopyMemory VarPtr(data(0)), pDevMode, size
-    GetUserDevModeBytes = data
+    If needed > 0 Then
+        pBuf = GlobalAlloc(0, needed)
+        If pBuf = 0 Then Err.Raise vbObjectError + 5103, , "GlobalAlloc(GetPrinterW)に失敗しました。"
+        If GetPrinterW(hPrinter, 9, pBuf, needed, needed) = 0 Then RaiseApiError "GetPrinterW(level 9)"
+        CopyMemory VarPtr(pi9), pBuf, LenB(pi9)
+        pDevMode = pi9.pDevMode
+    End If
+
+    If pDevMode <> 0 Then
+        size = DocumentPropertiesW(0, hPrinter, StrPtr(printerName), 0, pDevMode, 0)
+        If size <= 0 Then RaiseApiError "DocumentPropertiesW(size per-user)"
+        ReDim data(0 To size - 1) As Byte
+        CopyMemory VarPtr(data(0)), pDevMode, size
+        snapshot.HasPerUserDevMode = True
+        snapshot.DevModeBytes = data
+    Else
+        snapshot.HasPerUserDevMode = False
+        snapshot.DevModeBytes = GetDriverDefaultDevModeBytesWithHandle(hPrinter, printerName)
+    End If
+
+    GetPrinterDevModeSnapshot = snapshot
 CleanExit:
     On Error Resume Next
     If pBuf <> 0 Then GlobalFree pBuf
@@ -824,6 +897,46 @@ CleanFail:
     If pBuf <> 0 Then GlobalFree pBuf
     If hPrinter <> 0 Then ClosePrinter hPrinter
     Err.Raise n, , d
+End Function
+
+#If VBA7 Then
+Private Function GetDriverDefaultDevModeBytesWithHandle(ByVal hPrinter As LongPtr, ByVal printerName As String) As Byte()
+#Else
+Private Function GetDriverDefaultDevModeBytesWithHandle(ByVal hPrinter As Long, ByVal printerName As String) As Byte()
+#End If
+#If VBA7 Then
+    Dim pDevMode As LongPtr
+#Else
+    Dim pDevMode As Long
+#End If
+    Dim size As Long, result As Long, data() As Byte
+
+    size = DocumentPropertiesW(0, hPrinter, StrPtr(printerName), 0, 0, 0)
+    If size <= 0 Then RaiseApiError "DocumentPropertiesW(size default)"
+    pDevMode = GlobalAlloc(0, size)
+    If pDevMode = 0 Then Err.Raise vbObjectError + 5105, , "GlobalAlloc(DEVMODE既定値)に失敗しました。"
+    On Error GoTo CleanFail
+    result = DocumentPropertiesW(0, hPrinter, StrPtr(printerName), pDevMode, 0, DM_OUT_BUFFER)
+    If result < 0 Then RaiseApiError "DocumentPropertiesW(default)"
+    ReDim data(0 To size - 1) As Byte
+    CopyMemory VarPtr(data(0)), pDevMode, size
+    GetDriverDefaultDevModeBytesWithHandle = data
+CleanExit:
+    On Error Resume Next
+    If pDevMode <> 0 Then GlobalFree pDevMode
+    Exit Function
+CleanFail:
+    Dim d As String, n As Long
+    d = Err.Description: n = Err.Number
+    On Error Resume Next
+    If pDevMode <> 0 Then GlobalFree pDevMode
+    Err.Raise n, , d
+End Function
+
+Private Function GetUserDevModeBytes(ByVal printerName As String) As Byte()
+    Dim snapshot As PrinterDevModeSnapshot
+    snapshot = GetPrinterDevModeSnapshot(printerName)
+    GetUserDevModeBytes = snapshot.DevModeBytes
 End Function
 
 Private Sub ApplyUserDevModeBytes(ByVal printerName As String, ByRef devModeBytes() As Byte)
@@ -869,19 +982,83 @@ Private Sub VerifyAppliedDevMode(ByVal printerName As String, ByRef expected() A
     End If
 End Sub
 
-Private Function TryRestorePrinterDevMode(ByVal printerName As String, ByRef devModeBytes() As Byte, ByRef warningText As String) As Boolean
+Private Sub ClearUserDevMode(ByVal printerName As String)
+#If VBA7 Then
+    Dim hPrinter As LongPtr, pInfo As LongPtr
+#Else
+    Dim hPrinter As Long, pInfo As Long
+#End If
+    Dim pi9 As PrinterInfo9
+
+    If OpenPrinterW(StrPtr(printerName), hPrinter, 0) = 0 Then RaiseApiError "OpenPrinterW"
+    On Error GoTo CleanFail
+    pInfo = GlobalAlloc(0, LenB(pi9))
+    If pInfo = 0 Then Err.Raise vbObjectError + 5105, , "GlobalAlloc(PRINTER_INFO_9 NULL)に失敗しました。"
+    pi9.pDevMode = 0
+    CopyMemory pInfo, VarPtr(pi9), LenB(pi9)
+    If SetPrinterW(hPrinter, 9, pInfo, 0) = 0 Then RaiseApiError "SetPrinterW(level 9 NULL)"
+CleanExit:
+    On Error Resume Next
+    If pInfo <> 0 Then GlobalFree pInfo
+    If hPrinter <> 0 Then ClosePrinter hPrinter
+    Exit Sub
+CleanFail:
+    Dim d As String, n As Long
+    d = Err.Description: n = Err.Number
+    On Error Resume Next
+    If pInfo <> 0 Then GlobalFree pInfo
+    If hPrinter <> 0 Then ClosePrinter hPrinter
+    Err.Raise n, , d
+End Sub
+
+Private Function TryRestorePrinterSnapshot(ByVal printerName As String, ByRef snapshot As PrinterDevModeSnapshot, ByRef warningText As String) As Boolean
     On Error GoTo RestoreFailed
-    If Len(printerName) = 0 Or IsEmptyByteArray(devModeBytes) Then
+    If Len(printerName) = 0 Or IsEmptyByteArray(snapshot.DevModeBytes) Then
         warningText = AppendWarning(warningText, "復元に必要なプリンター名またはDEVMODE退避データがありません。")
         Exit Function
     End If
-    ApplyUserDevModeBytes printerName, devModeBytes
-    VerifyAppliedDevMode printerName, devModeBytes
-    TryRestorePrinterDevMode = True
+
+    If snapshot.HasPerUserDevMode Then
+        ApplyUserDevModeBytes printerName, snapshot.DevModeBytes
+        VerifyRestoredSnapshot printerName, snapshot
+        TryRestorePrinterSnapshot = True
+        Exit Function
+    End If
+
+    On Error GoTo NullRestoreFailed
+    ClearUserDevMode printerName
+    VerifyRestoredSnapshot printerName, snapshot
+    TryRestorePrinterSnapshot = True
     Exit Function
+
+NullRestoreFailed:
+    Dim nullRestoreMessage As String
+    nullRestoreMessage = "ユーザー別DEVMODEなしの状態への復元に失敗したため、退避した有効DEVMODEを適用して見た目上の設定を復元しました: Err " & CStr(Err.Number) & " " & Err.Description
+    On Error GoTo RestoreFailed
+    ApplyUserDevModeBytes printerName, snapshot.DevModeBytes
+    VerifyAppliedDevMode printerName, snapshot.DevModeBytes
+    warningText = AppendWarning(warningText, nullRestoreMessage)
+    WriteFixedPrintLog "プリンター設定復元代替", "警告", nullRestoreMessage
+    TryRestorePrinterSnapshot = True
+    Exit Function
+
 RestoreFailed:
     warningText = AppendWarning(warningText, "プリンター設定の復元に失敗しました: Err " & CStr(Err.Number) & " " & Err.Description)
 End Function
+
+Private Sub VerifyRestoredSnapshot(ByVal printerName As String, ByRef snapshot As PrinterDevModeSnapshot)
+    Dim currentSnapshot As PrinterDevModeSnapshot
+    currentSnapshot = GetPrinterDevModeSnapshot(printerName)
+    If snapshot.HasPerUserDevMode Then
+        If Not currentSnapshot.HasPerUserDevMode Or Not ByteArraysEqual(currentSnapshot.DevModeBytes, snapshot.DevModeBytes) Then
+            Err.Raise vbObjectError + 5121, , "印刷前のユーザー別DEVMODEへ復元できたことを確認できませんでした。"
+        End If
+    Else
+        If Not ByteArraysEqual(currentSnapshot.DevModeBytes, snapshot.DevModeBytes) Then
+            Err.Raise vbObjectError + 5122, , "印刷前の有効DEVMODEへ復元できたことを確認できませんでした。"
+        End If
+    End If
+End Sub
 
 Private Function BytesToBase64(ByRef bytes() As Byte) As String
     Dim dom As Object, node As Object
