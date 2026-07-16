@@ -55,6 +55,19 @@ Private Sub CommandButton7_Click()
 End Sub
 
 
+
+Private Sub btnDummyExport_Click()
+
+    Call ダミーブック出力
+
+End Sub
+
+Private Sub CommandButton8_Click()
+
+    Call ダミーブック出力
+
+End Sub
+
 Private Sub btnRegisterFixedPrint_Click()
 
     固定印刷設定を登録する
