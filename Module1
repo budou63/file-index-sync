@@ -9102,6 +9102,9 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
 
     ConfigureMultiSealFixedPrintLayout wsMulti, targetRows.Count, SEAL_PAGE_ROWS, SEAL_PER_PAGE, printLastCol
 
+    ' 複数シートの作成と印刷レイアウト設定が正常完了した場合だけモードを更新する。
+    固定印刷モードを複数に設定する
+
     MsgBox "個別フォルダシール（複数）を作成しました。" & vbCrLf & _
            "対象件数: " & targetRows.Count & " 件" & vbCrLf & _
            "ページ数: " & pageCount & " ページ", vbInformation
@@ -9384,6 +9387,8 @@ Public Sub ClearAllSeals_NewSpec()
         ' PageSetup.PrintAreaを1ページ分へ勝手に縮めない。
         clearedMulti = True
     End If
+
+    If clearedSingle Or clearedMulti Then 固定印刷モードを未設定に戻す
 
     If clearedSingle And clearedMulti Then
         MsgBox "単発用シートと複数用シートをクリアしました。", vbInformation

@@ -24,6 +24,12 @@ Private Const DM_IN_PROMPT As Long = 4
 Private Const DM_IN_BUFFER As Long = 8
 Private Const IDOK As Long = 1
 Private Const IDCANCEL As Long = 2
+Private Const SEAL_PRINT_MODE_UNSET As Long = 0
+Private Const SEAL_PRINT_MODE_SINGLE As Long = 1
+Private Const SEAL_PRINT_MODE_MULTI As Long = 2
+
+' 現在のExcelセッション中だけ、最後に正常完了したシール反映モードを保持する。
+Private gSealPrintMode As Long
 
 #If VBA7 Then
     Private Declare PtrSafe Function OpenPrinterW Lib "winspool.drv" (ByVal pPrinterName As LongPtr, ByRef phPrinter As LongPtr, ByVal pDefault As LongPtr) As Long
@@ -83,6 +89,18 @@ Private Type FixedPrintProfile
     Checksum As String
     DevModeBytes() As Byte
 End Type
+
+Public Sub 固定印刷モードを単件に設定する()
+    gSealPrintMode = SEAL_PRINT_MODE_SINGLE
+End Sub
+
+Public Sub 固定印刷モードを複数に設定する()
+    gSealPrintMode = SEAL_PRINT_MODE_MULTI
+End Sub
+
+Public Sub 固定印刷モードを未設定に戻す()
+    gSealPrintMode = SEAL_PRINT_MODE_UNSET
+End Sub
 
 Public Sub 固定印刷設定を登録する()
     Dim currentStage As String
@@ -350,25 +368,29 @@ End Sub
 
 Private Function ResolveSealPrintTargetSheet() As Worksheet
     Dim wsSingle As Worksheet, wsMulti As Worksheet
-    Dim hasSingle As Boolean, hasMulti As Boolean
 
     Set wsSingle = ThisWorkbook.Worksheets(SINGLE_SEAL_SHEET)
     Set wsMulti = ThisWorkbook.Worksheets(MULTI_SEAL_SHEET)
-    hasSingle = HasSingleSealOutputData(wsSingle)
-    hasMulti = HasMultiSealOutputData(wsMulti)
 
-    If hasSingle And Not hasMulti Then
-        Set ResolveSealPrintTargetSheet = wsSingle
-    ElseIf hasMulti And Not hasSingle Then
-        Set ResolveSealPrintTargetSheet = wsMulti
-    ElseIf Not hasSingle And Not hasMulti Then
-        Err.Raise vbObjectError + 5302, , "印刷するシールデータがありません。" & vbCrLf & _
-                  "先に単件または複数の内容を反映してください。"
-    Else
-        Err.Raise vbObjectError + 5303, , "単件用シートと複数用シートの両方に" & vbCrLf & _
-                  "印刷データが確認されました。" & vbCrLf & _
-                  "印刷対象を確認してください。"
-    End If
+    Select Case gSealPrintMode
+        Case SEAL_PRINT_MODE_SINGLE
+            If Not HasSingleSealOutputData(wsSingle) Then
+                Err.Raise vbObjectError + 5302, , "直前に反映した単件用シートに印刷データがありません。" & vbCrLf & _
+                          "先に単件のシール内容を反映してください。"
+            End If
+            Set ResolveSealPrintTargetSheet = wsSingle
+
+        Case SEAL_PRINT_MODE_MULTI
+            If Not HasMultiSealOutputData(wsMulti) Then
+                Err.Raise vbObjectError + 5302, , "直前に反映した複数用シートに印刷データがありません。" & vbCrLf & _
+                          "先に複数のシール内容を反映してください。"
+            End If
+            Set ResolveSealPrintTargetSheet = wsMulti
+
+        Case Else
+            Err.Raise vbObjectError + 5303, , "印刷対象を判定できません。" & vbCrLf & _
+                      "先に単件または複数のシール内容を反映してください。"
+    End Select
 End Function
 
 Private Function HasSingleSealOutputData(ByVal ws As Worksheet) As Boolean

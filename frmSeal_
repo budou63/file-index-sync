@@ -367,6 +367,9 @@ Private Sub ApplySingleSlots_NewSpec(ByVal frm As Object)
         End If
     Next slot
 
+    ' 全転記処理がエラーなく完了した場合だけ、今回の印刷対象を単件にする。
+    固定印刷モードを単件に設定する
+
     If Len(missingList) > 0 Then
         MsgBox "個別フォルダシールへ反映しました（一部未該当は空欄）。" & vbCrLf & missingList, vbExclamation
     Else
