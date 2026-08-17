@@ -508,8 +508,12 @@ Private Function ResolveFixedPrinter() As FixedPrinterInfo
 
     If uniqueCount = 1 Then
         selectedInfo = uniqueCandidates(1)
+        selectedInfo.ExcelName = ResolveExcelActivePrinterName(selectedInfo)
         WriteFixedPrintLog "固定印刷プリンター選択", "成功", _
-            "BeforeDedup=" & CStr(candidateCount) & "; AfterDedup=" & CStr(uniqueCount) & "; Selected=" & selectedInfo.WindowsName
+            "BeforeDedup=" & CStr(candidateCount) & "; AfterDedup=" & CStr(uniqueCount) & _
+            "; Selected=" & selectedInfo.WindowsName & "; WindowsName=" & selectedInfo.WindowsName & _
+            "; PortName=" & selectedInfo.PortName & "; DriverName=" & selectedInfo.DriverName & _
+            "; ResolvedActivePrinter=" & selectedInfo.ExcelName
         ResolveFixedPrinter = selectedInfo
         Exit Function
     End If
@@ -566,14 +570,249 @@ End Function
 
 Private Function CanSetExcelActivePrinter(ByRef info As FixedPrinterInfo) As Boolean
     Dim oldActivePrinter As String
-    On Error Resume Next
+
+    On Error GoTo Failed
     oldActivePrinter = Application.ActivePrinter
-    Err.Clear
-    Application.ActivePrinter = info.ExcelName
-    CanSetExcelActivePrinter = (Err.Number = 0)
-    Err.Clear
+    CanSetExcelActivePrinter = (Len(ResolveExcelActivePrinterName(info, False)) > 0)
+
+Restore:
+    On Error Resume Next
     If Len(oldActivePrinter) > 0 Then Application.ActivePrinter = oldActivePrinter
+    Err.Clear
     On Error GoTo 0
+    Exit Function
+
+Failed:
+    CanSetExcelActivePrinter = False
+    Resume Restore
+End Function
+
+Private Function ResolveExcelActivePrinterName(ByRef info As FixedPrinterInfo, Optional ByVal writeLog As Boolean = True) As String
+    Dim oldActivePrinter As String
+    Dim candidates() As String
+    Dim candidateCount As Long
+    Dim i As Long, neNo As Long
+    Dim candidate As String
+    Dim resolvedName As String
+    Dim errorText As String
+    Dim attemptLog As String
+    Dim currentPort As String
+    Dim failureNumber As Long
+    Dim failureDescription As String
+    Dim restoreError As String
+    Dim excelPrinterName As String
+
+    On Error GoTo ResolveFailed
+
+    oldActivePrinter = Application.ActivePrinter
+    If Len(Trim$(oldActivePrinter)) = 0 Then
+        Err.Raise vbObjectError + 5107, , "探索前のApplication.ActivePrinterを取得できなかったため、候補探索を中止しました。"
+    End If
+
+    If IsExcelActivePrinterForInfo(oldActivePrinter, info) Then
+        AddExcelActivePrinterCandidate candidates, candidateCount, oldActivePrinter
+        currentPort = ExtractExcelActivePrinterPort(oldActivePrinter)
+        AddExcelActivePrinterPortCandidates candidates, candidateCount, info.WindowsName, currentPort
+    End If
+
+    AddExcelActivePrinterPortCandidates candidates, candidateCount, info.WindowsName, info.PortName
+    excelPrinterName = GetPrinterQueueName(info.WindowsName)
+
+    ' Excelのネットワークポート表現はWMIのPortNameと一致しない場合があるため、
+    ' Ne番号を固定せず、一定範囲の候補を実際にApplication.ActivePrinterへ設定して確認する。
+    For neNo = 0 To 99
+        AddExcelActivePrinterCandidate candidates, candidateCount, _
+            BuildExcelActivePrinterName(info.WindowsName, "Ne" & Format$(neNo, "00") & ":")
+        AddExcelActivePrinterCandidate candidates, candidateCount, _
+            BuildExcelActivePrinterName(info.WindowsName, "Ne" & Format$(neNo, "00"))
+        If StrComp(excelPrinterName, info.WindowsName, vbTextCompare) <> 0 Then
+            AddExcelActivePrinterCandidate candidates, candidateCount, _
+                BuildExcelActivePrinterName(excelPrinterName, "Ne" & Format$(neNo, "00") & ":")
+            AddExcelActivePrinterCandidate candidates, candidateCount, _
+                BuildExcelActivePrinterName(excelPrinterName, "Ne" & Format$(neNo, "00"))
+        End If
+    Next neNo
+
+    For i = 1 To candidateCount
+        candidate = candidates(i)
+        resolvedName = ""
+        errorText = ""
+        If TrySetExcelActivePrinterCandidate(candidate, info, resolvedName, errorText) Then
+            attemptLog = AppendActivePrinterAttempt(attemptLog, candidate, "成功: " & resolvedName)
+            GoTo ResolveSucceeded
+        End If
+        attemptLog = AppendActivePrinterAttempt(attemptLog, candidate, errorText)
+    Next i
+
+    failureNumber = vbObjectError + 5108
+    failureDescription = "対象プリンターはWindows上に見つかりましたが、Excelで使用できるプリンター名（ActivePrinter）を特定できませんでした。" & vbCrLf & _
+                         "対象プリンター以外へ切り替えないため、印刷を中止します。" & vbCrLf & _
+                         BuildActivePrinterResolutionLog(info, oldActivePrinter, "", attemptLog)
+    GoTo ResolveCleanup
+
+ResolveSucceeded:
+    info.ExcelName = resolvedName
+    ResolveExcelActivePrinterName = resolvedName
+    If writeLog Then
+        WriteFixedPrintLog "固定印刷ActivePrinter解決", "成功", _
+            BuildActivePrinterResolutionLog(info, oldActivePrinter, resolvedName, attemptLog)
+    End If
+    GoTo ResolveCleanup
+
+ResolveFailed:
+    failureNumber = Err.Number
+    failureDescription = Err.Description
+
+ResolveCleanup:
+    On Error Resume Next
+    If Len(oldActivePrinter) > 0 Then
+        Application.ActivePrinter = oldActivePrinter
+        If Err.Number <> 0 Then
+            restoreError = "探索前のActivePrinterへ復元できませんでした: Err " & CStr(Err.Number) & " " & Err.Description
+            Err.Clear
+        End If
+    End If
+    On Error GoTo 0
+
+    If Len(restoreError) > 0 Then
+        If Len(failureDescription) = 0 Then
+            failureNumber = vbObjectError + 5109
+            failureDescription = restoreError
+        Else
+            failureDescription = failureDescription & vbCrLf & restoreError
+        End If
+    End If
+
+    If Len(failureDescription) > 0 Then
+        If writeLog Then
+            WriteFixedPrintLog "固定印刷ActivePrinter解決", "失敗", _
+                BuildActivePrinterResolutionLog(info, oldActivePrinter, "", attemptLog) & "; Error=" & failureDescription
+        End If
+        Err.Raise failureNumber, , failureDescription
+    End If
+End Function
+
+Private Sub AddExcelActivePrinterCandidate(ByRef candidates() As String, ByRef candidateCount As Long, ByVal candidateText As String)
+    Dim i As Long
+
+    candidateText = Trim$(candidateText)
+    If Len(candidateText) = 0 Then Exit Sub
+
+    For i = 1 To candidateCount
+        If StrComp(candidates(i), candidateText, vbTextCompare) = 0 Then Exit Sub
+    Next i
+
+    candidateCount = candidateCount + 1
+    If candidateCount = 1 Then
+        ReDim candidates(1 To 1)
+    Else
+        ReDim Preserve candidates(1 To candidateCount)
+    End If
+    candidates(candidateCount) = candidateText
+End Sub
+
+Private Sub AddExcelActivePrinterPortCandidates(ByRef candidates() As String, ByRef candidateCount As Long, ByVal printerName As String, ByVal portName As String)
+    Dim normalizedPort As String
+    Dim queueName As String
+
+    normalizedPort = Trim$(portName)
+    If Len(normalizedPort) = 0 Then Exit Sub
+
+    AddExcelActivePrinterCandidate candidates, candidateCount, BuildExcelActivePrinterName(printerName, normalizedPort)
+    If Right$(normalizedPort, 1) = ":" Then
+        AddExcelActivePrinterCandidate candidates, candidateCount, _
+            BuildExcelActivePrinterName(printerName, Left$(normalizedPort, Len(normalizedPort) - 1))
+    Else
+        AddExcelActivePrinterCandidate candidates, candidateCount, _
+            BuildExcelActivePrinterName(printerName, normalizedPort & ":")
+    End If
+
+    queueName = GetPrinterQueueName(printerName)
+    If StrComp(queueName, printerName, vbTextCompare) <> 0 Then
+        AddExcelActivePrinterCandidate candidates, candidateCount, BuildExcelActivePrinterName(queueName, normalizedPort)
+        If Right$(normalizedPort, 1) = ":" Then
+            AddExcelActivePrinterCandidate candidates, candidateCount, _
+                BuildExcelActivePrinterName(queueName, Left$(normalizedPort, Len(normalizedPort) - 1))
+        Else
+            AddExcelActivePrinterCandidate candidates, candidateCount, _
+                BuildExcelActivePrinterName(queueName, normalizedPort & ":")
+        End If
+    End If
+End Sub
+
+Private Function ExtractExcelActivePrinterPort(ByVal activePrinterText As String) As String
+    Dim markerPos As Long
+
+    markerPos = InStrRev(activePrinterText, " on ", -1, vbTextCompare)
+    If markerPos > 0 Then ExtractExcelActivePrinterPort = Trim$(Mid$(activePrinterText, markerPos + 4))
+End Function
+
+Private Function TrySetExcelActivePrinterCandidate(ByVal candidate As String, ByRef info As FixedPrinterInfo, ByRef resolvedName As String, ByRef errorText As String) As Boolean
+    Dim errNumber As Long
+    Dim errDescription As String
+    Dim activePrinterText As String
+
+    On Error Resume Next
+    Err.Clear
+    Application.ActivePrinter = candidate
+    errNumber = Err.Number
+    errDescription = Err.Description
+    Err.Clear
+
+    If errNumber = 0 Then
+        activePrinterText = Application.ActivePrinter
+        errNumber = Err.Number
+        errDescription = Err.Description
+        Err.Clear
+    End If
+    On Error GoTo 0
+
+    If errNumber <> 0 Then
+        errorText = "Err " & CStr(errNumber) & " " & errDescription
+        Exit Function
+    End If
+
+    If Not IsExcelActivePrinterForInfo(activePrinterText, info) Then
+        errorText = "設定後のActivePrinterが対象プリンターではありません: " & activePrinterText
+        Exit Function
+    End If
+
+    resolvedName = activePrinterText
+    TrySetExcelActivePrinterCandidate = True
+End Function
+
+Private Function IsExcelActivePrinterForInfo(ByVal activePrinterText As String, ByRef info As FixedPrinterInfo) As Boolean
+    Dim markerPos As Long
+    Dim activeQueueName As String
+    Dim targetQueueName As String
+
+    markerPos = InStrRev(activePrinterText, " on ", -1, vbTextCompare)
+    If markerPos > 0 Then
+        activeQueueName = Left$(activePrinterText, markerPos - 1)
+    Else
+        activeQueueName = activePrinterText
+    End If
+
+    activeQueueName = GetPrinterQueueName(activeQueueName)
+    targetQueueName = GetPrinterQueueName(info.WindowsName)
+    IsExcelActivePrinterForInfo = _
+        (Len(activeQueueName) > 0) And _
+        (StrComp(activeQueueName, targetQueueName, vbTextCompare) = 0)
+End Function
+
+Private Function AppendActivePrinterAttempt(ByVal currentText As String, ByVal candidate As String, ByVal resultText As String) As String
+    If Len(currentText) > 0 Then currentText = currentText & vbCrLf
+    AppendActivePrinterAttempt = currentText & candidate & " => " & resultText
+End Function
+
+Private Function BuildActivePrinterResolutionLog(ByRef info As FixedPrinterInfo, ByVal oldActivePrinter As String, ByVal resolvedName As String, ByVal attemptLog As String) As String
+    If Len(resolvedName) = 0 Then resolvedName = "（なし）"
+    If Len(attemptLog) = 0 Then attemptLog = "（候補なし）"
+
+    BuildActivePrinterResolutionLog = _
+        "WindowsName=" & info.WindowsName & "; PortName=" & info.PortName & _
+        "; DriverName=" & info.DriverName & "; OldActivePrinter=" & oldActivePrinter & _
+        "; ResolvedActivePrinter=" & resolvedName & "; TriedActivePrinter=" & attemptLog
 End Function
 
 Private Function BuildPrinterCandidateSummary(ByRef candidates() As FixedPrinterInfo, ByVal candidateCount As Long) As String
@@ -688,7 +927,7 @@ Private Function NormalizePrinterServerForIdentity(ByVal serverName As String) A
 End Function
 
 Private Function BuildExcelActivePrinterName(ByVal printerName As String, ByVal portName As String) As String
-    BuildExcelActivePrinterName = printerName & " on " & portName
+    BuildExcelActivePrinterName = Trim$(printerName) & " on " & Trim$(portName)
 End Function
 
 Private Function BuildProfile(ByRef info As FixedPrinterInfo, ByRef devModeBytes() As Byte) As FixedPrintProfile
