@@ -12,7 +12,7 @@ Private Const FIXED_PRINTER_NAME As String = "土木課C4476R"
 Private Const FIXED_PRINTER_SERVER As String = "PRTSV03.sojanet.local"
 Private Const SINGLE_SEAL_SHEET As String = "個別フォルダシール"
 Private Const MULTI_SEAL_SHEET As String = "個別フォルダシール（複数）"
-Private Const PROFILE_FORMAT_VERSION As String = "1"
+Private Const PROFILE_FORMAT_VERSION As String = "2"
 Private Const PROFILE_BASE_FOLDER As String = "file-index-sync\固定印刷設定"
 Private Const PROFILE_FILE_NAME As String = "土木課C4476R.dat"
 Private Const SEAL_PER_PAGE_LOCAL As Long = 12
@@ -24,6 +24,12 @@ Private Const DM_IN_PROMPT As Long = 4
 Private Const DM_IN_BUFFER As Long = 8
 Private Const IDOK As Long = 1
 Private Const IDCANCEL As Long = 2
+Private Const DEVICE_CAPABILITIES_BINS As Long = 6
+Private Const DEVICE_CAPABILITIES_BINNAMES As Long = 12
+Private Const DEVICE_BIN_NAME_LENGTH As Long = 24
+Private Const DEVMODE_DM_FIELDS_OFFSET As Long = 72
+Private Const DEVMODE_DM_DEFAULT_SOURCE_OFFSET As Long = 88
+Private Const DEVMODE_DM_DEFAULTSOURCE_FLAG As Long = &H200
 Private Const SEAL_PRINT_MODE_UNSET As Long = 0
 Private Const SEAL_PRINT_MODE_SINGLE As Long = 1
 Private Const SEAL_PRINT_MODE_MULTI As Long = 2
@@ -37,6 +43,7 @@ Private gSealPrintMode As Long
     Private Declare PtrSafe Function GetPrinterW Lib "winspool.drv" (ByVal hPrinter As LongPtr, ByVal Level As Long, ByVal pPrinter As LongPtr, ByVal cbBuf As Long, ByRef pcbNeeded As Long) As Long
     Private Declare PtrSafe Function SetPrinterW Lib "winspool.drv" (ByVal hPrinter As LongPtr, ByVal Level As Long, ByVal pPrinter As LongPtr, ByVal Command As Long) As Long
     Private Declare PtrSafe Function DocumentPropertiesW Lib "winspool.drv" (ByVal hwnd As LongPtr, ByVal hPrinter As LongPtr, ByVal pDeviceName As LongPtr, ByVal pDevModeOutput As LongPtr, ByVal pDevModeInput As LongPtr, ByVal fMode As Long) As Long
+    Private Declare PtrSafe Function DeviceCapabilitiesW Lib "winspool.drv" (ByVal pDevice As LongPtr, ByVal pPort As LongPtr, ByVal fwCapability As Long, ByVal pOutput As LongPtr, ByVal pDevMode As LongPtr) As Long
     Private Declare PtrSafe Function GetLastError Lib "kernel32" () As Long
     Private Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal Destination As LongPtr, ByVal Source As LongPtr, ByVal Length As LongPtr)
     Private Declare PtrSafe Function GlobalAlloc Lib "kernel32" (ByVal uFlags As Long, ByVal dwBytes As LongPtr) As LongPtr
@@ -47,6 +54,7 @@ Private gSealPrintMode As Long
     Private Declare Function GetPrinterW Lib "winspool.drv" (ByVal hPrinter As Long, ByVal Level As Long, ByVal pPrinter As Long, ByVal cbBuf As Long, ByRef pcbNeeded As Long) As Long
     Private Declare Function SetPrinterW Lib "winspool.drv" (ByVal hPrinter As Long, ByVal Level As Long, ByVal pPrinter As Long, ByVal Command As Long) As Long
     Private Declare Function DocumentPropertiesW Lib "winspool.drv" (ByVal hwnd As Long, ByVal hPrinter As Long, ByVal pDeviceName As Long, ByVal pDevModeOutput As Long, ByVal pDevModeInput As Long, ByVal fMode As Long) As Long
+    Private Declare Function DeviceCapabilitiesW Lib "winspool.drv" (ByVal pDevice As Long, ByVal pPort As Long, ByVal fwCapability As Long, ByVal pOutput As Long, ByVal pDevMode As Long) As Long
     Private Declare Function GetLastError Lib "kernel32" () As Long
     Private Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal Destination As Long, ByVal Source As Long, ByVal Length As Long)
     Private Declare Function GlobalAlloc Lib "kernel32" (ByVal uFlags As Long, ByVal dwBytes As Long) As Long
@@ -76,6 +84,12 @@ Private Type PrinterDevModeSnapshot
     DevModeBytes() As Byte
 End Type
 
+Private Type PrinterTraySnapshot
+    IsKnown As Boolean
+    TrayId As Long
+    TrayName As String
+End Type
+
 Private Type FixedPrintProfile
     FormatVersion As String
     PrinterName As String
@@ -87,6 +101,8 @@ Private Type FixedPrintProfile
     RegisteredAt As String
     DevModeSize As Long
     Checksum As String
+    TrayId As Long
+    TrayName As String
     DevModeBytes() As Byte
 End Type
 
@@ -113,6 +129,7 @@ Public Sub 固定印刷設定を登録する()
     Dim answer As VbMsgBoxResult
     Dim loaded As FixedPrintProfile
     Dim wasCanceled As Boolean
+    Dim registeredTray As PrinterTraySnapshot
 
     On Error GoTo ErrorHandler
 
@@ -132,13 +149,16 @@ Public Sub 固定印刷設定を登録する()
 
     currentStage = "プリンター設定画面"
     MsgBox "固定印刷で使用する設定を指定してください。" & vbCrLf & _
+           "用紙トレイは『トレイ5（手差し）』、用紙種類は『普通紙』に設定してください。" & vbCrLf & _
            "設定後に［OK］を押すと、このPCの固定印刷設定として登録されます。", vbInformation
     devMode = PromptUserDevModeBytes(info.WindowsName, wasCanceled)
     If wasCanceled Then
         MsgBox "固定印刷設定の登録をキャンセルしました。既存の設定ファイルは変更していません。", vbInformation
         Exit Sub
     End If
-    profile = BuildProfile(info, devMode)
+    currentStage = "登録時給紙トレイ確認"
+    registeredTray = GetPrinterTraySnapshot(info, devMode, "登録時")
+    profile = BuildProfile(info, devMode, registeredTray)
 
     currentStage = "LOCALAPPDATAフォルダ作成"
     EnsureProfileFolderExists
@@ -153,7 +173,10 @@ Public Sub 固定印刷設定を登録する()
     ValidateProfileForCurrentPc loaded, info
     VerifyProfileData loaded
 
-    WriteFixedPrintLog "固定印刷設定登録成功", "成功", "Printer=" & info.WindowsName & "; Computer=" & GetComputerNameText() & "; User=" & GetWindowsUserNameText()
+    WriteFixedPrintLog "固定印刷設定登録成功", "成功", _
+        "Printer=" & info.WindowsName & "; RegisteredTrayId=" & CStr(profile.TrayId) & _
+        "; RegisteredTrayName=" & profile.TrayName & "; Computer=" & GetComputerNameText() & _
+        "; User=" & GetWindowsUserNameText()
     MsgBox "固定印刷設定を登録しました。" & vbCrLf & vbCrLf & _
            "プリンター名: " & info.WindowsName & vbCrLf & _
            "コンピューター名: " & GetComputerNameText() & vbCrLf & _
@@ -181,6 +204,7 @@ Public Sub 固定印刷設定をテストする()
     Dim restoreWarning As String
     Dim msg As String
     Dim appliedDevMode() As Byte
+    Dim appliedTray As PrinterTraySnapshot
 
     On Error GoTo ErrorHandler
 
@@ -198,6 +222,8 @@ Public Sub 固定印刷設定をテストする()
     appliedDevMode = ApplyUserDevModeBytes(info.WindowsName, profile.DevModeBytes)
     currentStage = "適用結果確認"
     VerifyAppliedDevMode info.WindowsName, appliedDevMode
+    currentStage = "給紙トレイ確認"
+    VerifyAppliedTray info, profile, appliedDevMode, appliedTray
     currentStage = "印刷前設定復元"
     If Not TryRestorePrinterSnapshot(info.WindowsName, originalSnapshot, restoreWarning) Then Err.Raise vbObjectError + 5201, , restoreWarning
     restoreDevMode = False
@@ -280,6 +306,11 @@ Public Sub 固定設定で印刷する()
     Dim targetSheet As Worksheet
     Dim mainError As String, restoreWarning As String
     Dim appliedDevMode() As Byte
+    Dim beforeTray As PrinterTraySnapshot
+    Dim appliedTray As PrinterTraySnapshot
+    Dim afterRestoreTray As PrinterTraySnapshot
+    Dim restoredSnapshot As PrinterDevModeSnapshot
+    Dim afterRestoreTrayError As String
 
     On Error GoTo ErrorHandler
 
@@ -313,24 +344,49 @@ Public Sub 固定設定で印刷する()
     currentStage = "現在DEVMODE退避"
     originalSnapshot = GetPrinterDevModeSnapshot(info.WindowsName)
     restoreDevMode = True
-    currentStage = "固定DEVMODE適用"
-    appliedDevMode = ApplyUserDevModeBytes(info.WindowsName, profile.DevModeBytes)
-    currentStage = "適用結果確認"
-    VerifyAppliedDevMode info.WindowsName, appliedDevMode
+    currentStage = "印刷前給紙トレイ確認"
+    beforeTray = GetPrinterTraySnapshot(info, originalSnapshot.DevModeBytes, "印刷前")
 
     If canUsePrintCommunication Then Application.PrintCommunication = True
     currentStage = "ActivePrinter切替"
     Application.ActivePrinter = info.ExcelName
+    currentStage = "固定DEVMODE適用"
+    appliedDevMode = ApplyUserDevModeBytes(info.WindowsName, profile.DevModeBytes)
+    currentStage = "適用結果確認"
+    VerifyAppliedDevMode info.WindowsName, appliedDevMode
+    currentStage = "給紙トレイ確認"
+    VerifyAppliedTray info, profile, appliedDevMode, appliedTray
+    WriteFixedPrintLog "固定印刷トレイ確認", "成功", _
+        BuildFixedPrintTrayLog(info, profile, beforeTray, appliedTray, "（未確認）")
     currentStage = "PrintOut実行"
     targetSheet.PrintOut
 
-    WriteFixedPrintLog "固定印刷成功", "成功", "Sheet=" & targetSheet.Name & "; Printer=" & info.WindowsName & "; Computer=" & GetComputerNameText() & "; User=" & GetWindowsUserNameText()
+    WriteFixedPrintLog "固定印刷成功", "成功", _
+        "Sheet=" & targetSheet.Name & "; " & BuildFixedPrintTrayLog(info, profile, beforeTray, appliedTray, "（未確認）") & _
+        "; Computer=" & GetComputerNameText() & "; User=" & GetWindowsUserNameText()
 
 Cleanup:
     If restoreDevMode Then
         If Not TryRestorePrinterSnapshot(info.WindowsName, originalSnapshot, restoreWarning) Then
             WriteFixedPrintLog "プリンター設定復元失敗", "失敗", restoreWarning
+        Else
+            On Error Resume Next
+            restoredSnapshot = GetPrinterDevModeSnapshot(info.WindowsName)
+            afterRestoreTray = GetPrinterTraySnapshot(info, restoredSnapshot.DevModeBytes, "復元後")
+            If Err.Number <> 0 Then
+                afterRestoreTrayError = "復元後の給紙トレイ確認に失敗しました: Err " & CStr(Err.Number) & " " & Err.Description
+                restoreWarning = AppendWarning(restoreWarning, afterRestoreTrayError)
+                Err.Clear
+            End If
+            On Error GoTo 0
         End If
+    End If
+    If Len(afterRestoreTrayError) = 0 And afterRestoreTray.IsKnown Then
+        WriteFixedPrintLog "固定印刷トレイ復元確認", "成功", _
+            BuildFixedPrintTrayLog(info, profile, beforeTray, appliedTray, FormatTraySnapshot(afterRestoreTray))
+    ElseIf Len(afterRestoreTrayError) > 0 Then
+        WriteFixedPrintLog "固定印刷トレイ復元確認", "警告", _
+            BuildFixedPrintTrayLog(info, profile, beforeTray, appliedTray, afterRestoreTrayError)
     End If
     If restoreActivePrinter Then
         On Error Resume Next
@@ -930,7 +986,213 @@ Private Function BuildExcelActivePrinterName(ByVal printerName As String, ByVal 
     BuildExcelActivePrinterName = Trim$(printerName) & " on " & Trim$(portName)
 End Function
 
-Private Function BuildProfile(ByRef info As FixedPrinterInfo, ByRef devModeBytes() As Byte) As FixedPrintProfile
+Private Function GetPrinterTraySnapshot(ByRef info As FixedPrinterInfo, ByRef devModeBytes() As Byte, ByVal contextName As String) As PrinterTraySnapshot
+    Dim snapshot As PrinterTraySnapshot
+    Dim dmFields As Long
+    Dim trayId As Long
+    Dim binIds() As Long
+    Dim binNames() As String
+    Dim binCount As Long
+    Dim i As Long
+
+    If IsEmptyByteArray(devModeBytes) Or ByteArrayLength(devModeBytes) <= DEVMODE_DM_DEFAULT_SOURCE_OFFSET + 1 Then
+        Err.Raise vbObjectError + 5130, , contextName & "のDEVMODEから給紙トレイ情報を読み取れません。"
+    End If
+
+    dmFields = ReadLongFromByteArray(devModeBytes, DEVMODE_DM_FIELDS_OFFSET)
+    If (dmFields And DEVMODE_DM_DEFAULTSOURCE_FLAG) = 0 Then
+        Err.Raise vbObjectError + 5131, , contextName & "のDEVMODEにdmDefaultSourceが含まれていません。給紙トレイを安全に確認できないため中止します。"
+    End If
+
+    trayId = ReadIntegerFromByteArray(devModeBytes, DEVMODE_DM_DEFAULT_SOURCE_OFFSET)
+    If trayId <= 0 Then
+        Err.Raise vbObjectError + 5132, , contextName & "のDEVMODEに有効な給紙トレイIDがありません。"
+    End If
+
+    binCount = GetPrinterBinCapabilities(info, devModeBytes, binIds, binNames)
+    For i = 1 To binCount
+        If binIds(i) = trayId Then
+            snapshot.IsKnown = True
+            snapshot.TrayId = trayId
+            snapshot.TrayName = binNames(i)
+            GetPrinterTraySnapshot = snapshot
+            Exit Function
+        End If
+    Next i
+
+    Err.Raise vbObjectError + 5133, , contextName & "の給紙トレイID（" & CStr(trayId) & "）をDeviceCapabilitiesWのDC_BINSで確認できません。"
+End Function
+
+Private Function GetPrinterBinCapabilities(ByRef info As FixedPrinterInfo, ByRef devModeBytes() As Byte, ByRef binIds() As Long, ByRef binNames() As String) As Long
+    Dim result As Long
+    Dim firstErrorNumber As Long, secondErrorNumber As Long
+    Dim firstError As String, secondError As String
+    Dim queueName As String
+
+    On Error Resume Next
+    result = QueryPrinterBinCapabilities(info.WindowsName, info.PortName, devModeBytes, binIds, binNames)
+    firstErrorNumber = Err.Number
+    firstError = Err.Description
+    Err.Clear
+    On Error GoTo 0
+    If firstErrorNumber = 0 Then
+        GetPrinterBinCapabilities = result
+        Exit Function
+    End If
+
+    queueName = GetPrinterQueueName(info.WindowsName)
+    If StrComp(queueName, info.WindowsName, vbTextCompare) <> 0 Then
+        On Error Resume Next
+        result = QueryPrinterBinCapabilities(queueName, info.PortName, devModeBytes, binIds, binNames)
+        secondErrorNumber = Err.Number
+        secondError = Err.Description
+        Err.Clear
+        On Error GoTo 0
+        If secondErrorNumber = 0 Then
+            GetPrinterBinCapabilities = result
+            Exit Function
+        End If
+    End If
+
+    Err.Raise vbObjectError + 5134, , "DeviceCapabilitiesWでプリンターの給紙トレイ一覧を取得できません。" & _
+              " WindowsName=" & info.WindowsName & "; PortName=" & info.PortName & _
+              "; Error1=" & firstError & "; Error2=" & secondError
+End Function
+
+Private Function QueryPrinterBinCapabilities(ByVal deviceName As String, ByVal portName As String, ByRef devModeBytes() As Byte, ByRef binIds() As Long, ByRef binNames() As String) As Long
+#If VBA7 Then
+    Dim pBins As LongPtr, pNames As LongPtr, pDevMode As LongPtr
+#Else
+    Dim pBins As Long, pNames As Long, pDevMode As Long
+#End If
+    Dim binCount As Long, nameCount As Long
+    Dim i As Long, binId As Integer, nameText As String
+    Dim result As Long
+
+    On Error GoTo CleanFail
+    If Len(Trim$(deviceName)) = 0 Then Err.Raise vbObjectError + 5135, , "DeviceCapabilitiesWのプリンター名が空です。"
+    pDevMode = VarPtr(devModeBytes(LBound(devModeBytes)))
+
+    If Len(Trim$(portName)) > 0 Then
+        binCount = DeviceCapabilitiesW(StrPtr(deviceName), StrPtr(portName), DEVICE_CAPABILITIES_BINS, 0, pDevMode)
+    Else
+        binCount = DeviceCapabilitiesW(StrPtr(deviceName), 0, DEVICE_CAPABILITIES_BINS, 0, pDevMode)
+    End If
+    If binCount <= 0 Then RaiseApiError "DeviceCapabilitiesW(DC_BINS size)"
+
+    pBins = GlobalAlloc(0, CLng(binCount) * 2)
+    If pBins = 0 Then Err.Raise vbObjectError + 5136, , "GlobalAlloc(DC_BINS)に失敗しました。"
+
+    If Len(Trim$(portName)) > 0 Then
+        result = DeviceCapabilitiesW(StrPtr(deviceName), StrPtr(portName), DEVICE_CAPABILITIES_BINS, pBins, pDevMode)
+    Else
+        result = DeviceCapabilitiesW(StrPtr(deviceName), 0, DEVICE_CAPABILITIES_BINS, pBins, pDevMode)
+    End If
+    If result < binCount Then RaiseApiError "DeviceCapabilitiesW(DC_BINS)"
+
+    If Len(Trim$(portName)) > 0 Then
+        nameCount = DeviceCapabilitiesW(StrPtr(deviceName), StrPtr(portName), DEVICE_CAPABILITIES_BINNAMES, 0, pDevMode)
+    Else
+        nameCount = DeviceCapabilitiesW(StrPtr(deviceName), 0, DEVICE_CAPABILITIES_BINNAMES, 0, pDevMode)
+    End If
+    If nameCount > 0 Then
+        pNames = GlobalAlloc(0, CLng(nameCount) * DEVICE_BIN_NAME_LENGTH * 2)
+        If pNames = 0 Then Err.Raise vbObjectError + 5137, , "GlobalAlloc(DC_BINNAMES)に失敗しました。"
+        If Len(Trim$(portName)) > 0 Then
+            result = DeviceCapabilitiesW(StrPtr(deviceName), StrPtr(portName), DEVICE_CAPABILITIES_BINNAMES, pNames, pDevMode)
+        Else
+            result = DeviceCapabilitiesW(StrPtr(deviceName), 0, DEVICE_CAPABILITIES_BINNAMES, pNames, pDevMode)
+        End If
+        If result < nameCount Then RaiseApiError "DeviceCapabilitiesW(DC_BINNAMES)"
+    End If
+
+    ReDim binIds(1 To binCount)
+    ReDim binNames(1 To binCount)
+    For i = 1 To binCount
+        binId = 0
+        CopyMemory VarPtr(binId), pBins + ((i - 1) * 2), 2
+        binIds(i) = CLng(binId)
+        If i <= nameCount And pNames <> 0 Then
+            nameText = String$(DEVICE_BIN_NAME_LENGTH, vbNullChar)
+            CopyMemory StrPtr(nameText), pNames + ((i - 1) * DEVICE_BIN_NAME_LENGTH * 2), DEVICE_BIN_NAME_LENGTH * 2
+            binNames(i) = TrimNullText(nameText)
+        Else
+            binNames(i) = ""
+        End If
+    Next i
+    QueryPrinterBinCapabilities = binCount
+
+CleanExit:
+    On Error Resume Next
+    If pNames <> 0 Then GlobalFree pNames
+    If pBins <> 0 Then GlobalFree pBins
+    On Error GoTo 0
+    Exit Function
+
+CleanFail:
+    Dim d As String, n As Long
+    d = Err.Description
+    n = Err.Number
+    On Error Resume Next
+    If pNames <> 0 Then GlobalFree pNames
+    If pBins <> 0 Then GlobalFree pBins
+    On Error GoTo 0
+    Err.Raise n, , d
+End Function
+
+Private Sub VerifyAppliedTray(ByRef info As FixedPrinterInfo, ByRef profile As FixedPrintProfile, ByRef appliedDevMode() As Byte, ByRef appliedTray As PrinterTraySnapshot)
+    appliedTray = GetPrinterTraySnapshot(info, appliedDevMode, "固定DEVMODE適用後")
+    If appliedTray.TrayId <> profile.TrayId Then
+        Err.Raise vbObjectError + 5138, , _
+            "固定印刷設定を適用しましたが、給紙トレイを登録時と一致させられませんでした。" & vbCrLf & _
+            "登録トレイ: ID=" & CStr(profile.TrayId) & " / " & profile.TrayName & vbCrLf & _
+            "適用トレイ: ID=" & CStr(appliedTray.TrayId) & " / " & appliedTray.TrayName & vbCrLf & _
+            "誤ったトレイから印刷される可能性があるため、印刷を中止しました。"
+    End If
+End Sub
+
+Private Function ReadLongFromByteArray(ByRef bytes() As Byte, ByVal byteOffset As Long) As Long
+    Dim value As Long
+    If byteOffset < 0 Or byteOffset + 4 > ByteArrayLength(bytes) Then Err.Raise vbObjectError + 5139, , "DEVMODEの読み取り位置が範囲外です。"
+    CopyMemory VarPtr(value), VarPtr(bytes(LBound(bytes) + byteOffset)), 4
+    ReadLongFromByteArray = value
+End Function
+
+Private Function ReadIntegerFromByteArray(ByRef bytes() As Byte, ByVal byteOffset As Long) As Long
+    Dim value As Integer
+    If byteOffset < 0 Or byteOffset + 2 > ByteArrayLength(bytes) Then Err.Raise vbObjectError + 5140, , "DEVMODEの給紙トレイID位置が範囲外です。"
+    CopyMemory VarPtr(value), VarPtr(bytes(LBound(bytes) + byteOffset)), 2
+    ReadIntegerFromByteArray = CLng(value)
+End Function
+
+Private Function TrimNullText(ByVal value As String) As String
+    Dim nullPos As Long
+    nullPos = InStr(1, value, vbNullChar, vbBinaryCompare)
+    If nullPos > 0 Then value = Left$(value, nullPos - 1)
+    TrimNullText = Trim$(value)
+End Function
+
+Private Function FormatTraySnapshot(ByRef snapshot As PrinterTraySnapshot) As String
+    If snapshot.IsKnown Then
+        FormatTraySnapshot = "TrayId=" & CStr(snapshot.TrayId) & "/TrayName=" & snapshot.TrayName
+    Else
+        FormatTraySnapshot = "TrayId=（不明）/TrayName=（不明）"
+    End If
+End Function
+
+Private Function BuildFixedPrintTrayLog(ByRef info As FixedPrinterInfo, ByRef profile As FixedPrintProfile, ByRef beforeTray As PrinterTraySnapshot, ByRef appliedTray As PrinterTraySnapshot, ByVal afterRestoreText As String) As String
+    If Len(afterRestoreText) = 0 Then afterRestoreText = "（未確認）"
+    BuildFixedPrintTrayLog = _
+        "Printer=" & info.WindowsName & "; ResolvedActivePrinter=" & info.ExcelName & _
+        "; RegisteredTrayId=" & CStr(profile.TrayId) & "; RegisteredTrayName=" & profile.TrayName & _
+        "; AppliedTrayId=" & IIf(appliedTray.IsKnown, CStr(appliedTray.TrayId), "（不明）") & _
+        "; AppliedTrayName=" & IIf(appliedTray.IsKnown, appliedTray.TrayName, "（不明）") & _
+        "; BeforeTray=" & FormatTraySnapshot(beforeTray) & _
+        "; FixedTray=" & FormatTraySnapshot(appliedTray) & _
+        "; AfterRestoreTray=" & afterRestoreText
+End Function
+
+Private Function BuildProfile(ByRef info As FixedPrinterInfo, ByRef devModeBytes() As Byte, ByRef tray As PrinterTraySnapshot) As FixedPrintProfile
     Dim profile As FixedPrintProfile
     profile.FormatVersion = PROFILE_FORMAT_VERSION
     profile.PrinterName = FIXED_PRINTER_NAME
@@ -942,6 +1204,8 @@ Private Function BuildProfile(ByRef info As FixedPrinterInfo, ByRef devModeBytes
     profile.RegisteredAt = Format$(Now, "yyyy-mm-dd hh:nn:ss")
     profile.DevModeSize = ByteArrayLength(devModeBytes)
     profile.Checksum = CalculateByteChecksum(devModeBytes)
+    profile.TrayId = tray.TrayId
+    profile.TrayName = tray.TrayName
     profile.DevModeBytes = devModeBytes
     BuildProfile = profile
 End Function
@@ -986,6 +1250,8 @@ Private Function BuildProfileFileText(ByRef profile As FixedPrintProfile) As Str
         "RegisteredAt=" & EscapeProfileValue(profile.RegisteredAt) & PROFILE_LINE_SEPARATOR & _
         "DevModeSize=" & CStr(profile.DevModeSize) & PROFILE_LINE_SEPARATOR & _
         "Checksum=" & profile.Checksum & PROFILE_LINE_SEPARATOR & _
+        "TrayId=" & CStr(profile.TrayId) & PROFILE_LINE_SEPARATOR & _
+        "TrayName=" & EscapeProfileValue(profile.TrayName) & PROFILE_LINE_SEPARATOR & _
         "DevModeBase64=" & BytesToBase64(profile.DevModeBytes) & PROFILE_LINE_SEPARATOR
 End Function
 
@@ -1011,6 +1277,8 @@ Private Function ParseProfileFileText(ByVal text As String) As FixedPrintProfile
                     Case "RegisteredAt": profile.RegisteredAt = value
                     Case "DevModeSize": profile.DevModeSize = CLng(Val(value))
                     Case "Checksum": profile.Checksum = value
+                    Case "TrayId": profile.TrayId = CLng(Val(value))
+                    Case "TrayName": profile.TrayName = value
                     Case "DevModeBase64": profile.DevModeBytes = Base64ToBytes(value)
                 End Select
             End If
@@ -1032,6 +1300,7 @@ Private Sub VerifyProfileData(ByRef profile As FixedPrintProfile)
     If IsEmptyByteArray(profile.DevModeBytes) Then Err.Raise vbObjectError + 5115, , "固定印刷設定ファイルにDEVMODEデータがありません。再登録してください。"
     If profile.DevModeSize <> ByteArrayLength(profile.DevModeBytes) Then Err.Raise vbObjectError + 5116, , "固定印刷設定ファイルのDEVMODEサイズが一致しません。ファイル破損の可能性があります。再登録してください。"
     If profile.Checksum <> CalculateByteChecksum(profile.DevModeBytes) Then Err.Raise vbObjectError + 5117, , "固定印刷設定ファイルのチェック値が一致しません。ファイル破損の可能性があります。再登録してください。"
+    If profile.TrayId <= 0 Then Err.Raise vbObjectError + 5118, , "固定印刷設定ファイルに給紙トレイIDがありません。トレイ5（手差し）を確認して再登録してください。"
 End Sub
 
 Private Function GetProfileFolderPath() As String
