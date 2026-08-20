@@ -714,6 +714,12 @@ Public Function FindHeaderByCandidates(ByVal ws As Worksheet, ByVal lastCol As L
 
 End Function
 
+Private Function NormalizeSealHeaderName(ByVal headerValue As Variant) As String
+
+    NormalizeSealHeaderName = NormalizeHeaderText(headerValue)
+
+End Function
+
 Private Function GetCellTrim(ByVal ws As Worksheet, ByVal r As Long, ByVal c As Long) As String
 
     If c <= 0 Then

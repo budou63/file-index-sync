@@ -5086,7 +5086,7 @@ Private Function FindHeaderColumnByCandidatesAtRow( _
     For c = 1 To lastCol
         headerValue = NormalizeHeaderText(ws.Cells(headerRow, c).Value)
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+            If StrComp(headerValue, NormalizeHeaderText(candidates(i)), vbTextCompare) = 0 Then
                 FindHeaderColumnByCandidatesAtRow = c
                 Exit Function
             End If
@@ -6124,9 +6124,7 @@ Private Function CanonicalHeaderName(ByVal headerName As String) As String
 
     Dim normalized As String
 
-    normalized = Trim(CStr(headerName))
-    normalized = Replace(normalized, " ", "")
-    normalized = Replace(normalized, "　", "")
+    normalized = NormalizeHeaderText(headerName)
 
     Select Case normalized
         Case "分類名1", "分類名１"
@@ -6145,6 +6143,53 @@ Private Function CanonicalHeaderName(ByVal headerName As String) As String
 
 End Function
 
+Public Function NormalizeHeaderText(ByVal headerValue As Variant) As String
+
+    Dim normalized As String
+
+    On Error GoTo SafeExit
+
+    If IsError(headerValue) Or IsNull(headerValue) Or IsEmpty(headerValue) Then Exit Function
+
+    normalized = CStr(headerValue)
+    normalized = Replace(normalized, vbCrLf, "")
+    normalized = Replace(normalized, vbCr, "")
+    normalized = Replace(normalized, vbLf, "")
+    normalized = Replace(normalized, vbTab, "")
+    normalized = Replace(normalized, ChrW(&HA0), "")
+    normalized = Replace(normalized, ChrW(&H200B), "")
+    normalized = Replace(normalized, ChrW(&HFEFF), "")
+    normalized = Replace(normalized, " ", "")
+    normalized = Replace(normalized, "　", "")
+    normalized = Replace(normalized, "（", "(")
+    normalized = Replace(normalized, "）", ")")
+    normalized = Replace(normalized, "＋", "+")
+    normalized = Replace(normalized, "－", "-")
+    NormalizeHeaderText = Trim$(ConvertZenkakuAlnumToHankaku(normalized))
+
+SafeExit:
+
+End Function
+
+Private Function PreferredDisplayHeaderName(ByVal headerName As String) As String
+
+    Select Case CanonicalHeaderName(headerName)
+        Case "分類名１"
+            PreferredDisplayHeaderName = "分類名１"
+        Case "分類名２"
+            PreferredDisplayHeaderName = "分類名２"
+        Case "分類名３"
+            PreferredDisplayHeaderName = "分類名３"
+        Case "タイトル"
+            PreferredDisplayHeaderName = "タイトル"
+        Case "ｎ＋1"
+            PreferredDisplayHeaderName = "ｎ＋1"
+        Case Else
+            PreferredDisplayHeaderName = Trim$(CStr(headerName))
+    End Select
+
+End Function
+
 Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal candidates As Variant) As Long
 
     Dim c As Long
@@ -6158,7 +6203,7 @@ Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, 
     For c = 1 To lastCol
         headerValue = NormalizeHeaderText(ws.Cells(1, c).Value)
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+            If StrComp(headerValue, NormalizeHeaderText(candidates(i)), vbTextCompare) = 0 Then
                 FindHeaderColumn = c
                 Exit Function
             End If
@@ -6329,7 +6374,7 @@ Private Function FindColumnIndexFromHeaderArray( _
         If Not usedCols.Exists(CStr(c)) Then
             headerValue = NormalizeHeaderText(headerValues(1, c))
             For i = LBound(candidates) To UBound(candidates)
-                If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+                If StrComp(headerValue, NormalizeHeaderText(candidates(i)), vbTextCompare) = 0 Then
                     FindColumnIndexFromHeaderArray = c
                     Exit Function
                 End If
