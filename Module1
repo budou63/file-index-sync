@@ -1476,6 +1476,12 @@ Public Sub CSV取込_シンプル版()
     Dim rowYearValue As Long
     Dim errNumber As Long
     Dim errDescription As String
+    Dim srcToDstCol As Object
+    Dim dstHeaderMap As Object
+    Dim srcCol As Long
+    Dim dstCol As Long
+    Dim headerText As String
+    Dim canonical As String
 
     On Error GoTo ErrorHandler
 
@@ -1493,6 +1499,8 @@ Public Sub CSV取込_シンプル版()
     ' CSVを開く
     Set wbCSV = Workbooks.Open(filePath)
     Set wsCSV = wbCSV.Sheets(1)
+    Set srcToDstCol = CreateObject("Scripting.Dictionary")
+    Set dstHeaderMap = CreateObject("Scripting.Dictionary")
 
     srcLastRow = GetLastUsedRow(wsCSV)
     srcLastCol = GetLastUsedCol(wsCSV)
@@ -1539,15 +1547,35 @@ Public Sub CSV取込_シンプル版()
         ws.Range(ws.Cells(1, 1), ws.Cells(1, srcLastCol)).Value = _
             wsCSV.Range(wsCSV.Cells(1, 1), wsCSV.Cells(1, srcLastCol)).Value
         NormalizeHeaderLineBreaks ws
+        dstLastCol = GetLastUsedCol(ws)
+        For srcCol = 1 To srcLastCol
+            srcToDstCol.Add srcCol, srcCol
+        Next srcCol
         appendRow = 2
     Else
-        ' 追記取込: 選択したCSVの見出しを反映し、データ列とのずれを防ぐ
-        ws.Range(ws.Cells(1, 1), ws.Cells(1, srcLastCol)).Value = _
-            wsCSV.Range(wsCSV.Cells(1, 1), wsCSV.Cells(1, srcLastCol)).Value
-        If dstLastCol > srcLastCol Then
-            ws.Range(ws.Cells(1, srcLastCol + 1), ws.Cells(1, dstLastCol)).ClearContents
-        End If
+        ' 追記取込: 既存見出しと既存行は動かさず、見出し名で取込先列を対応付ける
         NormalizeHeaderLineBreaks ws
+        dstLastCol = GetLastUsedCol(ws)
+        BuildHeaderMap ws, dstLastCol, dstHeaderMap
+
+        For srcCol = 1 To srcLastCol
+            headerText = Trim$(CStr(wsCSV.Cells(1, srcCol).Value))
+            canonical = CanonicalHeaderName(headerText)
+            If headerText <> "" And dstHeaderMap.Exists(canonical) Then
+                dstCol = CLng(dstHeaderMap(canonical))
+            ElseIf headerText <> "" Then
+                dstLastCol = GetLastUsedCol(ws) + 1
+                ws.Cells(1, dstLastCol).Value = headerText
+                dstHeaderMap.Add canonical, dstLastCol
+                dstCol = dstLastCol
+            Else
+                Err.Raise vbObjectError + 2106, , "取込CSVの列" & srcCol & "の見出しが空欄です。"
+            End If
+            srcToDstCol.Add srcCol, dstCol
+        Next srcCol
+
+        ' 見出し追加後の最新列数で年度列を検索する
+        dstLastCol = GetLastUsedCol(ws)
 
         ' 目録CSVシート側の年度列を特定（優先: 年度（和暦） -> 年度）
         dstWarekiCol = FindHeaderColumn(ws, dstLastCol, Array("年度（和暦）", "年度(和暦)"))
@@ -1579,21 +1607,23 @@ Public Sub CSV取込_シンプル版()
     Next srcRow
 
     If importRowCount > 0 Then
-        ReDim writeData(1 To importRowCount, 1 To srcLastCol)
+        dstLastCol = GetLastUsedCol(ws)
+        ReDim writeData(1 To importRowCount, 1 To dstLastCol)
         writeIndex = 0
         For srcRow = 2 To srcLastRow
             rowYear = GetFiscalYearTextFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
             rowYearValue = GetNormalizedYearFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
             If rowYear <> "" And rowYearValue > 0 Then
                 writeIndex = writeIndex + 1
-                For dstLastCol = 1 To srcLastCol
-                    writeData(writeIndex, dstLastCol) = wsCSV.Cells(srcRow, dstLastCol).Value
-                Next dstLastCol
+                For srcCol = 1 To srcLastCol
+                    dstCol = CLng(srcToDstCol(srcCol))
+                    writeData(writeIndex, dstCol) = wsCSV.Cells(srcRow, srcCol).Value
+                Next srcCol
             End If
         Next srcRow
 
         ws.Rows(appendRow).Resize(importRowCount).Insert Shift:=xlDown
-        ws.Range(ws.Cells(appendRow, 1), ws.Cells(appendRow + importRowCount - 1, srcLastCol)).Value = writeData
+        ws.Range(ws.Cells(appendRow, 1), ws.Cells(appendRow + importRowCount - 1, dstLastCol)).Value = writeData
         appendedCount = importRowCount
     End If
 
@@ -3570,6 +3600,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim srcLastRow As Long
     Dim srcLastCol As Long
     Dim dstLastCol As Long
+    Dim recognizedHeaders As String
     Dim displayHeaders As Variant
     Dim baselineUserManagedHeaders As Variant
     Dim additionalLeftDisplayHeaders As Variant
@@ -3682,7 +3713,18 @@ Public Sub 手順2_新ファイル基準表を作成する()
     srcWarekiCol = FindHeaderColumn(wsSrc, srcLastCol, Array("年度（和暦）", "年度(和暦)"))
     srcYearCol = FindHeaderColumn(wsSrc, srcLastCol, Array("年度"))
     If srcWarekiCol <= 0 And srcYearCol <= 0 Then
-        Err.Raise vbObjectError + 2003, , "目録CSVに「年度（和暦）」または「年度」列が見つかりません。"
+        For srcCol = 1 To srcLastCol
+            If srcCol > 1 Then recognizedHeaders = recognizedHeaders & " | "
+            recognizedHeaders = recognizedHeaders & srcCol & ":" & _
+                CanonicalHeaderName(CStr(wsSrc.Cells(1, srcCol).Value))
+        Next srcCol
+        Debug.Print "年度列検索失敗: sheet=" & wsSrc.Name & _
+            ", srcLastCol=" & srcLastCol & ", headers=" & recognizedHeaders
+        Err.Raise vbObjectError + 2003, , _
+            "目録CSVに「年度（和暦）」または「年度」列が見つかりません。" & vbCrLf & _
+            "参照シート名: " & wsSrc.Name & vbCrLf & _
+            "srcLastCol: " & srcLastCol & vbCrLf & _
+            "認識した見出し: " & recognizedHeaders
     End If
 
     ' 主要表示列（左側に寄せる列）
