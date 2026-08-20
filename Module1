@@ -1450,9 +1450,44 @@ Public Sub 後処理_行移動後()
 
 End Sub
 
+Private Function ResolveMacroTargetWorkbook() As Workbook
+
+    Dim wb As Workbook
+
+    ' 通常は、マクロを格納しているブックを優先する。
+    If WorkbookHasWorksheet(ThisWorkbook, SHEET_MOKUROKU_CSV) _
+       And WorkbookHasWorksheet(ThisWorkbook, SHEET_NEW_FILE_STANDARD) Then
+        Set ResolveMacroTargetWorkbook = ThisWorkbook
+        Exit Function
+    End If
+
+    ' PERSONAL.XLSB 等にマクロを置いた場合でも、対象シートを持つブックを明示的に選ぶ。
+    For Each wb In Application.Workbooks
+        If WorkbookHasWorksheet(wb, SHEET_MOKUROKU_CSV) _
+           And WorkbookHasWorksheet(wb, SHEET_NEW_FILE_STANDARD) Then
+            Set ResolveMacroTargetWorkbook = wb
+            Exit Function
+        End If
+    Next wb
+
+End Function
+
+Private Function WorkbookHasWorksheet(ByVal wb As Workbook, ByVal sheetName As String) As Boolean
+
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = wb.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then WorkbookHasWorksheet = True
+
+End Function
+
 Public Sub CSV取込_シンプル版()
 
     Dim ws As Worksheet
+    Dim wbHost As Workbook
     Dim filePath As Variant
     Dim wbCSV As Workbook
     Dim wsCSV As Worksheet
@@ -1483,9 +1518,14 @@ Public Sub CSV取込_シンプル版()
     filePath = Application.GetOpenFilename("CSV Files (*.csv), *.csv")
     
     If filePath = False Then Exit Sub
+
+    Set wbHost = ResolveMacroTargetWorkbook()
+    If wbHost Is Nothing Then
+        Err.Raise vbObjectError + 2100, , "目録CSV と新ファイル基準表を含む対象ブックが見つかりません。"
+    End If
     
     ' 目録CSVシート
-    Set ws = ThisWorkbook.Worksheets("目録CSV")
+    Set ws = wbHost.Worksheets(SHEET_MOKUROKU_CSV)
     
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
@@ -3562,6 +3602,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     Dim wsSrc As Worksheet
     Dim wsDst As Worksheet
+    Dim wbHost As Workbook
     Dim srcLastRow As Long
     Dim srcLastCol As Long
     Dim dstLastCol As Long
@@ -3636,9 +3677,13 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     On Error GoTo ErrorHandler
 
-    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
-    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
-    Set newFileStandardColumnWidths = CaptureColumnWidthsByHeader(wsDst)
+    Set wbHost = ResolveMacroTargetWorkbook()
+    If wbHost Is Nothing Then
+        Err.Raise vbObjectError + 2000, , "目録CSV と新ファイル基準表を含む対象ブックが見つかりません。"
+    End If
+
+    Set wsSrc = wbHost.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = wbHost.Worksheets(SHEET_NEW_FILE_STANDARD)
     Set srcToDstMap = CreateObject("Scripting.Dictionary")
     Set srcHeaderMap = CreateObject("Scripting.Dictionary")
     Set existingDstHeaders = CreateObject("Scripting.Dictionary")
@@ -6097,7 +6142,9 @@ Private Function CanonicalHeaderName(ByVal headerName As String) As String
 
     Dim normalized As String
 
-    normalized = NormalizeHeaderToken(CStr(headerName))
+    normalized = Trim(CStr(headerName))
+    normalized = Replace(normalized, " ", "")
+    normalized = Replace(normalized, "　", "")
 
     Select Case normalized
         Case "分類名1", "分類名１"
@@ -6306,9 +6353,9 @@ Private Function FindColumnIndexFromHeaderArray( _
 
     For c = 1 To UBound(headerValues, 2)
         If Not usedCols.Exists(CStr(c)) Then
-            headerValue = Trim$(CStr(headerValues(1, c)))
+            headerValue = NormalizeHeaderText(headerValues(1, c))
             For i = LBound(candidates) To UBound(candidates)
-                If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(CStr(candidates(i))), vbTextCompare) = 0 Then
+                If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
                     FindColumnIndexFromHeaderArray = c
                     Exit Function
                 End If
