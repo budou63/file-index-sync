@@ -5084,9 +5084,10 @@ Private Function FindHeaderColumnByCandidatesAtRow( _
     If lastCol <= 0 Then Exit Function
 
     For c = 1 To lastCol
-        headerValue = NormalizeHeaderText(ws.Cells(headerRow, c).Value)
+        ' NormalizeHeaderToken は改行・タブ・全角/半角スペースを既存ルールで正規化する。
+        headerValue = NormalizeHeaderToken(CStr(ws.Cells(headerRow, c).Value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(NormalizeHeaderToken(CStr(candidates(i)))), vbTextCompare) = 0 Then
                 FindHeaderColumnByCandidatesAtRow = c
                 Exit Function
             End If
@@ -5102,7 +5103,7 @@ Private Sub BuildHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal h
     Dim canonical As String
 
     For c = 1 To lastCol
-        rawHeader = NormalizeHeaderText(ws.Cells(1, c).Value)
+        rawHeader = NormalizeHeaderToken(CStr(ws.Cells(1, c).value))
         If rawHeader <> "" Then
             canonical = CanonicalHeaderName(rawHeader)
             If Not headerMap.Exists(canonical) Then
@@ -5265,7 +5266,7 @@ Private Sub BuildSourceHeaderMap(ByVal wsSrc As Worksheet, ByVal srcLastCol As L
     srcHeaderMap.RemoveAll
 
     For srcCol = 1 To srcLastCol
-        headerText = NormalizeHeaderText(wsSrc.Cells(1, srcCol).Value)
+        headerText = NormalizeHeaderToken(CStr(wsSrc.Cells(1, srcCol).Value))
         If headerText <> "" Then
             canonical = CanonicalHeaderName(headerText)
             If Not srcHeaderMap.Exists(canonical) Then
@@ -6156,9 +6157,9 @@ Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, 
     If lastCol <= 0 Then Exit Function
 
     For c = 1 To lastCol
-        headerValue = NormalizeHeaderText(ws.Cells(1, c).Value)
+        headerValue = NormalizeHeaderToken(CStr(ws.Cells(1, c).value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(NormalizeHeaderToken(CStr(candidates(i)))), vbTextCompare) = 0 Then
                 FindHeaderColumn = c
                 Exit Function
             End If
