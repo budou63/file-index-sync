@@ -1541,7 +1541,12 @@ Public Sub CSV取込_シンプル版()
         NormalizeHeaderLineBreaks ws
         appendRow = 2
     Else
-        ' 追記取込: 既存見出しを維持
+        ' 追記取込: 選択したCSVの見出しを反映し、データ列とのずれを防ぐ
+        ws.Range(ws.Cells(1, 1), ws.Cells(1, srcLastCol)).Value = _
+            wsCSV.Range(wsCSV.Cells(1, 1), wsCSV.Cells(1, srcLastCol)).Value
+        If dstLastCol > srcLastCol Then
+            ws.Range(ws.Cells(1, srcLastCol + 1), ws.Cells(1, dstLastCol)).ClearContents
+        End If
         NormalizeHeaderLineBreaks ws
 
         ' 目録CSVシート側の年度列を特定（優先: 年度（和暦） -> 年度）
