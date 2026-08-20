@@ -1503,9 +1503,9 @@ Public Sub CSV取込_シンプル版()
     Set dstHeaderMap = CreateObject("Scripting.Dictionary")
 
     srcLastRow = GetLastUsedRow(wsCSV)
-    srcLastCol = GetLastUsedCol(wsCSV)
+    srcLastCol = wsCSV.Cells(1, wsCSV.Columns.Count).End(xlToLeft).Column
     dstLastRow = GetLastUsedRow(ws)
-    dstLastCol = GetLastUsedCol(ws)
+    dstLastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
     existingHasHeader = (dstLastRow >= 1 And dstLastCol > 0 And Len(Trim$(CStr(ws.Cells(1, 1).Value))) > 0)
 
     If srcLastCol <= 0 Then Err.Raise vbObjectError + 2101, , "選択したCSVの見出し行が見つかりません。"
@@ -1547,7 +1547,7 @@ Public Sub CSV取込_シンプル版()
         ws.Range(ws.Cells(1, 1), ws.Cells(1, srcLastCol)).Value = _
             wsCSV.Range(wsCSV.Cells(1, 1), wsCSV.Cells(1, srcLastCol)).Value
         NormalizeHeaderLineBreaks ws
-        dstLastCol = GetLastUsedCol(ws)
+        dstLastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
         For srcCol = 1 To srcLastCol
             srcToDstCol.Add srcCol, srcCol
         Next srcCol
@@ -1555,7 +1555,7 @@ Public Sub CSV取込_シンプル版()
     Else
         ' 追記取込: 既存見出しと既存行は動かさず、見出し名で取込先列を対応付ける
         NormalizeHeaderLineBreaks ws
-        dstLastCol = GetLastUsedCol(ws)
+        dstLastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
         BuildHeaderMap ws, dstLastCol, dstHeaderMap
 
         For srcCol = 1 To srcLastCol
@@ -1564,7 +1564,7 @@ Public Sub CSV取込_シンプル版()
             If headerText <> "" And dstHeaderMap.Exists(canonical) Then
                 dstCol = CLng(dstHeaderMap(canonical))
             ElseIf headerText <> "" Then
-                dstLastCol = GetLastUsedCol(ws) + 1
+                dstLastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column + 1
                 ws.Cells(1, dstLastCol).Value = headerText
                 dstHeaderMap.Add canonical, dstLastCol
                 dstCol = dstLastCol
@@ -1575,7 +1575,7 @@ Public Sub CSV取込_シンプル版()
         Next srcCol
 
         ' 見出し追加後の最新列数で年度列を検索する
-        dstLastCol = GetLastUsedCol(ws)
+        dstLastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
 
         ' 目録CSVシート側の年度列を特定（優先: 年度（和暦） -> 年度）
         dstWarekiCol = FindHeaderColumn(ws, dstLastCol, Array("年度（和暦）", "年度(和暦)"))
@@ -1607,7 +1607,7 @@ Public Sub CSV取込_シンプル版()
     Next srcRow
 
     If importRowCount > 0 Then
-        dstLastCol = GetLastUsedCol(ws)
+        dstLastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
         ReDim writeData(1 To importRowCount, 1 To dstLastCol)
         writeIndex = 0
         For srcRow = 2 To srcLastRow
@@ -3696,7 +3696,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Application.EnableEvents = False
     Application.Calculation = xlCalculationManual
 
-    srcLastCol = GetLastUsedCol(wsSrc)
+    srcLastCol = wsSrc.Cells(1, wsSrc.Columns.Count).End(xlToLeft).Column
     srcLastRow = GetLastUsedRow(wsSrc)
     dstLastCol = GetLastUsedCol(wsDst)
 
