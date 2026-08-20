@@ -81,3 +81,6 @@ End Sub
 2. 標準モジュール `Module1` に `Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target As Range)` が存在するか
 3. 即時ウィンドウで `Application.EnableEvents = True` を実行し、イベント無効化が残っていないか
 4. `コード管理CSV` の構成が `A列=項目名 / B列=コード / C列=表示名` になっているか
+
+## 固定印刷設定（土木課C4476R）
+固定印刷設定の詳細手順は `README_固定印刷設定.md` を参照してください。現在の実装では、固定印刷プロファイルをExcelブック内のVeryHiddenシートではなく、各PC・各Windowsユーザーの `%LOCALAPPDATA%\file-index-sync\固定印刷設定\土木課C4476R.dat` に保存します。
