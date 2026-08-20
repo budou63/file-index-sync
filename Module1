@@ -5039,9 +5039,10 @@ Private Function FindHeaderColumnByCandidatesAtRow( _
     If lastCol <= 0 Then Exit Function
 
     For c = 1 To lastCol
-        headerValue = Trim$(CStr(ws.Cells(headerRow, c).Value))
+        ' NormalizeHeaderToken は改行・タブ・全角/半角スペースを既存ルールで正規化する。
+        headerValue = NormalizeHeaderToken(CStr(ws.Cells(headerRow, c).Value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(CStr(candidates(i))), vbTextCompare) = 0 Then
+            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(NormalizeHeaderToken(CStr(candidates(i)))), vbTextCompare) = 0 Then
                 FindHeaderColumnByCandidatesAtRow = c
                 Exit Function
             End If
@@ -5057,7 +5058,7 @@ Private Sub BuildHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal h
     Dim canonical As String
 
     For c = 1 To lastCol
-        rawHeader = Trim(CStr(ws.Cells(1, c).value))
+        rawHeader = NormalizeHeaderToken(CStr(ws.Cells(1, c).value))
         If rawHeader <> "" Then
             canonical = CanonicalHeaderName(rawHeader)
             If Not headerMap.Exists(canonical) Then
@@ -5220,7 +5221,7 @@ Private Sub BuildSourceHeaderMap(ByVal wsSrc As Worksheet, ByVal srcLastCol As L
     srcHeaderMap.RemoveAll
 
     For srcCol = 1 To srcLastCol
-        headerText = Trim$(CStr(wsSrc.Cells(1, srcCol).Value))
+        headerText = NormalizeHeaderToken(CStr(wsSrc.Cells(1, srcCol).Value))
         If headerText <> "" Then
             canonical = CanonicalHeaderName(headerText)
             If Not srcHeaderMap.Exists(canonical) Then
@@ -6132,9 +6133,9 @@ Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, 
     If lastCol <= 0 Then Exit Function
 
     For c = 1 To lastCol
-        headerValue = Trim(CStr(ws.Cells(1, c).value))
+        headerValue = NormalizeHeaderToken(CStr(ws.Cells(1, c).value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(CStr(candidates(i))), vbTextCompare) = 0 Then
+            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(NormalizeHeaderToken(CStr(candidates(i)))), vbTextCompare) = 0 Then
                 FindHeaderColumn = c
                 Exit Function
             End If
@@ -9102,6 +9103,9 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
 
     ConfigureMultiSealFixedPrintLayout wsMulti, targetRows.Count, SEAL_PAGE_ROWS, SEAL_PER_PAGE, printLastCol
 
+    ' 複数シートの作成と印刷レイアウト設定が正常完了した場合だけモードを更新する。
+    固定印刷モードを複数に設定する
+
     MsgBox "個別フォルダシール（複数）を作成しました。" & vbCrLf & _
            "対象件数: " & targetRows.Count & " 件" & vbCrLf & _
            "ページ数: " & pageCount & " ページ", vbInformation
@@ -9384,6 +9388,8 @@ Public Sub ClearAllSeals_NewSpec()
         ' PageSetup.PrintAreaを1ページ分へ勝手に縮めない。
         clearedMulti = True
     End If
+
+    If clearedSingle Or clearedMulti Then 固定印刷モードを未設定に戻す
 
     If clearedSingle And clearedMulti Then
         MsgBox "単発用シートと複数用シートをクリアしました。", vbInformation
