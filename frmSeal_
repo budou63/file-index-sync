@@ -54,6 +54,19 @@ Private Sub CommandButton7_Click()
 
 End Sub
 
+
+Private Sub btnRegisterFixedPrint_Click()
+
+    固定印刷設定を登録する
+
+End Sub
+
+Private Sub btnFixedPrint_Click()
+
+    固定設定で印刷する
+
+End Sub
+
 Private Sub cmdColorCheck_Click()
 
     Call 色ルールチェック
@@ -353,6 +366,9 @@ Private Sub ApplySingleSlots_NewSpec(ByVal frm As Object)
             End If
         End If
     Next slot
+
+    ' 全転記処理がエラーなく完了した場合だけ、今回の印刷対象を単件にする。
+    固定印刷モードを単件に設定する
 
     If Len(missingList) > 0 Then
         MsgBox "個別フォルダシールへ反映しました（一部未該当は空欄）。" & vbCrLf & missingList, vbExclamation
