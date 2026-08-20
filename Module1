@@ -4,6 +4,7 @@ Private Const SHEET_MOKUROKU_CSV As String = "目録CSV"
 Private Const SHEET_NEW_FILE_STANDARD As String = "新ファイル基準表"
 Private Const SHEET_CODE_MANAGEMENT As String = "コード管理CSV"
 Private Const SHEET_DIFF_IMPORT As String = "差分インポートCSV"
+Private Const SHEET_LOG As String = "ログ"
 Private Const DEBUG_MODE As Boolean = False
 ' 高速化対応: 差分更新時のコメント/強調を既定で無効化
 Private Const ENABLE_UPDATE_COMMENT As Boolean = False
@@ -12,6 +13,10 @@ Private Const DUP_CHECK_ORIGINAL_ORDER_HEADER As String = "重複確認用_元�
 Private Const DUP_CHECK_TEMP_KEY_HEADER As String = "__重複確認キー_TMP__"
 Private Const DUP_CHECK_TEMP_FLAG_HEADER As String = "__重複確認フラグ_TMP__"
 Private Const DUP_CHECK_MARK_COLOR As Long = 65535 ' RGB(255,255,0)
+Private Const CSV_DIFF_SERIAL_MARK_COLOR As Long = 255 ' RGB(255,0,0)
+Private Const SEAL_PAGE_ROWS As Long = 20
+Private Const SEAL_PAGE_COL_LAST As Long = 21 ' U列
+Private Const SEAL_PER_PAGE As Long = 12
 
 '========================================================
 ' 新ファイル基準表: 行移動モード（▲/▼で挿入予定位置のみ移動）
@@ -45,6 +50,60 @@ Private gRowMoveSelectionAnchorRow As Long
 Private gRowMoveClickModeActive As Boolean
 Private gRowMoveClickStartRow As Long
 Private gRowMoveClickEndRow As Long
+
+Public Sub WriteProcessLog( _
+    ByVal macroName As String, _
+    Optional ByVal targetCsv As String = "", _
+    Optional ByVal targetYear As String = "", _
+    Optional ByVal processCount As Long = 0, _
+    Optional ByVal resultText As String = "成功", _
+    Optional ByVal note As String = "")
+
+    Dim wsLog As Worksheet
+    Dim lastCell As Range
+    Dim nextRow As Long
+    Dim oldEnableEvents As Boolean
+
+    On Error GoTo SafeExit
+
+    oldEnableEvents = Application.EnableEvents
+    Application.EnableEvents = False
+
+    On Error Resume Next
+    Set wsLog = ThisWorkbook.Worksheets(SHEET_LOG)
+    On Error GoTo SafeExit
+
+    If wsLog Is Nothing Then
+        Set wsLog = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        wsLog.Name = SHEET_LOG
+    End If
+
+    If Application.WorksheetFunction.CountA(wsLog.Range("A1:H1")) = 0 Then
+        wsLog.Range("A1:H1").Value = Array("日時", "誰", "動作マクロ", "対象CSV", "対象年度", "処理件数", "結果", "備考")
+    End If
+
+    Set lastCell = wsLog.Range("A:H").Find(What:="*", LookIn:=xlFormulas, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    If lastCell Is Nothing Then
+        nextRow = 2
+    Else
+        nextRow = lastCell.Row + 1
+        If nextRow < 2 Then nextRow = 2
+    End If
+
+    wsLog.Cells(nextRow, 1).Value = Now
+    wsLog.Cells(nextRow, 2).Value = Environ$("Username")
+    wsLog.Cells(nextRow, 3).Value = macroName
+    wsLog.Cells(nextRow, 4).Value = targetCsv
+    wsLog.Cells(nextRow, 5).Value = targetYear
+    wsLog.Cells(nextRow, 6).Value = processCount
+    wsLog.Cells(nextRow, 7).Value = resultText
+    wsLog.Cells(nextRow, 8).Value = note
+
+SafeExit:
+    On Error Resume Next
+    Application.EnableEvents = oldEnableEvents
+
+End Sub
 
 Public Sub 新ファイル基準表生成()
 
@@ -1003,8 +1062,8 @@ Public Sub 行移動_予定線を全消去()
 
     Dim ws As Worksheet
     Dim lastCol As Long
-    Dim key As Variant
     Dim markerRow As Long
+    Dim key As Variant
 
     On Error GoTo SafeExit
 
@@ -1437,7 +1496,6 @@ Public Sub CSV取込_シンプル版()
     Dim srcLastRow As Long
     Dim srcLastCol As Long
     Dim appendRow As Long
-    Dim insertRow As Long
     Dim srcRow As Long
     Dim appendedCount As Long
     Dim deletedCount As Long
@@ -1451,8 +1509,8 @@ Public Sub CSV取込_シンプル版()
     Dim targetFiscalYearValue As Long
     Dim rowYear As String
     Dim rowYearValue As Long
-    Dim annualFixChangedCount As Long
-    Dim annualFixReviewCount As Long
+    Dim errNumber As Long
+    Dim errDescription As String
 
     On Error GoTo ErrorHandler
 
@@ -1576,28 +1634,31 @@ Public Sub CSV取込_シンプル版()
 
     wbCSV.Close False
 
-    ' 取込後補正: 「毎年作成」行のみ年度表現を安全に補正
-    ApplyAnnualFolderNameCorrections ws, annualFixChangedCount, annualFixReviewCount, targetFiscalYearValue
+    ' CSV取込は新システムの現状同期として扱うため、
+    ' 年度表現の繰上げ・タイトル年度変換はここでは行わない。
     
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
     
+    WriteProcessLog "CSV取込", CStr(filePath), "", appendedCount, "成功", "目録CSVシートへ取込"
+
     MsgBox "CSV取込完了" & vbCrLf & _
            "対象年度: " & targetFiscalYear & vbCrLf & _
            "削除件数: " & deletedCount & " 件" & vbCrLf & _
            "取込件数: " & appendedCount & " 件" & vbCrLf & _
-           "年度空欄スキップ件数: " & skippedBlankYearCount & " 件" & vbCrLf & _
-           "年度表現補正件数: " & annualFixChangedCount & " 件" & vbCrLf & _
-           "年度表現要確認件数: " & annualFixReviewCount & " 件", vbInformation
+           "年度空欄スキップ件数: " & skippedBlankYearCount & " 件", vbInformation
     Exit Sub
 
 ErrorHandler:
+    errNumber = Err.Number
+    errDescription = Err.Description
     On Error Resume Next
     If Not wbCSV Is Nothing Then wbCSV.Close False
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
     On Error GoTo 0
-    MsgBox "CSV取込中にエラーが発生しました: " & Err.Description, vbExclamation
+    WriteProcessLog "CSV取込", CStr(filePath), "", appendedCount, "失敗", "Err " & CStr(errNumber) & ": " & errDescription
+    MsgBox "CSV取込中にエラーが発生しました: " & errDescription, vbExclamation
 
 End Sub
 
@@ -1784,8 +1845,35 @@ Private Function ConvertYearTextToSortableKey(ByVal yearText As String) As Long
 End Function
 
 '========================================================
-' CSV取込後補正: 「毎年作成」行の年度表現のみ安全に補正
+' n+1/毎年作成用の年度表現補正。CSV取込・CSV整形からは呼び出さない。
 '========================================================
+Public Sub nプラス1_毎年作成年度補正を実行する()
+
+    Dim ws As Worksheet
+    Dim targetYearRaw As String
+    Dim targetYearValue As Long
+    Dim changedCount As Long
+    Dim reviewCount As Long
+
+    Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+
+    targetYearRaw = InputBox("補正対象年度を入力してください。空欄の場合は全年度を対象にします。（例: R8 / 令和8 / 2026）", "n+1年度補正")
+    If Len(Trim$(targetYearRaw)) > 0 Then
+        targetYearValue = NormalizeYearValue(targetYearRaw)
+        If targetYearValue <= 0 Then
+            MsgBox "年度の入力を解釈できませんでした。", vbExclamation
+            Exit Sub
+        End If
+    End If
+
+    ApplyAnnualFolderNameCorrections ws, changedCount, reviewCount, targetYearValue
+
+    MsgBox "n+1/毎年作成の年度補正が完了しました。" & vbCrLf & _
+           "補正件数: " & changedCount & " 件" & vbCrLf & _
+           "要確認件数: " & reviewCount & " 件", vbInformation
+
+End Sub
+
 Private Sub ApplyAnnualFolderNameCorrections( _
     ByVal ws As Worksheet, _
     ByRef changedCount As Long, _
@@ -2349,7 +2437,7 @@ Public Sub 手順5_差分インポートCSVを外部出力する()
     defaultFileName = "差分インポートCSV_" & Format(Now, "yyyymmdd_hhnnss") & ".csv"
     savePath = Application.GetSaveAsFilename( _
         InitialFileName:=defaultFileName, _
-        FileFilter:="CSV UTF-8 (*.csv),*.csv,CSV (Comma delimited) (*.csv),*.csv", _
+        FileFilter:="CSV (コンマ区切り) (*.csv),*.csv", _
         Title:="差分インポートCSV の保存先を選択してください")
 
     If VarType(savePath) = vbBoolean Then
@@ -2385,10 +2473,16 @@ Public Sub 手順5_差分インポートCSVを外部出力する()
     Application.DisplayAlerts = False
 
     On Error Resume Next
-    wbExport.SaveAs Filename:=finalPath, FileFormat:=62, Local:=True ' xlCSVUTF8
+    wbExport.SaveAs Filename:=finalPath, FileFormat:=xlCSV, Local:=True
     If Err.Number <> 0 Then
         Err.Clear
-        wbExport.SaveAs Filename:=finalPath, FileFormat:=xlCSV, Local:=True
+        wbExport.SaveAs Filename:=finalPath, FileFormat:=6, Local:=True
+    End If
+    If Err.Number <> 0 Then
+        Dim saveErrDesc As String
+        saveErrDesc = Err.Description
+        On Error GoTo ErrorHandler
+        Err.Raise vbObjectError + 2402, , "CSV保存に失敗しました: " & saveErrDesc
     End If
     On Error GoTo ErrorHandler
 
@@ -2421,10 +2515,10 @@ Public Sub 重複フォルダ候補をマーキング()
     Dim colTitle As Long
     Dim r As Long
     Dim markColor As Long
-    Dim key As Variant
     Dim rowKey As String
     Dim dictRowsByKey As Object
     Dim rowList As Collection
+    Dim key As Variant
     Dim duplicateGroupCount As Long
     Dim markedRowCount As Long
     Dim class2Arr As Variant
@@ -2534,8 +2628,8 @@ Public Sub 重複フォルダ候補をマーキングして並び替え()
     Dim dupArr() As Variant
     Dim originalRowArr() As Variant
     Dim keyCounts As Object
-    Dim key As Variant
     Dim rowKey As String
+    Dim key As Variant
     Dim r As Long
     Dim duplicateGroupCount As Long
     Dim markedRowCount As Long
@@ -2702,6 +2796,29 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim bikoColEdit As Long
     Dim bikoVal As String
     Dim excludedMacroInsertCount As Long
+    Dim macroInsertStatusChangedCount As Long
+    Dim ignoredUnknownStatusCount As Long
+    Dim syncStatusColEdit As Long
+    Dim fileIdColEdit As Long
+    Dim fileNoColEdit As Long
+    Dim barcodeColEdit As Long
+    Dim targetRows As Collection
+    Dim targetRow As Variant
+    Dim syncStatusChangedCount As Long
+    Dim serialColEdit As Long
+    Dim class1ColSrc As Long
+    Dim class1ColEdit As Long
+    Dim existingGuide1Dict As Object
+    Dim existingGuide2Dict As Object
+    Dim guideSeatCheckReasons As Object
+    Dim guideSeatCheckReason As String
+    Dim guideSeatCheckCount As Long
+    Dim outputLastCol As Long
+    Dim guide1Val As String
+    Dim guide2Val As String
+    Dim rowSyncStatus As String
+    Dim errNumber As Long
+    Dim errDescription As String
 
     On Error GoTo ErrorHandler
 
@@ -2712,6 +2829,10 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Set usedSrcRows = CreateObject("Scripting.Dictionary")
     Set editHeaderMap = CreateObject("Scripting.Dictionary")
     Set outputSourceMap = CreateObject("Scripting.Dictionary")
+    Set targetRows = New Collection
+    Set existingGuide1Dict = CreateObject("Scripting.Dictionary")
+    Set existingGuide2Dict = CreateObject("Scripting.Dictionary")
+    Set guideSeatCheckReasons = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -2735,6 +2856,13 @@ Public Sub 手順4_差分インポートCSVを作成する()
     keyMediaEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("媒体種別"))
     keyPeriodEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("保存期間"))
     bikoColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("備考"))
+    syncStatusColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("同期状態"))
+    fileIdColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイルID"))
+    fileNoColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイル番号"))
+    barcodeColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("バーコード番号"))
+    serialColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("通し番号"))
+    class1ColSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名１"))
+    class1ColEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名１"))
 
     If (keyYearSrc = 0 And keyYearSrcWestern = 0) Or keyTitleSrc = 0 Or keyCategory2Src = 0 Or keyMediaSrc = 0 Or keyPeriodSrc = 0 Then
         Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列（年度（和暦）または年度/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
@@ -2771,6 +2899,9 @@ Public Sub 手順4_差分インポートCSVを作成する()
             If Not editHeaderMap.Exists(Trim(CStr(wsEdit.Cells(1, i).value))) Then
                 editHeaderMap.Add Trim(CStr(wsEdit.Cells(1, i).value)), i
             End If
+            If Not editHeaderMap.Exists(CanonicalHeaderName(Trim(CStr(wsEdit.Cells(1, i).value)))) Then
+                editHeaderMap.Add CanonicalHeaderName(Trim(CStr(wsEdit.Cells(1, i).value))), i
+            End If
         End If
     Next i
 
@@ -2790,6 +2921,16 @@ Public Sub 手順4_差分インポートCSVを作成する()
         category2Val = GetTrimmedCell(wsSrc, r, keyCategory2Src)
         mediaVal = GetTrimmedCell(wsSrc, r, keyMediaSrc)
         periodVal = GetTrimmedCell(wsSrc, r, keyPeriodSrc)
+        guide1Val = GetTrimmedCell(wsSrc, r, class1ColSrc)
+        guide2Val = category2Val
+
+        If Len(NormalizeForDiffCompare(guide1Val)) > 0 Then
+            existingGuide1Dict(NormalizeForDiffCompare(guide1Val)) = True
+        End If
+        If Len(NormalizeForDiffCompare(guide1Val)) > 0 And Len(NormalizeForDiffCompare(guide2Val)) > 0 Then
+            existingGuide2Dict(BuildNormalizedGuidePairKey(guide1Val, guide2Val)) = True
+        End If
+
         ' キー一意性を高めるため媒体種別・保存期間も含める
         key = BuildHeaderBasedKey(yearVal, titleVal, category2Val, mediaVal, periodVal)
 
@@ -2799,21 +2940,34 @@ Public Sub 手順4_差分インポートCSVを作成する()
         End If
     Next r
 
-    wsOut.Cells.Clear
-    ' 1行目に固定見出しを厳密順で出力
-    For i = LBound(fixedHeaders) To UBound(fixedHeaders)
-        wsOut.Cells(1, i - LBound(fixedHeaders) + 1).value = fixedHeaders(i)
-    Next i
-    outRow = 2
-
-    ' ② 新ファイル基準表を1行ずつ処理
+    ' ② 新ファイル基準表を1行ずつ処理し、まず差分インポートCSVの出力候補行だけを集める
     For r = 2 To editLastRow
-        ' 備考列が存在し、値が「マクロ差込」の行は差分判定対象外
+        ' 備考に「マクロ差込」を含む行は差分判定対象外とし、同期状態を文書管理対象外へ統一する。
         If bikoColEdit > 0 Then
             bikoVal = NormalizeCellValue(wsEdit.Cells(r, bikoColEdit).Value)
-            If bikoVal = "マクロ差込" Then
+            If ContainsMacroInsertRemark(bikoVal) Then
                 excludedMacroInsertCount = excludedMacroInsertCount + 1
-                Debug.Print "行" & r & " は備考=マクロ差込 のため差分抽出対象外"
+                If syncStatusColEdit > 0 Then
+                    If NormalizeCellValue(wsEdit.Cells(r, syncStatusColEdit).Value) <> NormalizeCellValue("文書管理対象外") Then
+                        wsEdit.Cells(r, syncStatusColEdit).Value = "文書管理対象外"
+                        macroInsertStatusChangedCount = macroInsertStatusChangedCount + 1
+                    End If
+                End If
+                Debug.Print "行" & r & " は備考にマクロ差込を含むため差分抽出対象外"
+                GoTo ContinueNextEditRow
+            End If
+        End If
+
+        ' 同期状態=管理対象外/文書管理対象外 の行は差分判定対象外
+        If syncStatusColEdit > 0 Then
+            rowSyncStatus = NormalizeSyncStatusValue(wsEdit.Cells(r, syncStatusColEdit).Value)
+            If IsIgnoredBySyncStatus(rowSyncStatus) Then
+                ignoredUnknownStatusCount = ignoredUnknownStatusCount + 1
+                Debug.Print "行" & r & " は同期状態=不明 のため差分抽出対象外"
+                GoTo ContinueNextEditRow
+            End If
+            If rowSyncStatus = "管理対象外" Or rowSyncStatus = "文書管理対象外" Then
+                Debug.Print "行" & r & " は同期状態=" & rowSyncStatus & " のため差分抽出対象外"
                 GoTo ContinueNextEditRow
             End If
         End If
@@ -2864,18 +3018,62 @@ Public Sub 手順4_差分インポートCSVを作成する()
             End If
 
             If isDifferent Then
-                WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
-                outRow = outRow + 1
+                targetRows.Add r
             End If
 
         ' C. キー一致なし -> 新規行として出力
         Else
-            WriteRowByFixedLayout wsEdit, wsOut, r, outRow, fixedHeaders, editHeaderMap, outputSourceMap
-            outRow = outRow + 1
+            targetRows.Add r
         End If
 
 ContinueNextEditRow:
     Next r
+
+    If targetRows.Count > 0 Then
+        For Each targetRow In targetRows
+            guideSeatCheckReason = GetStep4GuideSeatCheckReason( _
+                wsEdit, _
+                CLng(targetRow), _
+                class1ColEdit, _
+                keyCategory2Edit, _
+                existingGuide1Dict, _
+                existingGuide2Dict)
+            If Len(guideSeatCheckReason) > 0 Then
+                guideSeatCheckReasons(CStr(CLng(targetRow))) = guideSeatCheckReason
+            End If
+        Next targetRow
+
+        syncStatusChangedCount = ConfirmAndMarkStep4NewRegistrationCandidates(wsEdit, targetRows)
+        If syncStatusChangedCount < 0 Then GoTo SafeExit
+
+        For Each targetRow In targetRows
+            新ファイル基準表_年度と原課ID再補完 wsEdit, CLng(targetRow), CLng(targetRow), True
+            新ファイル基準表_分類コード再補完 wsEdit, CLng(targetRow), CLng(targetRow)
+        Next targetRow
+
+        新ファイル基準表_登録予定分類コード採番 wsEdit, 2, editLastRow, targetRows
+    End If
+
+    wsOut.Cells.Clear
+    ' 1行目に固定見出しを厳密順で出力
+    For i = LBound(fixedHeaders) To UBound(fixedHeaders)
+        wsOut.Cells(1, i - LBound(fixedHeaders) + 1).value = fixedHeaders(i)
+    Next i
+    outRow = 2
+
+    If targetRows.Count > 0 Then
+        For Each targetRow In targetRows
+            新ファイル基準表_分類コード再補完 wsEdit, CLng(targetRow), CLng(targetRow)
+            WriteRowByFixedLayout wsEdit, wsOut, CLng(targetRow), outRow, fixedHeaders, editHeaderMap, outputSourceMap
+            If guideSeatCheckReasons.Exists(CStr(CLng(targetRow))) Then
+                outputLastCol = UBound(fixedHeaders) - LBound(fixedHeaders) + 1
+                wsOut.Range(wsOut.Cells(outRow, 1), wsOut.Cells(outRow, outputLastCol)).Interior.Color = RGB(255, 255, 0)
+                SetCellCommentText wsOut.Cells(outRow, 1), "座作成要確認：" & CStr(guideSeatCheckReasons(CStr(CLng(targetRow))))
+                guideSeatCheckCount = guideSeatCheckCount + 1
+            End If
+            outRow = outRow + 1
+        Next targetRow
+    End If
 
     With wsOut.Range(wsOut.Cells(1, 1), wsOut.Cells(1, UBound(fixedHeaders) - LBound(fixedHeaders) + 1))
         .Font.Bold = True
@@ -2884,8 +3082,17 @@ ContinueNextEditRow:
     End With
     wsOut.Columns(1).Resize(, UBound(fixedHeaders) - LBound(fixedHeaders) + 1).EntireColumn.AutoFit
 
+    WriteProcessLog "差分インポート抽出", SHEET_DIFF_IMPORT, "", outRow - 2, "成功", _
+        "差分インポートCSVを出力（差分" & CStr(outRow - 2) & "件、マクロ差込除外" & CStr(excludedMacroInsertCount) & _
+        "件、マクロ差込を文書管理対象外へ変更" & CStr(macroInsertStatusChangedCount) & _
+        "件、同期状態=不明除外" & CStr(ignoredUnknownStatusCount) & _
+        "件、座作成要確認" & CStr(guideSeatCheckCount) & "件）"
+
     MsgBox "差分抽出が完了しました。" & vbCrLf & _
-           "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & "件", vbInformation
+           "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & _
+           "件、マクロ差込を文書管理対象外へ変更" & macroInsertStatusChangedCount & _
+           "件、同期状態=不明除外" & ignoredUnknownStatusCount & _
+           "件、座作成要確認" & guideSeatCheckCount & "件", vbInformation
 
 SafeExit:
     Application.ScreenUpdating = True
@@ -2893,10 +3100,255 @@ SafeExit:
     Exit Sub
 
 ErrorHandler:
-    MsgBox "差分インポートCSV の作成中にエラーが発生しました: " & Err.Description, vbExclamation
+    errNumber = Err.Number
+    errDescription = Err.Description
+    WriteProcessLog "差分インポート抽出", SHEET_DIFF_IMPORT, "", IIf(outRow >= 2, outRow - 2, 0), "失敗", _
+        "Err " & CStr(errNumber) & ": " & errDescription
+    MsgBox "差分インポートCSV の作成中にエラーが発生しました: " & errDescription, vbExclamation
     Resume SafeExit
 
 End Sub
+
+Private Function ContainsMacroInsertRemark(ByVal remarkValue As Variant) As Boolean
+
+    ContainsMacroInsertRemark = (InStr(1, NormalizeCellValue(remarkValue), NormalizeCellValue("マクロ差込"), vbTextCompare) > 0)
+
+End Function
+
+Private Function ConfirmAndMarkStep4NewRegistrationCandidates( _
+    ByVal wsEdit As Worksheet, _
+    ByVal targetRows As Collection) As Long
+
+    Dim lastCol As Long
+    Dim lastRow As Long
+    Dim fileIdCol As Long
+    Dim fileNoCol As Long
+    Dim barcodeCol As Long
+    Dim titleCol As Long
+    Dim guideCol As Long
+    Dim guide3Col As Long
+    Dim syncCol As Long
+    Dim serialCol As Long
+    Dim bikoCol As Long
+    Dim targetRow As Variant
+    Dim targetRowsToMark As Collection
+    Dim rowNo As Variant
+    Dim messageText As String
+    Dim lineText As String
+    Dim syncText As String
+    Dim serialText As String
+    Dim changedCount As Long
+
+    ConfirmAndMarkStep4NewRegistrationCandidates = 0
+    If wsEdit Is Nothing Then Exit Function
+    If targetRows Is Nothing Then Exit Function
+    If targetRows.Count = 0 Then Exit Function
+
+    lastCol = GetLastUsedCol(wsEdit)
+    lastRow = GetLastUsedRow(wsEdit)
+    If lastCol <= 0 Or lastRow < 2 Then Exit Function
+
+    fileIdCol = FindHeaderColumn(wsEdit, lastCol, Array("ファイルID"))
+    fileNoCol = FindHeaderColumn(wsEdit, lastCol, Array("ファイル番号"))
+    barcodeCol = FindHeaderColumn(wsEdit, lastCol, Array("バーコード番号"))
+    titleCol = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("タイトル"))
+    guideCol = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("分類名２"))
+    guide3Col = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("分類名３"))
+    syncCol = FindHeaderColumn(wsEdit, lastCol, Array("同期状態"))
+    serialCol = FindHeaderColumn(wsEdit, lastCol, Array("通し番号"))
+    bikoCol = FindHeaderColumn(wsEdit, lastCol, Array("備考"))
+
+    If fileIdCol <= 0 Or fileNoCol <= 0 Or barcodeCol <= 0 Or titleCol <= 0 Or guideCol <= 0 Or syncCol <= 0 Then Exit Function
+
+    Set targetRowsToMark = New Collection
+    For Each targetRow In targetRows
+        If CLng(targetRow) >= 2 And CLng(targetRow) <= lastRow Then
+            If bikoCol > 0 Then
+                If ContainsMacroInsertRemark(wsEdit.Cells(CLng(targetRow), bikoCol).Value) Then GoTo ContinueConfirmTargetRow
+            End If
+            If IsStep4UnmarkedNewRegistrationCandidate(wsEdit, CLng(targetRow), fileIdCol, fileNoCol, barcodeCol, titleCol, guideCol, syncCol) Then
+                targetRowsToMark.Add CLng(targetRow)
+            End If
+        End If
+ContinueConfirmTargetRow:
+    Next targetRow
+
+    If targetRowsToMark.Count = 0 Then Exit Function
+
+    messageText = "以下の行は差分インポートCSVに出力される新規登録候補ですが、同期状態が「登録予定」ではありません。" & vbCrLf & _
+                  "OKを押すと、該当行の同期状態を「登録予定」に変更して処理を続行します。" & vbCrLf & _
+                  "キャンセルを押すと、差分インポートCSVの作成を中断します。" & vbCrLf & vbCrLf & _
+                  "該当件数：" & CStr(targetRowsToMark.Count) & "件"
+
+    For Each rowNo In targetRowsToMark
+        syncText = Trim$(CStr(wsEdit.Cells(CLng(rowNo), syncCol).Value))
+        serialText = ""
+        If serialCol > 0 Then serialText = CStr(wsEdit.Cells(CLng(rowNo), serialCol).Value)
+        lineText = "・通し番号=" & serialText & _
+                   " / 第1ガイド=" & CStr(wsEdit.Cells(CLng(rowNo), guideCol).Value) & _
+                   " / 第2ガイド=" & GetCellTextIfColumnExists(wsEdit, CLng(rowNo), guide3Col) & _
+                   " / タイトル=" & CStr(wsEdit.Cells(CLng(rowNo), titleCol).Value) & _
+                   " / 現在の同期状態=" & syncText
+        messageText = messageText & vbCrLf & lineText
+    Next rowNo
+
+    If MsgBox(messageText, vbOKCancel + vbExclamation, "新規登録候補の同期状態確認") <> vbOK Then
+        ConfirmAndMarkStep4NewRegistrationCandidates = -1
+        Exit Function
+    End If
+
+    For Each rowNo In targetRowsToMark
+        wsEdit.Cells(CLng(rowNo), syncCol).Value = "登録予定"
+        changedCount = changedCount + 1
+    Next rowNo
+
+    ConfirmAndMarkStep4NewRegistrationCandidates = changedCount
+
+End Function
+
+Private Function BuildNormalizedGuidePairKey(ByVal guide1Name As String, ByVal guide2Name As String) As String
+
+    BuildNormalizedGuidePairKey = NormalizeForDiffCompare(guide1Name) & "|" & NormalizeForDiffCompare(guide2Name)
+
+End Function
+
+Private Function GetStep4GuideSeatCheckReason( _
+    ByVal wsEdit As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal guide1Col As Long, _
+    ByVal guide2Col As Long, _
+    ByVal existingGuide1Dict As Object, _
+    ByVal existingGuide2Dict As Object) As String
+
+    Dim guide1Name As String
+    Dim guide2Name As String
+    Dim isNewGuide1 As Boolean
+    Dim isNewGuide2 As Boolean
+
+    If wsEdit Is Nothing Then Exit Function
+    If rowNo < 2 Then Exit Function
+
+    If guide1Col > 0 Then guide1Name = Trim$(CStr(wsEdit.Cells(rowNo, guide1Col).Value))
+    If guide2Col > 0 Then guide2Name = Trim$(CStr(wsEdit.Cells(rowNo, guide2Col).Value))
+
+    If Len(NormalizeForDiffCompare(guide1Name)) > 0 Then
+        isNewGuide1 = Not existingGuide1Dict.Exists(NormalizeForDiffCompare(guide1Name))
+    End If
+
+    If Len(NormalizeForDiffCompare(guide1Name)) > 0 And Len(NormalizeForDiffCompare(guide2Name)) > 0 Then
+        isNewGuide2 = Not existingGuide2Dict.Exists(BuildNormalizedGuidePairKey(guide1Name, guide2Name))
+    End If
+
+    If isNewGuide1 And isNewGuide2 Then
+        GetStep4GuideSeatCheckReason = "第1ガイド・第2ガイド完全新規"
+    ElseIf isNewGuide1 Then
+        GetStep4GuideSeatCheckReason = "第1ガイド完全新規"
+    ElseIf isNewGuide2 Then
+        GetStep4GuideSeatCheckReason = "第2ガイド完全新規"
+    End If
+
+End Function
+
+Private Sub SetCellCommentText(ByVal targetCell As Range, ByVal commentText As String)
+
+    If targetCell Is Nothing Then Exit Sub
+    If Len(commentText) = 0 Then Exit Sub
+
+    On Error Resume Next
+    targetCell.ClearComments
+    targetCell.AddComment commentText
+    On Error GoTo 0
+
+End Sub
+
+Private Function GetCellTextIfColumnExists(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As String
+
+    If ws Is Nothing Then Exit Function
+    If rowNo < 1 Or colNo < 1 Then Exit Function
+    GetCellTextIfColumnExists = CStr(ws.Cells(rowNo, colNo).Value)
+
+End Function
+
+Private Function BuildRowsToProcess( _
+    ByVal startRow As Long, _
+    ByVal endRow As Long, _
+    Optional ByVal targetRows As Collection = Nothing) As Collection
+
+    Dim rows As Collection
+    Dim rowNo As Variant
+    Dim r As Long
+
+    Set rows = New Collection
+    If Not targetRows Is Nothing Then
+        For Each rowNo In targetRows
+            If CLng(rowNo) >= startRow And CLng(rowNo) <= endRow Then rows.Add CLng(rowNo)
+        Next rowNo
+    Else
+        For r = startRow To endRow
+            rows.Add r
+        Next r
+    End If
+
+    Set BuildRowsToProcess = rows
+
+End Function
+
+Private Function IsStep4UnmarkedNewRegistrationCandidate( _
+    ByVal wsEdit As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal fileIdCol As Long, _
+    ByVal fileNoCol As Long, _
+    ByVal barcodeCol As Long, _
+    ByVal titleCol As Long, _
+    ByVal guideCol As Long, _
+    ByVal syncCol As Long) As Boolean
+
+    Dim syncText As String
+
+    If wsEdit Is Nothing Then Exit Function
+    If rowNo < 2 Then Exit Function
+
+    If NormalizeCellValue(wsEdit.Cells(rowNo, fileIdCol).Value) <> "" Then Exit Function
+    If NormalizeCellValue(wsEdit.Cells(rowNo, fileNoCol).Value) <> "" Then Exit Function
+    If NormalizeCellValue(wsEdit.Cells(rowNo, barcodeCol).Value) <> "" Then Exit Function
+    If NormalizeCellValue(wsEdit.Cells(rowNo, titleCol).Value) = "" Then Exit Function
+    If NormalizeCellValue(wsEdit.Cells(rowNo, guideCol).Value) = "" Then Exit Function
+
+    syncText = NormalizeCellValue(wsEdit.Cells(rowNo, syncCol).Value)
+    If IsIgnoredBySyncStatus(syncText) Then Exit Function
+    If syncText = NormalizeCellValue("管理対象外") Then Exit Function
+    If syncText = NormalizeCellValue("文書管理対象外") Then Exit Function
+    If syncText = NormalizeCellValue("登録予定") Then Exit Function
+
+    IsStep4UnmarkedNewRegistrationCandidate = True
+
+End Function
+
+Private Function IsStep4NewRegistrationCandidate( _
+    ByVal wsEdit As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal syncStatusCol As Long, _
+    ByVal fileIdCol As Long, _
+    ByVal fileNoCol As Long, _
+    ByVal barcodeCol As Long) As Boolean
+
+    Dim fileIdVal As String
+    Dim fileNoVal As String
+    Dim barcodeVal As String
+
+    If wsEdit Is Nothing Then Exit Function
+    If rowNo < 2 Then Exit Function
+
+    fileIdVal = ""
+    fileNoVal = ""
+    barcodeVal = ""
+    If fileIdCol > 0 Then fileIdVal = NormalizeCellValue(wsEdit.Cells(rowNo, fileIdCol).Value)
+    If fileNoCol > 0 Then fileNoVal = NormalizeCellValue(wsEdit.Cells(rowNo, fileNoCol).Value)
+    If barcodeCol > 0 Then barcodeVal = NormalizeCellValue(wsEdit.Cells(rowNo, barcodeCol).Value)
+
+    IsStep4NewRegistrationCandidate = (fileIdVal = "" And fileNoVal = "" And barcodeVal = "")
+
+End Function
 
 Private Sub AddRowToKeyBucket(ByVal bucketDict As Object, ByVal key As String, ByVal rowNumber As Long)
 
@@ -3181,6 +3633,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim appendRow As Long
     Dim key As String
     Dim previousCalculationMode As XlCalculation
+    Dim previousScreenUpdating As Boolean
+    Dim previousEnableEvents As Boolean
     Dim appendedCount As Long
     Dim updatedCount As Long
     Dim skippedNoKeyCount As Long
@@ -3195,8 +3649,31 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim srcYearCol As Long
     Dim srcRowYearValue As Long
     Dim skippedOtherYearCount As Long
-    Dim annualFixChangedCount As Long
-    Dim annualFixReviewCount As Long
+    Dim visualDiffMap As Object
+    Dim serialCommentMap As Object
+    Dim changedHeadersText As String
+    Dim idCompletionHeadersText As String
+    Dim changedCount As Long
+    Dim serialCol As Long
+    Dim sourceNameSyncMap As Object
+    Dim destNameSyncMap As Object
+    Dim nameSyncKey As String
+    Dim nameSyncRows As Collection
+    Dim nameSyncSourceRowsText As String
+    Dim nameSyncCount As Long
+    Dim ambiguousSyncCount As Long
+    Dim hasRowDiff As Boolean
+    Dim syncCol As Long
+    Dim beforeSyncStatus As String
+    Dim currentSyncCount As Long
+    Dim registrationPlannedCount As Long
+    Dim registrationToCurrentCount As Long
+    Dim deletionPlannedRemainCount As Long
+    Dim deletionPlannedDeletedCount As Long
+    Dim colorDiffDetectedCount As Long
+    Dim newFileStandardColumnWidths As Object
+    Dim errNumber As Long
+    Dim errDescription As String
 
     On Error GoTo ErrorHandler
 
@@ -3213,13 +3690,19 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Set existingRowMap = CreateObject("Scripting.Dictionary")
     Set sourceKeyMap = CreateObject("Scripting.Dictionary")
     Set touchedTargetRowMap = CreateObject("Scripting.Dictionary")
+    Set visualDiffMap = CreateObject("Scripting.Dictionary")
+    Set serialCommentMap = CreateObject("Scripting.Dictionary")
+    Set sourceNameSyncMap = CreateObject("Scripting.Dictionary")
+    Set destNameSyncMap = CreateObject("Scripting.Dictionary")
     Set validationTemplateMap = CreateObject("Scripting.Dictionary")
     Set formatTemplateMap = CreateObject("Scripting.Dictionary")
     Set columnWidthMap = CreateObject("Scripting.Dictionary")
 
+    previousScreenUpdating = Application.ScreenUpdating
+    previousEnableEvents = Application.EnableEvents
+    previousCalculationMode = Application.Calculation
     Application.ScreenUpdating = False
     Application.EnableEvents = False
-    previousCalculationMode = Application.Calculation
     Application.Calculation = xlCalculationManual
 
     srcLastCol = GetLastUsedCol(wsSrc)
@@ -3259,6 +3742,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     For i = LBound(baselineUserManagedHeaders) To UBound(baselineUserManagedHeaders)
         EnsureColumnByHeader wsDst, existingDstHeaders, CStr(baselineUserManagedHeaders(i))
     Next i
+    syncCol = GetUniqueSyncStatusColumnOrRaise(wsDst)
 
     ' 3) 目録CSVの見出し辞書を作成し、CSV由来列の転記マップを組み立てる
     BuildSourceHeaderMap wsSrc, srcLastCol, srcHeaderMap
@@ -3282,6 +3766,14 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     ' 高速化対応: 重複呼び出しを削除（1回のみ）
     BuildExistingRowMap wsDst, dstLastRow, existingRowMap, targetYearValue
+
+    ' 前回実行時の赤塗りつぶしが残らないよう、対象年度の「通し番号」列だけ事前にクリアする
+    serialCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), GetStep2HeaderCandidates("通し番号"))
+    ClearSerialDiffMarksForTargetYear wsDst, serialCol, targetYearValue
+
+    ' ID未登録/ID不一致の手入力行を、名称ベース（年度＋第1ガイド＋第2ガイド＋個別フォルダー）でも突合できるようにする
+    BuildSourceNameSyncMap wsSrc, srcLastRow, srcLastCol, sourceNameSyncMap, targetYearValue
+    BuildDestinationNameSyncMap wsDst, dstLastRow, GetLastUsedCol(wsDst), destNameSyncMap, targetYearValue
 
     ' 目録CSVのうち、指定年度に一致する行だけを反映する
     If srcLastRow >= 2 Then
@@ -3307,8 +3799,34 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
             If existingRowMap.Exists(key) Then
                 targetRow = CLng(existingRowMap(key))
-                UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap
-                updatedCount = updatedCount + 1
+                beforeSyncStatus = GetSyncStatusValue(wsDst, targetRow, syncCol)
+                If IsIgnoredBySyncStatus(beforeSyncStatus) Then GoTo ContinueNextSourceRow
+                If beforeSyncStatus = "削除予定" Then
+                    visualDiffMap(key) = "削除予定"
+                    serialCommentMap(key) = BuildSerialDiffComment("削除予定", "", "")
+                    GoTo ContinueNextSourceRow
+                End If
+
+                hasRowDiff = RowDiffersFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
+                changedHeadersText = GetChangedHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
+                idCompletionHeadersText = GetIdentityCompletionHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap)
+                If hasRowDiff Then
+                    If Not ShouldExcludeRowFromStep2VisualDiff(wsDst, targetRow) Then
+                        If Not visualDiffMap.Exists(key) Then changedCount = changedCount + 1
+                        visualDiffMap(key) = "変更"
+                        serialCommentMap(key) = BuildSerialDiffComment("変更", changedHeadersText, idCompletionHeadersText)
+                    End If
+                End If
+                UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap, colorDiffDetectedCount
+                If beforeSyncStatus = "登録予定" Then
+                    wsDst.Cells(targetRow, syncCol).Value = "同期済"
+                    visualDiffMap(key) = "登録予定現行"
+                    serialCommentMap(key) = BuildSerialDiffComment("登録予定現行", changedHeadersText, idCompletionHeadersText)
+                    registrationToCurrentCount = registrationToCurrentCount + 1
+                Else
+                    updatedCount = updatedCount + 1
+                    If beforeSyncStatus = "同期済" Then currentSyncCount = currentSyncCount + 1
+                End If
                 If Not touchedTargetRowMap.Exists(CStr(targetRow)) Then touchedTargetRowMap.Add CStr(targetRow), targetRow
 
                 If Not didUpdateRows Then
@@ -3320,11 +3838,81 @@ Public Sub 手順2_新ファイル基準表を作成する()
                     If targetRow > updateEndRow Then updateEndRow = targetRow
                 End If
             Else
-                AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
-                existingRowMap.Add key, appendRow
-                appendedCount = appendedCount + 1
-                If Not touchedTargetRowMap.Exists(CStr(appendRow)) Then touchedTargetRowMap.Add CStr(appendRow), appendRow
-                appendRow = appendRow + 1
+                nameSyncKey = BuildFolderNameSyncKeyFromSheetRow(wsSrc, srcRow, srcLastCol)
+                If nameSyncKey <> "" And sourceNameSyncMap.Exists(nameSyncKey) And destNameSyncMap.Exists(nameSyncKey) Then
+                    Set nameSyncRows = sourceNameSyncMap(nameSyncKey)
+                    If nameSyncRows.Count = 1 Then
+                        Set nameSyncRows = destNameSyncMap(nameSyncKey)
+                        If nameSyncRows.Count = 1 Then
+                            targetRow = CLng(nameSyncRows.Item(1))
+                            beforeSyncStatus = GetSyncStatusValue(wsDst, targetRow, syncCol)
+                            If IsIgnoredBySyncStatus(beforeSyncStatus) Then GoTo ContinueNextSourceRow
+                            If beforeSyncStatus = "削除予定" Then
+                                visualDiffMap("NAME|" & nameSyncKey) = "削除予定"
+                                serialCommentMap("NAME|" & nameSyncKey) = BuildSerialDiffComment("削除予定", "", "")
+                                GoTo ContinueNextSourceRow
+                            End If
+
+                            hasRowDiff = RowDiffersFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
+                            changedHeadersText = GetChangedHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
+                            idCompletionHeadersText = GetIdentityCompletionHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap)
+                            UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap, colorDiffDetectedCount
+                            AppendRemarkOnce wsDst, targetRow, "システム同期済"
+                            If key <> "" Then existingRowMap(key) = targetRow
+                            ' 名称ベース同期が成立した行は、差分比較結果に関わらず今回の同期済み変更行として赤塗り対象にする
+                            If key <> "" Then
+                                If Not visualDiffMap.Exists(key) Then changedCount = changedCount + 1
+                                If beforeSyncStatus = "登録予定" Then
+                                    visualDiffMap(key) = "登録予定現行"
+                                    serialCommentMap(key) = BuildSerialDiffComment("登録予定現行", changedHeadersText, idCompletionHeadersText)
+                                    wsDst.Cells(targetRow, syncCol).Value = "同期済"
+                                    registrationToCurrentCount = registrationToCurrentCount + 1
+                                Else
+                                    visualDiffMap(key) = "名称同期"
+                                    serialCommentMap(key) = BuildSerialDiffComment("名称同期", changedHeadersText, idCompletionHeadersText)
+                                End If
+                            End If
+                            nameSyncCount = nameSyncCount + 1
+                            If Not touchedTargetRowMap.Exists(CStr(targetRow)) Then touchedTargetRowMap.Add CStr(targetRow), targetRow
+
+                            If Not didUpdateRows Then
+                                updateStartRow = targetRow
+                                updateEndRow = targetRow
+                                didUpdateRows = True
+                            Else
+                                If targetRow < updateStartRow Then updateStartRow = targetRow
+                                If targetRow > updateEndRow Then updateEndRow = targetRow
+                            End If
+                        Else
+                            ambiguousSyncCount = ambiguousSyncCount + 1
+                            If nameSyncKey <> "" Then
+                                visualDiffMap("NAME|" & nameSyncKey) = "判定困難"
+                                serialCommentMap("NAME|" & nameSyncKey) = BuildSerialDiffComment("判定困難", "", "")
+                            End If
+                            AppendAmbiguousNameSyncRemark wsDst, nameSyncRows, "同期候補重複①（新ファイル基準表側候補複数）"
+                        End If
+                    Else
+                        ambiguousSyncCount = ambiguousSyncCount + 1
+                        nameSyncSourceRowsText = CollectionItemsText(nameSyncRows)
+                        Set nameSyncRows = destNameSyncMap(nameSyncKey)
+                        If nameSyncKey <> "" Then
+                            visualDiffMap("NAME|" & nameSyncKey) = "判定困難"
+                            serialCommentMap("NAME|" & nameSyncKey) = BuildSerialDiffComment("判定困難", "", "")
+                        End If
+                        AppendAmbiguousNameSyncRemark wsDst, nameSyncRows, "同期候補重複①（目録CSV行: " & nameSyncSourceRowsText & "）"
+                    End If
+                Else
+                    AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
+                    AutoFillColorForRow wsDst, appendRow
+                    If key <> "" Then existingRowMap.Add key, appendRow
+                    If key <> "" Then
+                        visualDiffMap(key) = "追加"
+                        serialCommentMap(key) = BuildSerialDiffComment("追加", "", "")
+                    End If
+                    appendedCount = appendedCount + 1
+                    If Not touchedTargetRowMap.Exists(CStr(appendRow)) Then touchedTargetRowMap.Add CStr(appendRow), appendRow
+                    appendRow = appendRow + 1
+                End If
             End If
 
 ContinueNextSourceRow:
@@ -3344,14 +3932,18 @@ ContinueNextSourceRow:
         ReorderSheetColumnsByMap wsDst, columnOrderMap
     End If
 
-    ' 6) 同期状態列を更新（現行 / 削除候補 / 未登録）
-    UpdateSyncStatusColumn wsDst, sourceKeyMap, targetYearValue
-
-    ' 7) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
+    ' 6) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
     ApplyStep2PostProcessToTouchedRows wsDst, touchedTargetRowMap
 
-    ' 7-2) 年度表現補正は指定年度の行だけに限定する
-    ApplyAnnualFolderNameCorrections wsDst, annualFixChangedCount, annualFixReviewCount, targetYearValue
+    ' 7-1) 登録予定/削除予定の残存確認と、目録CSVから消えた削除予定行の削除可候補化を行う
+    ProcessPendingSyncStatusRows wsDst, syncCol, sourceKeyMap, sourceNameSyncMap, visualDiffMap, serialCommentMap, _
+        targetYearValue, registrationPlannedCount, deletionPlannedRemainCount, deletionPlannedDeletedCount
+
+    ' 7-2) 同期状態列を更新（現行 / 登録予定 / 削除予定）
+    UpdateSyncStatusColumn wsDst, sourceKeyMap, targetYearValue
+
+    ' 7-3) CSV整形は現状同期のため、n+1/毎年作成による年度表現補正は行わない。
+    '      年度補正が必要な場合は nプラス1_毎年作成年度補正を実行する を個別に実行する。
 
     ' 8) 主要列の見た目のみ整える（既存追加列の表示/非表示状態は壊さない）
     If leftFixedCount > 0 Then
@@ -3359,13 +3951,10 @@ ContinueNextSourceRow:
             .Font.Bold = True
             .Interior.Color = RGB(242, 242, 242)
         End With
-        wsDst.Range(wsDst.Columns(1), wsDst.Columns(leftFixedCount)).EntireColumn.AutoFit
+        ' 列幅は利用者が手動調整した値を維持するため、自動調整しない。
     End If
 
     SortNewFileStandardByFiscalYear wsDst
-
-    srcLastCol = GetLastUsedCol(wsDst)
-    wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(1, srcLastCol)).AutoFilter
 
     ' 9) 左側固定対象の不足見出しを通知用に収集（列の表示状態は変更しない）
     HideKeyColumnsForStep2 wsDst, displayHeaders, missingHeadersText
@@ -3378,32 +3967,58 @@ ContinueNextSourceRow:
         ReapplyFormatAndWidthFromTemplate wsDst, formatTemplateMap, columnWidthMap, wsFormatTemplate
     End If
 
+    ' 書式再適用後に、追加・変更・名称ベース同期行の通し番号列だけを赤塗りする
+    serialCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), GetStep2HeaderCandidates("通し番号"))
+    ApplySerialDiffMarksByKey wsDst, serialCol, visualDiffMap, serialCommentMap, targetYearValue
+
+    ' CSV整形完了時点の使用範囲へ、見出し行フィルターを正しい範囲で設定し直す
+    ApplyAutoFilterToNewFileStandard wsDst
+
+    ' マクロ実行中に列順変更や書式再適用があっても、既存列の手動幅を最終的に戻す。
+    RestoreColumnWidthsByHeader wsDst, newFileStandardColumnWidths
+
+    WriteProcessLog "CSV整形（新ファイル基準表作成）", SHEET_MOKUROKU_CSV, targetYearRaw, _
+        appendedCount + updatedCount + nameSyncCount, "成功", "新ファイル基準表を作成"
+
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
                "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
-               "更新件数: " & updatedCount & " 件" & vbCrLf & _
-               "追加件数: " & appendedCount & " 件" & vbCrLf & _
+               "同期済更新件数: " & currentSyncCount & " 件" & vbCrLf & _
+               "登録予定のまま残った件数: " & registrationPlannedCount & " 件" & vbCrLf & _
+               "登録予定から同期済になった件数: " & registrationToCurrentCount & " 件" & vbCrLf & _
+               "削除予定のまま残った件数: " & deletionPlannedRemainCount & " 件" & vbCrLf & _
+               "削除可候補件数: " & deletionPlannedDeletedCount & " 件" & vbCrLf & _
+               "新規追加件数: " & appendedCount & " 件" & vbCrLf & _
+               "内容変更件数: " & changedCount & " 件" & vbCrLf & _
+               "名称ベース同期件数: " & nameSyncCount & " 件" & vbCrLf & _
+               "判定困難件数: " & ambiguousSyncCount & " 件" & vbCrLf & _
+               "色列差異検出件数: " & colorDiffDetectedCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
-               "年度表現補正件数: " & annualFixChangedCount & " 件" & vbCrLf & _
-               "年度表現要確認件数: " & annualFixReviewCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
                "以下の見出しが見つからないため、左側固定対象から除外しました:" & vbCrLf & _
                missingHeadersText, vbExclamation
     Else
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
                "整形対象年度: " & targetYearValue & " 年度" & vbCrLf & _
-               "更新件数: " & updatedCount & " 件" & vbCrLf & _
-               "追加件数: " & appendedCount & " 件" & vbCrLf & _
+               "同期済更新件数: " & currentSyncCount & " 件" & vbCrLf & _
+               "登録予定のまま残った件数: " & registrationPlannedCount & " 件" & vbCrLf & _
+               "登録予定から同期済になった件数: " & registrationToCurrentCount & " 件" & vbCrLf & _
+               "削除予定のまま残った件数: " & deletionPlannedRemainCount & " 件" & vbCrLf & _
+               "削除可候補件数: " & deletionPlannedDeletedCount & " 件" & vbCrLf & _
+               "新規追加件数: " & appendedCount & " 件" & vbCrLf & _
+               "内容変更件数: " & changedCount & " 件" & vbCrLf & _
+               "名称ベース同期件数: " & nameSyncCount & " 件" & vbCrLf & _
+               "判定困難件数: " & ambiguousSyncCount & " 件" & vbCrLf & _
+               "色列差異検出件数: " & colorDiffDetectedCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
-               "年度表現補正件数: " & annualFixChangedCount & " 件" & vbCrLf & _
-               "年度表現要確認件数: " & annualFixReviewCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
     End If
 
 SafeExit:
     On Error Resume Next
+    RestoreColumnWidthsByHeader wsDst, newFileStandardColumnWidths
     If Not wsValidationTemplate Is Nothing Then
         Application.DisplayAlerts = False
         wsValidationTemplate.Delete
@@ -3416,22 +4031,456 @@ SafeExit:
     End If
     On Error GoTo 0
 
-    Application.ScreenUpdating = True
-    Application.EnableEvents = True
+    Application.ScreenUpdating = previousScreenUpdating
+    Application.EnableEvents = previousEnableEvents
     Application.Calculation = previousCalculationMode
     Exit Sub
 
 ErrorHandler:
-    MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & Err.Description, vbCritical
+    errNumber = Err.Number
+    errDescription = Err.Description
+    WriteProcessLog "CSV整形（新ファイル基準表作成）", SHEET_MOKUROKU_CSV, targetYearRaw, _
+        appendedCount + updatedCount + nameSyncCount, "失敗", "Err " & CStr(errNumber) & ": " & errDescription
+    MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & errDescription, vbCritical
     Resume SafeExit
 
 
 End Sub
 
+
+
+Private Function GetUniqueSyncStatusColumnOrRaise(ByVal ws As Worksheet) As Long
+
+    Dim lastCol As Long
+    Dim colNo As Long
+    Dim foundCol As Long
+    Dim foundCount As Long
+    Dim headerValue As String
+
+    If ws Is Nothing Then Exit Function
+
+    lastCol = GetLastUsedCol(ws)
+    For colNo = 1 To lastCol
+        headerValue = Trim$(CStr(ws.Cells(1, colNo).Value))
+        If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName("同期状態"), vbTextCompare) = 0 Then
+            foundCount = foundCount + 1
+            foundCol = colNo
+        End If
+    Next colNo
+
+    If foundCount > 1 Then
+        Err.Raise vbObjectError + 2011, , "同期状態列が重複しています。見出しを確認してください。"
+    End If
+
+    If foundCount = 1 Then
+        GetUniqueSyncStatusColumnOrRaise = foundCol
+    Else
+        GetUniqueSyncStatusColumnOrRaise = EnsureHeaderColumn(ws, "同期状態")
+    End If
+
+End Function
+
+Private Function GetSyncStatusValue(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal syncCol As Long) As String
+
+    If ws Is Nothing Then Exit Function
+    If rowNo < 2 Or syncCol <= 0 Then Exit Function
+    GetSyncStatusValue = NormalizeSyncStatusValue(ws.Cells(rowNo, syncCol).Value)
+
+End Function
+
+Public Function IsIgnoredBySyncStatus(ByVal syncStatus As String) As Boolean
+
+    IsIgnoredBySyncStatus = (NormalizeSyncStatusValue(syncStatus) = "不明")
+
+End Function
+
+Private Function NormalizeSyncStatusValue(ByVal rawValue As Variant) As String
+
+    Dim s As String
+
+    If IsError(rawValue) Or IsNull(rawValue) Or IsEmpty(rawValue) Then Exit Function
+    s = NormalizeForDiffCompare(rawValue)
+    s = Replace(s, " ", "")
+
+    Select Case s
+        Case "現行", "同期済"
+            NormalizeSyncStatusValue = "同期済"
+        Case "登録予定", "未登録"
+            NormalizeSyncStatusValue = "登録予定"
+        Case "削除予定", "削除候補"
+            NormalizeSyncStatusValue = "削除予定"
+        Case "管理対象外"
+            NormalizeSyncStatusValue = "管理対象外"
+        Case "不明"
+            NormalizeSyncStatusValue = "不明"
+        Case Else
+            NormalizeSyncStatusValue = s
+    End Select
+
+End Function
+
+Private Sub ProcessPendingSyncStatusRows( _
+    ByVal wsDst As Worksheet, _
+    ByVal syncCol As Long, _
+    ByVal sourceKeyMap As Object, _
+    ByVal sourceNameSyncMap As Object, _
+    ByVal visualDiffMap As Object, _
+    ByVal serialCommentMap As Object, _
+    ByVal targetYearValue As Long, _
+    ByRef registrationPlannedCount As Long, _
+    ByRef deletionPlannedRemainCount As Long, _
+    ByRef deletionPlannedDeletedCount As Long)
+
+    Dim headerMap As Object
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim rowNo As Long
+    Dim statusValue As String
+    Dim key As String
+    Dim nameKey As String
+    Dim markKey As String
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+    Dim existsInSource As Boolean
+    Dim remarksCol As Long
+    Dim serialCol As Long
+    Dim markRange As Range
+
+    If wsDst Is Nothing Then Exit Sub
+    If syncCol <= 0 Then Exit Sub
+
+    Set headerMap = CreateObject("Scripting.Dictionary")
+    lastCol = GetLastUsedCol(wsDst)
+    BuildSourceHeaderMap wsDst, lastCol, headerMap
+
+    lastRow = GetLastUsedRow(wsDst)
+    If lastRow < 2 Then Exit Sub
+
+    warekiYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度"))
+    remarksCol = FindHeaderColumn(wsDst, lastCol, Array("備考"))
+    serialCol = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates("通し番号"))
+
+    For rowNo = lastRow To 2 Step -1
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol) <> targetYearValue Then GoTo ContinueNextPendingRow
+        End If
+
+        statusValue = GetSyncStatusValue(wsDst, rowNo, syncCol)
+        If IsIgnoredBySyncStatus(statusValue) Then GoTo ContinueNextPendingRow
+        If statusValue = "管理対象外" Then GoTo ContinueNextPendingRow
+        If statusValue <> "登録予定" And statusValue <> "削除予定" Then GoTo ContinueNextPendingRow
+
+        key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
+        nameKey = BuildFolderNameSyncKeyFromSheetRow(wsDst, rowNo, lastCol)
+        existsInSource = RowExistsInSourceByIdentityOrName(key, nameKey, sourceKeyMap, sourceNameSyncMap)
+
+        If statusValue = "登録予定" Then
+            If Not existsInSource Then
+                wsDst.Cells(rowNo, syncCol).Value = "登録予定"
+                markKey = BuildVisualMarkerKey(key, nameKey)
+                If markKey <> "" Then
+                    visualDiffMap(markKey) = "登録予定"
+                    serialCommentMap(markKey) = BuildSerialDiffComment("登録予定", "", "")
+                End If
+                registrationPlannedCount = registrationPlannedCount + 1
+            End If
+        ElseIf statusValue = "削除予定" Then
+            If existsInSource Then
+                wsDst.Cells(rowNo, syncCol).Value = "削除予定"
+                markKey = BuildVisualMarkerKey(key, nameKey)
+                If markKey <> "" Then
+                    visualDiffMap(markKey) = "削除予定"
+                    serialCommentMap(markKey) = BuildSerialDiffComment("削除予定", "", "")
+                End If
+                deletionPlannedRemainCount = deletionPlannedRemainCount + 1
+            Else
+                Set markRange = wsDst.Range(wsDst.Cells(rowNo, 1), wsDst.Cells(rowNo, lastCol))
+                markRange.Interior.Color = RGB(217, 217, 217)
+                If remarksCol > 0 Then AppendRemarkOnce wsDst, rowNo, "削除可：目録CSVに存在しないため手動削除確認"
+                If serialCol > 0 Then
+                    SafeDeleteComment wsDst.Cells(rowNo, serialCol)
+                    SafeAddComment wsDst.Cells(rowNo, serialCol), BuildSerialDiffComment("削除可", "", "")
+                End If
+                markKey = BuildVisualMarkerKey(key, nameKey)
+                If markKey <> "" Then
+                    visualDiffMap(markKey) = "削除可"
+                    serialCommentMap(markKey) = BuildSerialDiffComment("削除可", "", "")
+                End If
+                deletionPlannedDeletedCount = deletionPlannedDeletedCount + 1
+            End If
+        End If
+ContinueNextPendingRow:
+    Next rowNo
+
+End Sub
+
+Private Function RowExistsInSourceByIdentityOrName( _
+    ByVal key As String, _
+    ByVal nameKey As String, _
+    ByVal sourceKeyMap As Object, _
+    ByVal sourceNameSyncMap As Object) As Boolean
+
+    If key <> "" Then
+        If Not sourceKeyMap Is Nothing Then
+            If sourceKeyMap.Exists(key) Then
+                RowExistsInSourceByIdentityOrName = True
+                Exit Function
+            End If
+        End If
+    End If
+
+    If nameKey <> "" Then
+        If Not sourceNameSyncMap Is Nothing Then
+            If sourceNameSyncMap.Exists(nameKey) Then RowExistsInSourceByIdentityOrName = True
+        End If
+    End If
+
+End Function
+
+Private Function BuildVisualMarkerKey(ByVal key As String, ByVal nameKey As String) As String
+
+    If key <> "" Then
+        BuildVisualMarkerKey = key
+    ElseIf nameKey <> "" Then
+        BuildVisualMarkerKey = "NAME|" & nameKey
+    End If
+
+End Function
+
+Private Sub ApplyAutoFilterToNewFileStandard(ByVal ws As Worksheet)
+
+    Dim headerRow As Long
+    Dim lastRow As Long
+    Dim lastCol As Long
+
+    If ws Is Nothing Then Exit Sub
+
+    headerRow = 1
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+    If lastRow < headerRow Or lastCol <= 0 Then Exit Sub
+
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Range(ws.Cells(headerRow, 1), ws.Cells(lastRow, lastCol)).AutoFilter
+
+End Sub
+
+Private Sub BuildSourceNameSyncMap( _
+    ByVal wsSrc As Worksheet, _
+    ByVal srcLastRow As Long, _
+    ByVal srcLastCol As Long, _
+    ByVal nameSyncMap As Object, _
+    ByVal targetYearValue As Long)
+
+    Dim srcRow As Long
+    Dim key As String
+    Dim rowYearValue As Long
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+
+    If nameSyncMap Is Nothing Then Exit Sub
+    nameSyncMap.RemoveAll
+    If wsSrc Is Nothing Then Exit Sub
+    If srcLastRow < 2 Then Exit Sub
+
+    warekiYearCol = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    westernYearCol = FindHeaderColumn(wsSrc, srcLastCol, Array("年度"))
+
+    For srcRow = 2 To srcLastRow
+        rowYearValue = GetNormalizedYearFromRow(wsSrc, srcRow, warekiYearCol, westernYearCol)
+        If targetYearValue > 0 And rowYearValue <> targetYearValue Then GoTo ContinueNextSourceNameRow
+
+        key = BuildFolderNameSyncKeyFromSheetRow(wsSrc, srcRow, srcLastCol)
+        If key <> "" Then AddRowToMultiValueMap nameSyncMap, key, srcRow
+ContinueNextSourceNameRow:
+    Next srcRow
+
+End Sub
+
+Private Sub BuildDestinationNameSyncMap( _
+    ByVal wsDst As Worksheet, _
+    ByVal dstLastRow As Long, _
+    ByVal dstLastCol As Long, _
+    ByVal nameSyncMap As Object, _
+    ByVal targetYearValue As Long)
+
+    Dim dstRow As Long
+    Dim key As String
+    Dim rowYearValue As Long
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+    Dim syncCol As Long
+
+    If nameSyncMap Is Nothing Then Exit Sub
+    nameSyncMap.RemoveAll
+    If wsDst Is Nothing Then Exit Sub
+    If dstLastRow < 2 Then Exit Sub
+
+    warekiYearCol = FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    westernYearCol = FindHeaderColumn(wsDst, dstLastCol, Array("年度"))
+    syncCol = FindHeaderColumn(wsDst, dstLastCol, Array("同期状態"))
+
+    For dstRow = 2 To dstLastRow
+        rowYearValue = GetNormalizedYearFromRow(wsDst, dstRow, warekiYearCol, westernYearCol)
+        If targetYearValue > 0 And rowYearValue <> targetYearValue Then GoTo ContinueNextDestinationNameRow
+        If syncCol > 0 Then
+            If IsIgnoredBySyncStatus(CStr(wsDst.Cells(dstRow, syncCol).Value)) Then GoTo ContinueNextDestinationNameRow
+        End If
+
+        key = BuildFolderNameSyncKeyFromSheetRow(wsDst, dstRow, dstLastCol)
+        If key <> "" Then AddRowToMultiValueMap nameSyncMap, key, dstRow
+ContinueNextDestinationNameRow:
+    Next dstRow
+
+End Sub
+
+Private Function BuildFolderNameSyncKeyFromSheetRow(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal lastCol As Long) As String
+
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+    Dim class2Col As Long
+    Dim class3Col As Long
+    Dim titleCol As Long
+    Dim yearValue As Long
+    Dim class2Value As String
+    Dim class3Value As String
+    Dim titleValue As String
+
+    If ws Is Nothing Then Exit Function
+    If lastCol <= 0 Then Exit Function
+
+    warekiYearCol = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    westernYearCol = FindHeaderColumn(ws, lastCol, Array("年度"))
+    class2Col = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名２"))
+    class3Col = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名３"))
+    titleCol = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("タイトル"))
+
+    If (warekiYearCol <= 0 And westernYearCol <= 0) Or class2Col <= 0 Or class3Col <= 0 Or titleCol <= 0 Then Exit Function
+
+    yearValue = GetNormalizedYearFromRow(ws, rowNo, warekiYearCol, westernYearCol)
+    If yearValue <= 0 Then Exit Function
+
+    class2Value = NormalizeForFolderNameSyncKey(ws.Cells(rowNo, class2Col).Value)
+    class3Value = NormalizeForFolderNameSyncKey(ws.Cells(rowNo, class3Col).Value)
+    titleValue = NormalizeForFolderNameSyncKey(ws.Cells(rowNo, titleCol).Value)
+    If class2Value = "" Or class3Value = "" Or titleValue = "" Then Exit Function
+
+    BuildFolderNameSyncKeyFromSheetRow = CStr(yearValue) & "|" & class2Value & "|" & class3Value & "|" & titleValue
+
+End Function
+
+Private Function NormalizeForFolderNameSyncKey(ByVal v As Variant) As String
+
+    Dim s As String
+
+    If IsError(v) Or IsNull(v) Or IsEmpty(v) Then Exit Function
+
+    s = CStr(v)
+    s = RemoveInvisibleChars(s)
+    s = Application.WorksheetFunction.Clean(s)
+    s = Replace(s, vbCrLf, " ")
+    s = Replace(s, vbCr, " ")
+    s = Replace(s, vbLf, " ")
+    s = Replace(s, vbTab, " ")
+    s = Replace(s, ChrW(&H3000), " ")
+    s = Replace(s, "（", "(")
+    s = Replace(s, "）", ")")
+    s = Replace(s, "･", "・")
+    s = Replace(s, "・", "/")
+    s = Replace(s, "／", "/")
+    s = NormalizeHyphenChars(s)
+
+    On Error Resume Next
+    s = StrConv(s, vbNarrow)
+    On Error GoTo 0
+
+    s = ConvertZenkakuAlnumToHankaku(s)
+    s = LCase$(s)
+    s = CollapseSpaces(s)
+    s = Replace(s, " ", "")
+
+    NormalizeForFolderNameSyncKey = Trim$(s)
+
+End Function
+
+Private Function RemoveInvisibleChars(ByVal s As String) As String
+
+    s = Replace(s, ChrW(&H200B), "")
+    s = Replace(s, ChrW(&H200C), "")
+    s = Replace(s, ChrW(&H200D), "")
+    s = Replace(s, ChrW(&HFEFF), "")
+    s = Replace(s, ChrW(&H2060), "")
+    RemoveInvisibleChars = s
+
+End Function
+
+Private Sub AddRowToMultiValueMap(ByVal targetMap As Object, ByVal key As String, ByVal rowNo As Long)
+
+    Dim rows As Collection
+
+    If targetMap.Exists(key) Then
+        Set rows = targetMap(key)
+    Else
+        Set rows = New Collection
+        targetMap.Add key, rows
+    End If
+    rows.Add rowNo
+
+End Sub
+
+Private Function CollectionItemsText(ByVal rows As Collection) As String
+
+    Dim i As Long
+    Dim s As String
+
+    If rows Is Nothing Then Exit Function
+    For i = 1 To rows.Count
+        If Len(s) > 0 Then s = s & ","
+        s = s & CStr(rows.Item(i))
+    Next i
+    CollectionItemsText = s
+
+End Function
+
+Private Sub AppendRemarkOnce(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal remarkText As String)
+
+    Dim remarksCol As Long
+    Dim currentText As String
+
+    If ws Is Nothing Then Exit Sub
+    If rowNo < 2 Then Exit Sub
+    If Len(Trim$(remarkText)) = 0 Then Exit Sub
+
+    remarksCol = FindHeaderColumn(ws, GetLastUsedCol(ws), Array("備考"))
+    If remarksCol <= 0 Then Exit Sub
+
+    currentText = CStr(ws.Cells(rowNo, remarksCol).Value)
+    If InStr(1, currentText, remarkText, vbTextCompare) > 0 Then Exit Sub
+
+    If Len(Trim$(currentText)) > 0 Then
+        ws.Cells(rowNo, remarksCol).Value = currentText & vbCrLf & remarkText
+    Else
+        ws.Cells(rowNo, remarksCol).Value = remarkText
+    End If
+
+End Sub
+
+Private Sub AppendAmbiguousNameSyncRemark(ByVal ws As Worksheet, ByVal rows As Collection, ByVal remarkText As String)
+
+    Dim rowValue As Variant
+
+    If rows Is Nothing Then Exit Sub
+    For Each rowValue In rows
+        AppendRemarkOnce ws, CLng(rowValue), remarkText
+    Next rowValue
+
+End Sub
+
 Private Sub ApplyStep2PostProcessToTouchedRows(ByVal wsDst As Worksheet, ByVal touchedRowMap As Object)
 
-    Dim key As Variant
     Dim rowNo As Long
+    Dim key As Variant
 
     If wsDst Is Nothing Then Exit Sub
     If touchedRowMap Is Nothing Then Exit Sub
@@ -3440,7 +4489,8 @@ Private Sub ApplyStep2PostProcessToTouchedRows(ByVal wsDst As Worksheet, ByVal t
     For Each key In touchedRowMap.Keys
         rowNo = CLng(touchedRowMap(key))
         ConvertAnnualUseDivisionValues wsDst, rowNo, rowNo
-        SyncSecondColorNameFromColor wsDst, rowNo, rowNo
+        ' 方針: CSV整形（手順2）では色名/2色名を一切変更しない
+        ' SyncSecondColorNameFromColor はここでは呼ばない
     Next key
 
 End Sub
@@ -3586,9 +4636,11 @@ Public Sub nPlus1_次年度フォルダ生成()
     End If
 
     For rowNo = 2 To lastRow
+        If IsIgnoredBySyncStatus(CStr(wsDst.Cells(rowNo, colSyncStatus).Value)) Then GoTo ContinueNextNPlus1Row
         If IsNPlus1Flag(GetTrimmedCell(wsDst, rowNo, colNPlus1)) Then
             targetRows.Add rowNo
         End If
+ContinueNextNPlus1Row:
     Next rowNo
 
     targetCount = targetRows.Count
@@ -3625,6 +4677,7 @@ Public Sub nPlus1_次年度フォルダ生成()
         wsDst.Cells(appendRow, colSyncStatus).Value = "未登録"
         wsDst.Cells(appendRow, colHaiki).ClearContents
         wsDst.Cells(appendRow, colNPlus1).ClearContents
+        AutoFillColorForRow wsDst, appendRow
 
         generatedCount = generatedCount + 1
     Next rowNo
@@ -4033,7 +5086,7 @@ Private Function FindHeaderColumnByCandidatesAtRow( _
     For c = 1 To lastCol
         headerValue = NormalizeHeaderText(ws.Cells(headerRow, c).Value)
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(headerValue, NormalizeHeaderText(candidates(i)), vbTextCompare) = 0 Then
+            If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
                 FindHeaderColumnByCandidatesAtRow = c
                 Exit Function
             End If
@@ -4090,11 +5143,10 @@ End Sub
 
 
 '--------------------------------------------------------
-' 新ファイル基準表の「同期状態」列を更新する
-' 判定:
-' - 現行: 今回の目録CSVキー一覧に存在
-' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
-' - 未登録: ID系すべて空欄
+' 新ファイル基準表の「同期状態」列を正規化する
+' - 空欄: 自動入力せず空欄のまま
+' - 現行/登録予定/削除予定: 許可値として維持
+' - 旧値（未登録/削除候補）は内部正規化結果へ寄せる
 '--------------------------------------------------------
 
 '--------------------------------------------------------
@@ -4139,11 +5191,10 @@ End Sub
 
 
 '--------------------------------------------------------
-' 新ファイル基準表の「同期状態」列を更新する
-' 判定:
-' - 現行: 今回の目録CSVキー一覧に存在
-' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
-' - 未登録: ID系すべて空欄
+' 新ファイル基準表の「同期状態」列を正規化する
+' - 空欄: 自動入力せず空欄のまま
+' - 現行/登録予定/削除予定: 許可値として維持
+' - 旧値（未登録/削除候補）は内部正規化結果へ寄せる
 '--------------------------------------------------------
 
 '--------------------------------------------------------
@@ -4188,11 +5239,10 @@ End Sub
 
 
 '--------------------------------------------------------
-' 新ファイル基準表の「同期状態」列を更新する
-' 判定:
-' - 現行: 今回の目録CSVキー一覧に存在
-' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
-' - 未登録: ID系すべて空欄
+' 新ファイル基準表の「同期状態」列を正規化する
+' - 空欄: 自動入力せず空欄のまま
+' - 現行/登録予定/削除予定: 許可値として維持
+' - 旧値（未登録/削除候補）は内部正規化結果へ寄せる
 '--------------------------------------------------------
 
 '--------------------------------------------------------
@@ -4290,15 +5340,373 @@ ContinueNextExistingRow:
 
 End Sub
 
+
+
+Private Function GetChangedHeaderNamesFromSourceByHeader( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsDst As Worksheet, _
+    ByVal srcRow As Long, _
+    ByVal dstRow As Long, _
+    ByVal srcHeaderMap As Object, _
+    ByVal srcToDstMap As Object) As String
+
+    Dim srcCol As Long
+    Dim dstCol As Long
+    Dim beforeCompare As String
+    Dim afterCompare As String
+    Dim key As Variant
+    Dim changedHeaders As String
+
+    For Each key In srcToDstMap.Keys
+        If srcHeaderMap.Exists(CStr(key)) Then
+            If IsStep2UpdateExcludedHeader(CStr(key)) Then GoTo ContinueNextChangedHeader
+            srcCol = CLng(srcHeaderMap(CStr(key)))
+            dstCol = CLng(srcToDstMap(CStr(key)))
+
+            beforeCompare = NormalizeValueForUpdateCompare(CStr(key), wsDst.Cells(dstRow, dstCol).Value)
+            afterCompare = NormalizeValueForUpdateCompare(CStr(key), wsSrc.Cells(srcRow, srcCol).Value)
+
+            If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then changedHeaders = AppendHeaderNameText(changedHeaders, CStr(key))
+        End If
+ContinueNextChangedHeader:
+    Next key
+
+    GetChangedHeaderNamesFromSourceByHeader = changedHeaders
+
+End Function
+
+Private Function GetIdentityCompletionHeaderNamesFromSourceByHeader( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsDst As Worksheet, _
+    ByVal srcRow As Long, _
+    ByVal dstRow As Long, _
+    ByVal srcHeaderMap As Object) As String
+
+    Dim identityHeaders As Variant
+    Dim i As Long
+    Dim canonical As String
+    Dim srcCol As Long
+    Dim dstCol As Long
+    Dim completedHeaders As String
+
+    identityHeaders = Array("ファイルID", "ファイル番号", "バーコード番号")
+
+    For i = LBound(identityHeaders) To UBound(identityHeaders)
+        canonical = CanonicalHeaderName(CStr(identityHeaders(i)))
+        If srcHeaderMap.Exists(canonical) Then
+            srcCol = CLng(srcHeaderMap(canonical))
+            dstCol = FindHeaderColumn(wsDst, GetLastUsedCol(wsDst), GetStep2HeaderCandidates(CStr(identityHeaders(i))))
+            If dstCol > 0 Then
+                If NormalizeForDiffCompare(wsDst.Cells(dstRow, dstCol).Value) = "" And _
+                   NormalizeForDiffCompare(wsSrc.Cells(srcRow, srcCol).Value) <> "" Then
+                    completedHeaders = AppendHeaderNameText(completedHeaders, CStr(identityHeaders(i)))
+                End If
+            End If
+        End If
+    Next i
+
+    GetIdentityCompletionHeaderNamesFromSourceByHeader = completedHeaders
+
+End Function
+
+Private Function AppendHeaderNameText(ByVal baseText As String, ByVal headerName As String) As String
+
+    If Len(Trim$(headerName)) = 0 Then
+        AppendHeaderNameText = baseText
+    ElseIf Len(Trim$(baseText)) = 0 Then
+        AppendHeaderNameText = headerName
+    Else
+        AppendHeaderNameText = baseText & "、" & headerName
+    End If
+
+End Function
+
+Private Function BuildSerialDiffComment( _
+    ByVal diffType As String, _
+    ByVal changedHeadersText As String, _
+    ByVal idCompletionHeadersText As String) As String
+
+    Dim commentText As String
+    Dim displayHeaders As String
+    Dim managementHeaders As String
+
+    Select Case diffType
+        Case "追加"
+            BuildSerialDiffComment = "【新規追加】" & vbCrLf & _
+                "目録CSVに存在し、新ファイル基準表に存在しなかったため追加しました。"
+            Exit Function
+        Case "名称同期"
+            commentText = "【名称ベース同期】" & vbCrLf & _
+                "年度・第1ガイド・第2ガイド・個別フォルダーが一致したため、目録CSV側の正式データで上書きしました。"
+            If Len(changedHeadersText) > 0 Then commentText = commentText & vbCrLf & "上書き項目：" & changedHeadersText
+        Case "登録予定"
+            BuildSerialDiffComment = "【登録予定】" & vbCrLf & _
+                "この行は登録予定ですが、今回の目録CSVにはまだ存在しません。" & vbCrLf & _
+                "新システム側で未登録の可能性があります。"
+            Exit Function
+        Case "登録予定現行"
+            commentText = "【登録予定→同期済】" & vbCrLf & _
+                "登録予定のフォルダが目録CSVに存在したため、目録CSV側の正式データで上書きし、同期状態を同期済に変更しました。"
+            If Len(changedHeadersText) > 0 Then commentText = commentText & vbCrLf & "上書き項目：" & changedHeadersText
+        Case "削除予定"
+            BuildSerialDiffComment = "【削除予定】" & vbCrLf & _
+                "この行は削除予定ですが、今回の目録CSVにまだ存在しています。" & vbCrLf & _
+                "新システム側で削除されていない可能性があります。"
+            Exit Function
+        Case "削除可"
+            BuildSerialDiffComment = "【削除可】" & vbCrLf & _
+                "同期状態が削除予定であり、今回の目録CSVに存在しません。" & vbCrLf & _
+                "新システム側から削除済みと考えられるため、手動削除してよい候補です。"
+            Exit Function
+        Case "判定困難"
+            BuildSerialDiffComment = "【判定困難】" & vbCrLf & _
+                "同一候補が複数存在するため、自動同期しませんでした。" & vbCrLf & _
+                "手動確認してください。"
+            Exit Function
+        Case Else
+            commentText = "【内容変更】" & vbCrLf & _
+                "目録CSV側の値で更新しました。"
+            If Len(changedHeadersText) > 0 Then commentText = commentText & vbCrLf & "更新項目：" & changedHeadersText
+    End Select
+
+    If Len(idCompletionHeadersText) > 0 Then
+        commentText = commentText & vbCrLf & vbCrLf & _
+            "【ID補完】" & vbCrLf & _
+            "目録CSV側の値により、" & idCompletionHeadersText & "を補完しました。"
+    End If
+
+    displayHeaders = FilterHeadersByCategory(changedHeadersText, "表示")
+    If Len(displayHeaders) > 0 Then
+        commentText = commentText & vbCrLf & vbCrLf & _
+            "【表示項目更新】" & vbCrLf & _
+            "目録CSV側の正式表記で上書きしました。" & vbCrLf & _
+            "更新項目：" & displayHeaders
+    End If
+
+    managementHeaders = FilterHeadersByCategory(changedHeadersText, "管理")
+    If Len(managementHeaders) > 0 Then
+        commentText = commentText & vbCrLf & vbCrLf & _
+            "【管理項目更新】" & vbCrLf & _
+            "目録CSV側の値で管理項目を更新しました。" & vbCrLf & _
+            "更新項目：" & managementHeaders
+    End If
+
+    BuildSerialDiffComment = commentText
+
+End Function
+
+Private Function FilterHeadersByCategory(ByVal headersText As String, ByVal categoryName As String) As String
+
+    Dim parts As Variant
+    Dim i As Long
+    Dim headerName As String
+    Dim filteredText As String
+
+    If Len(Trim$(headersText)) = 0 Then Exit Function
+
+    parts = Split(headersText, "、")
+    For i = LBound(parts) To UBound(parts)
+        headerName = Trim$(CStr(parts(i)))
+        If IsHeaderInSerialCommentCategory(headerName, categoryName) Then
+            filteredText = AppendHeaderNameText(filteredText, headerName)
+        End If
+    Next i
+
+    FilterHeadersByCategory = filteredText
+
+End Function
+
+Private Function IsHeaderInSerialCommentCategory(ByVal headerName As String, ByVal categoryName As String) As Boolean
+
+    Dim canonical As String
+
+    canonical = CanonicalHeaderName(headerName)
+
+    Select Case categoryName
+        Case "表示"
+            Select Case canonical
+                Case "年度（和暦）", "分類名１", "分類名２", "分類名３", "分類名４", "分類名５", "タイトル", "サブタイトル", "背表紙用タイトル", "背表紙用サブタイトル", "公開用タイトル", "公開用サブタイトル"
+                    IsHeaderInSerialCommentCategory = True
+            End Select
+        Case "管理"
+            Select Case canonical
+                Case "保存期間", "媒体種別", "廃棄年月日", "保存期間ID", "媒体種別ID", "保存場所ID", "原課ID", "色ID", "年度", "作成年度", "作成年度（和暦）"
+                    IsHeaderInSerialCommentCategory = True
+            End Select
+    End Select
+
+End Function
+
+Private Function RowDiffersFromSourceByHeader( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsDst As Worksheet, _
+    ByVal srcRow As Long, _
+    ByVal dstRow As Long, _
+    ByVal srcHeaderMap As Object, _
+    ByVal srcToDstMap As Object) As Boolean
+
+    Dim srcCol As Long
+    Dim dstCol As Long
+    Dim beforeCompare As String
+    Dim afterCompare As String
+    Dim key As Variant
+
+    RowDiffersFromSourceByHeader = False
+
+    For Each key In srcToDstMap.Keys
+        If srcHeaderMap.Exists(CStr(key)) Then
+            If IsStep2UpdateExcludedHeader(CStr(key)) Then GoTo ContinueNextRowDiffHeader
+            srcCol = CLng(srcHeaderMap(CStr(key)))
+            dstCol = CLng(srcToDstMap(CStr(key)))
+
+            beforeCompare = NormalizeValueForUpdateCompare(CStr(key), wsDst.Cells(dstRow, dstCol).Value)
+            afterCompare = NormalizeValueForUpdateCompare(CStr(key), wsSrc.Cells(srcRow, srcCol).Value)
+
+            If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
+                RowDiffersFromSourceByHeader = True
+                Exit Function
+            End If
+        End If
+ContinueNextRowDiffHeader:
+    Next key
+
+End Function
+
+Private Function ShouldExcludeRowFromStep2VisualDiff(ByVal ws As Worksheet, ByVal rowNo As Long) As Boolean
+
+    Dim remarksCol As Long
+    Dim lastCol As Long
+    Dim syncCol As Long
+
+    ShouldExcludeRowFromStep2VisualDiff = False
+    If ws Is Nothing Then Exit Function
+    If rowNo < 2 Then Exit Function
+
+    lastCol = GetLastUsedCol(ws)
+    syncCol = FindHeaderColumn(ws, lastCol, Array("同期状態"))
+    If syncCol > 0 Then
+        If IsIgnoredBySyncStatus(CStr(ws.Cells(rowNo, syncCol).Value)) Then
+            ShouldExcludeRowFromStep2VisualDiff = True
+            Exit Function
+        End If
+        If NormalizeSyncStatusValue(ws.Cells(rowNo, syncCol).Value) = "管理対象外" Then
+            ShouldExcludeRowFromStep2VisualDiff = True
+            Exit Function
+        End If
+    End If
+    remarksCol = FindHeaderColumn(ws, lastCol, Array("備考"))
+    If remarksCol <= 0 Then Exit Function
+
+    ShouldExcludeRowFromStep2VisualDiff = (InStr(1, NormalizeCellValue(ws.Cells(rowNo, remarksCol).Value), NormalizeCellValue("マクロ差込"), vbTextCompare) > 0)
+
+End Function
+
+Private Sub ClearSerialDiffMarksForTargetYear(ByVal ws As Worksheet, ByVal serialCol As Long, ByVal targetYearValue As Long)
+
+    Dim lastRow As Long
+    Dim rowNo As Long
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+    Dim syncCol As Long
+
+    If ws Is Nothing Then Exit Sub
+    If serialCol <= 0 Then Exit Sub
+
+    lastRow = GetLastUsedRow(ws)
+    If lastRow < 2 Then Exit Sub
+
+    warekiYearCol = FindHeaderColumn(ws, GetLastUsedCol(ws), Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(ws, GetLastUsedCol(ws), Array("年度"))
+    syncCol = FindHeaderColumn(ws, GetLastUsedCol(ws), Array("同期状態"))
+
+    For rowNo = 2 To lastRow
+        If syncCol > 0 Then
+            If IsIgnoredBySyncStatus(CStr(ws.Cells(rowNo, syncCol).Value)) Then GoTo ContinueNextClearSerialRow
+        End If
+        If targetYearValue <= 0 Or GetNormalizedYearFromRow(ws, rowNo, warekiYearCol, westernYearCol) = targetYearValue Then
+            ws.Cells(rowNo, serialCol).Interior.Pattern = xlNone
+            SafeDeleteComment ws.Cells(rowNo, serialCol)
+        End If
+ContinueNextClearSerialRow:
+    Next rowNo
+
+End Sub
+
+Private Sub ApplySerialDiffMarksByKey( _
+    ByVal ws As Worksheet, _
+    ByVal serialCol As Long, _
+    ByVal visualDiffMap As Object, _
+    ByVal serialCommentMap As Object, _
+    ByVal targetYearValue As Long)
+
+    Dim headerMap As Object
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim rowNo As Long
+    Dim key As String
+    Dim nameKey As String
+    Dim markKey As String
+    Dim commentText As String
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+
+    If ws Is Nothing Then Exit Sub
+    If serialCol <= 0 Then Exit Sub
+    If visualDiffMap Is Nothing Then Exit Sub
+    If visualDiffMap.Count = 0 Then Exit Sub
+
+    Set headerMap = CreateObject("Scripting.Dictionary")
+    lastCol = GetLastUsedCol(ws)
+    BuildSourceHeaderMap ws, lastCol, headerMap
+
+    lastRow = GetLastUsedRow(ws)
+    If lastRow < 2 Then Exit Sub
+
+    warekiYearCol = FindHeaderColumn(ws, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(ws, lastCol, Array("年度"))
+
+    For rowNo = 2 To lastRow
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(ws, rowNo, warekiYearCol, westernYearCol) <> targetYearValue Then GoTo ContinueNextDiffMarkRow
+        End If
+
+        markKey = ""
+        key = BuildFileKeyFromSheetRow(ws, rowNo, headerMap)
+        If key <> "" And visualDiffMap.Exists(key) Then
+            markKey = key
+        Else
+            nameKey = BuildFolderNameSyncKeyFromSheetRow(ws, rowNo, lastCol)
+            If nameKey <> "" And visualDiffMap.Exists("NAME|" & nameKey) Then markKey = "NAME|" & nameKey
+        End If
+
+        If markKey <> "" Then
+            With ws.Cells(rowNo, serialCol).Interior
+                .Pattern = xlSolid
+                .Color = CSV_DIFF_SERIAL_MARK_COLOR
+            End With
+
+            SafeDeleteComment ws.Cells(rowNo, serialCol)
+            If Not serialCommentMap Is Nothing Then
+                If serialCommentMap.Exists(markKey) Then
+                    commentText = CStr(serialCommentMap(markKey))
+                    If Len(commentText) > 0 Then SafeAddComment ws.Cells(rowNo, serialCol), commentText
+                End If
+            End If
+        End If
+ContinueNextDiffMarkRow:
+    Next rowNo
+
+End Sub
+
 Private Sub UpdateRowFromSourceByHeader( _
     ByVal wsSrc As Worksheet, _
     ByVal wsDst As Worksheet, _
     ByVal srcRow As Long, _
     ByVal dstRow As Long, _
     ByVal srcHeaderMap As Object, _
-    ByVal srcToDstMap As Object)
+    ByVal srcToDstMap As Object, _
+    Optional ByRef colorDiffDetectedCount As Long = 0)
 
-    Dim key As Variant
     Dim srcCol As Long
     Dim dstCol As Long
     Dim beforeValue As Variant
@@ -4306,6 +5714,7 @@ Private Sub UpdateRowFromSourceByHeader( _
     Dim beforeCompare As String
     Dim afterCompare As String
     Dim targetCell As Range
+    Dim key As Variant
 
     ' CSV由来列だけを上書きし、ユーザー管理列は触らない
     ' さらに、実際に差分があるセルだけ赤字＋コメントを付与する
@@ -4313,6 +5722,7 @@ Private Sub UpdateRowFromSourceByHeader( _
         If srcHeaderMap.Exists(CStr(key)) Then
             srcCol = CLng(srcHeaderMap(CStr(key)))
             dstCol = CLng(srcToDstMap(CStr(key)))
+            If IsStep2UpdateExcludedHeader(CStr(key)) Then GoTo ContinueNextUpdateHeader
 
             Set targetCell = wsDst.Cells(dstRow, dstCol)
             beforeValue = targetCell.Value
@@ -4322,18 +5732,36 @@ Private Sub UpdateRowFromSourceByHeader( _
             ' （毎年度利用区分は 1/2 と 毎年作成/単年のみ を同値として扱う）
             beforeCompare = NormalizeValueForUpdateCompare(CStr(key), beforeValue)
             afterCompare = NormalizeValueForUpdateCompare(CStr(key), afterValue)
-
             targetCell.Value = afterValue
 
             If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
+                ' CSV整形で今回変更されたセルだけ常に太字化する
+                ' （コメント/赤字は ENABLE_UPDATE_COMMENT / ENABLE_UPDATE_HIGHLIGHT がONの場合のみ）
+                targetCell.Font.Bold = True
                 ApplyChangedCellHighlightAndComment targetCell, beforeValue, afterValue
             Else
+                ' 差分なしセルは直近実行分の差分表示だけを消す
                 ClearChangedCellHighlightAndComment targetCell
             End If
         End If
+ContinueNextUpdateHeader:
     Next key
 
 End Sub
+
+Private Function IsStep2UpdateExcludedHeader(ByVal headerName As String) As Boolean
+
+    Dim canonical As String
+    canonical = CanonicalHeaderName(headerName)
+
+    Select Case canonical
+        Case CanonicalHeaderName("色名"), CanonicalHeaderName("2色名")
+            IsStep2UpdateExcludedHeader = True
+        Case Else
+            IsStep2UpdateExcludedHeader = False
+    End Select
+
+End Function
 
 Private Sub AppendRowFromSourceByHeader( _
     ByVal wsSrc As Worksheet, _
@@ -4343,17 +5771,19 @@ Private Sub AppendRowFromSourceByHeader( _
     ByVal srcHeaderMap As Object, _
     ByVal srcToDstMap As Object)
 
-    Dim key As Variant
     Dim srcCol As Long
     Dim dstCol As Long
+    Dim key As Variant
 
     ' 追加時は通常書式のまま値を書き込む（赤字・コメントは付与しない）
     For Each key In srcToDstMap.Keys
         If srcHeaderMap.Exists(CStr(key)) Then
+            If IsStep2UpdateExcludedHeader(CStr(key)) Then GoTo ContinueNextAppendHeader
             srcCol = CLng(srcHeaderMap(CStr(key)))
             dstCol = CLng(srcToDstMap(CStr(key)))
             wsDst.Cells(dstRow, dstCol).Value = wsSrc.Cells(srcRow, srcCol).Value
         End If
+ContinueNextAppendHeader:
     Next key
 
 End Sub
@@ -4436,13 +5866,41 @@ Private Sub ClearChangedCellHighlightAndComment(ByVal targetCell As Range)
 
     If targetCell Is Nothing Then Exit Sub
 
-    ' 高速化対応: 設定ON時のみ戻し処理を実行
+    ' 差分表示は直近のCSV整形結果だけにする
+    targetCell.Font.Bold = False
+
+    ' 赤字表示を使っている場合だけ文字色を戻す
     If ENABLE_UPDATE_HIGHLIGHT Then
         targetCell.Font.ColorIndex = xlColorIndexAutomatic
     End If
-    If ENABLE_UPDATE_COMMENT Then
-        SafeDeleteComment targetCell
+
+    ' CSV整形で付けた差分コメントだけ削除する
+    SafeDeleteCsvDiffComment targetCell
+
+End Sub
+
+'--------------------------------------------------------
+' CSV整形由来の差分コメントだけを安全に削除する
+'--------------------------------------------------------
+Private Sub SafeDeleteCsvDiffComment(ByVal targetCell As Range)
+
+    Dim commentText As String
+
+    On Error Resume Next
+
+    If targetCell Is Nothing Then Exit Sub
+    If targetCell.Comment Is Nothing Then Exit Sub
+
+    commentText = targetCell.Comment.Text
+
+    ' CSV整形の差分コメントだけ削除する
+    If InStr(1, commentText, "更新前:", vbTextCompare) > 0 _
+       And InStr(1, commentText, "更新後:", vbTextCompare) > 0 _
+       And InStr(1, commentText, "更新日時:", vbTextCompare) > 0 Then
+        targetCell.Comment.Delete
     End If
+
+    On Error GoTo 0
 
 End Sub
 
@@ -4464,6 +5922,50 @@ Private Sub SafeAddComment(ByVal targetCell As Range, ByVal commentText As Strin
 
     On Error Resume Next
     targetCell.AddComment commentText
+    ResizeCommentToFit targetCell
+    On Error GoTo 0
+
+End Sub
+
+'--------------------------------------------------------
+' コメント枠を内容に合わせて調整（見切れ防止）
+' - AutoSize後、極端な横長/縦長を避けるため上限を設定
+'--------------------------------------------------------
+Private Sub ResizeCommentToFit(ByVal targetCell As Range)
+
+    Const MIN_WIDTH As Double = 300
+    Const MAX_WIDTH As Double = 500
+    Const MIN_HEIGHT As Double = 100
+    Const MAX_HEIGHT As Double = 300
+
+    Dim commentShape As Shape
+    Dim currentWidth As Double
+    Dim currentHeight As Double
+
+    If targetCell Is Nothing Then Exit Sub
+    If targetCell.Comment Is Nothing Then Exit Sub
+
+    On Error GoTo SafeExit
+
+    Set commentShape = targetCell.Comment.Shape
+    If commentShape Is Nothing Then GoTo SafeExit
+
+    commentShape.TextFrame.AutoSize = True
+
+    currentWidth = commentShape.Width
+    currentHeight = commentShape.Height
+
+    If currentWidth < MIN_WIDTH Then currentWidth = MIN_WIDTH
+    If currentWidth > MAX_WIDTH Then currentWidth = MAX_WIDTH
+    commentShape.Width = currentWidth
+
+    commentShape.TextFrame.AutoSize = True
+    currentHeight = commentShape.Height
+    If currentHeight < MIN_HEIGHT Then currentHeight = MIN_HEIGHT
+    If currentHeight > MAX_HEIGHT Then currentHeight = MAX_HEIGHT
+    commentShape.Height = currentHeight
+
+SafeExit:
     On Error GoTo 0
 
 End Sub
@@ -4501,11 +6003,10 @@ Private Function BuildFileKeyFromSheetRow(ByVal ws As Worksheet, ByVal rowNo As 
 End Function
 
 '--------------------------------------------------------
-' 新ファイル基準表の「同期状態」列を更新する
-' 判定:
-' - 現行: 今回の目録CSVキー一覧に存在
-' - 削除候補: キー一致なし かつ ID系のいずれか入力あり
-' - 未登録: ID系すべて空欄
+' 新ファイル基準表の「同期状態」列を正規化する
+' - 空欄: 自動入力せず空欄のまま
+' - 現行/登録予定/削除予定: 許可値として維持
+' - 旧値（未登録/削除候補）は内部正規化結果へ寄せる
 '--------------------------------------------------------
 Private Sub UpdateSyncStatusColumn( _
     ByVal wsDst As Worksheet, _
@@ -4526,8 +6027,8 @@ Private Sub UpdateSyncStatusColumn( _
     Set headerMap = CreateObject("Scripting.Dictionary")
     BuildHeaderMap wsDst, GetLastUsedCol(wsDst), headerMap
 
-    ' 「同期状態」列は必須列として確保
-    syncCol = EnsureColumnByHeader(wsDst, headerMap, "同期状態")
+    ' 「同期状態」列は必須列として確保（重複見出しは事前検出）
+    syncCol = GetUniqueSyncStatusColumnOrRaise(wsDst)
 
     lastRow = GetLastUsedRow(wsDst)
     If lastRow < 2 Then Exit Sub
@@ -4540,15 +6041,20 @@ Private Sub UpdateSyncStatusColumn( _
             If GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol) <> targetYearValue Then GoTo ContinueNextSyncRow
         End If
 
-        key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
+        If IsIgnoredBySyncStatus(CStr(wsDst.Cells(rowNo, syncCol).Value)) Then GoTo ContinueNextSyncRow
 
-        If key <> "" And sourceKeyMap.Exists(key) Then
-            wsDst.Cells(rowNo, syncCol).Value = "現行"
-        ElseIf HasAnyFileIdentity(wsDst, rowNo, headerMap) Then
-            wsDst.Cells(rowNo, syncCol).Value = "削除候補"
-        Else
-            wsDst.Cells(rowNo, syncCol).Value = "未登録"
-        End If
+        Select Case GetSyncStatusValue(wsDst, rowNo, syncCol)
+            Case "同期済"
+                wsDst.Cells(rowNo, syncCol).Value = "同期済"
+            Case "登録予定"
+                wsDst.Cells(rowNo, syncCol).Value = "登録予定"
+            Case "削除予定"
+                wsDst.Cells(rowNo, syncCol).Value = "削除予定"
+            Case "管理対象外"
+                wsDst.Cells(rowNo, syncCol).Value = "管理対象外"
+            Case Else
+                ' 空欄は同期状態を管理しない通常行として扱い、自動入力しない
+        End Select
 ContinueNextSyncRow:
     Next rowNo
 
@@ -4607,7 +6113,7 @@ Private Function EnsureColumnByHeader(ByVal ws As Worksheet, ByVal headerMap As 
     Else
         addCol = GetLastUsedCol(ws) + 1
         If addCol < 1 Then addCol = 1
-        ws.Cells(1, addCol).value = headerName
+        ws.Cells(1, addCol).value = PreferredDisplayHeaderName(headerName)
         headerMap.Add canonical, addCol
         EnsureColumnByHeader = addCol
     End If
@@ -4618,50 +6124,24 @@ Private Function CanonicalHeaderName(ByVal headerName As String) As String
 
     Dim normalized As String
 
-    normalized = NormalizeHeaderText(headerName)
+    normalized = Trim(CStr(headerName))
+    normalized = Replace(normalized, " ", "")
+    normalized = Replace(normalized, "　", "")
 
     Select Case normalized
         Case "分類名1", "分類名１"
             CanonicalHeaderName = "分類名１"
-        Case "分類名2", "分類名２"
+        Case "分類名2", "分類名２", "第1ガイド", "第１ガイド"
             CanonicalHeaderName = "分類名２"
-        Case "分類名3", "分類名３"
+        Case "分類名3", "分類名３", "第2ガイド", "第２ガイド"
             CanonicalHeaderName = "分類名３"
+        Case "タイトル", "個別フォルダー", "個別フォルダ"
+            CanonicalHeaderName = "タイトル"
         Case "n+1", "N+1", "ｎ+1", "Ｎ+1", "n＋1", "N＋1", "Ｎ＋1", "ｎ＋1"
             CanonicalHeaderName = "ｎ＋1"
         Case Else
             CanonicalHeaderName = normalized
     End Select
-
-End Function
-
-Private Function NormalizeHeaderText(ByVal headerValue As Variant) As String
-
-    Dim normalized As String
-
-    On Error GoTo SafeExit
-
-    If IsError(headerValue) Or IsNull(headerValue) Or IsEmpty(headerValue) Then Exit Function
-
-    normalized = CStr(headerValue)
-    normalized = Replace(normalized, vbCrLf, "")
-    normalized = Replace(normalized, vbCr, "")
-    normalized = Replace(normalized, vbLf, "")
-    normalized = Replace(normalized, vbTab, "")
-    normalized = Replace(normalized, ChrW(&HA0), "")
-    normalized = Replace(normalized, ChrW(&H200B), "")
-    normalized = Replace(normalized, ChrW(&HFEFF), "")
-    normalized = Replace(normalized, " ", "")
-    normalized = Replace(normalized, "　", "")
-    normalized = Replace(normalized, "（", "(")
-    normalized = Replace(normalized, "）", ")")
-    normalized = Replace(normalized, "＋", "+")
-    normalized = Replace(normalized, "－", "-")
-    normalized = ConvertZenkakuAlnumToHankaku(normalized)
-
-    NormalizeHeaderText = Trim$(normalized)
-
-SafeExit:
 
 End Function
 
@@ -4678,7 +6158,7 @@ Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, 
     For c = 1 To lastCol
         headerValue = NormalizeHeaderText(ws.Cells(1, c).Value)
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(headerValue, NormalizeHeaderText(candidates(i)), vbTextCompare) = 0 Then
+            If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
                 FindHeaderColumn = c
                 Exit Function
             End If
@@ -4692,10 +6172,12 @@ Private Function GetStep2HeaderCandidates(ByVal targetHeader As String) As Varia
     Select Case targetHeader
         Case "分類名１"
             GetStep2HeaderCandidates = Array("分類名１", "分類名1")
-        Case "分類名２"
-            GetStep2HeaderCandidates = Array("分類名２", "分類名2")
-        Case "分類名３"
-            GetStep2HeaderCandidates = Array("分類名３", "分類名3")
+        Case "分類名２", "第1ガイド", "第１ガイド"
+            GetStep2HeaderCandidates = Array("第1ガイド", "第１ガイド", "分類名２", "分類名2")
+        Case "分類名３", "第2ガイド", "第２ガイド"
+            GetStep2HeaderCandidates = Array("第2ガイド", "第２ガイド", "分類名３", "分類名3")
+        Case "タイトル", "個別フォルダー", "個別フォルダ"
+            GetStep2HeaderCandidates = Array("個別フォルダー", "個別フォルダ", "タイトル")
         Case "2色名"
             GetStep2HeaderCandidates = Array("2色名", "２色名")
         Case "色名"
@@ -4718,19 +6200,19 @@ End Function
 Private Function GetStep2DisplayHeadersOrder() As Variant
 
     GetStep2DisplayHeadersOrder = Array( _
-        "通し番号", "キャビネット番号", "ｎ＋1", "毎年度利用区分1:毎年作成 2:単年のみ", "原課", "年度（和暦）", "分類名１", "分類名２", "2色名", "分類名３", _
-        "色名", "作成年度（和暦）", "タイトル", "保存期間", "媒体種別", "保存番号", "廃棄年月日", "内容・取扱い", "備考", "ファイルID", _
-        "ファイル番号", "バーコード番号", "年度", "原課ID", "サブタイトル", "完結日", "完結区分-1：未完結 1：完結", "完結者メンバーID", "保管期間ID", "保管期間", _
-        "保管期間完了予定年", "保管期間完了予定年（和暦）", "保存期間ID", "保存期間満了時の措置ID", "保存期間満了時の措置", "分類コード１", "分類コード２", "分類コード３", "分類コード４", "分類名４", _
-        "分類コード５", "分類名５", "分類内ファイルソート順", "年度暦年区分1:年度 2:暦年", "色ID", "媒体種別ID", "保存場所ID1", "保存場所コード１", "保存場所１", "保存場所ID2", _
-        "保存場所コード２", "保存場所２", "保存場所ID3", "保存場所コード３", "保存場所３", "保存場所ID4", "保存場所コード４", "保存場所４", "保存場所ID5", "保存場所コード５", _
-        "保存場所５", "保存箱ID", "保存箱コード", "保存箱名称", "ファイルラベルID", "ファイルラベル", "ファイルラベル出力済み-1:未出力 1:出力", "背表紙用タイトル", "背表紙用サブタイトル", "公開用タイトル", _
-        "公開用サブタイトル", "公開区分-1:非公開 1:公開", "歴史資料区分-1:非該当 1:該当", "廃棄区分1:未廃棄 2:廃棄済 3:不明", "廃棄延長年", "廃棄延長理由", "廃棄予定年", "廃棄予定年（和暦）", "機密レベルID", "機密レベル名称", _
-        "作成所属名", "作成年度", "作成者名", "引継処理日", "棚卸処理日", "廃棄処理日", "履歴ファイル区分-1:非該当 1:該当", "機密ファイル区分-1:機密ファイル", "履歴番号", "履歴管理コメント", _
-        "登録者メンバーID", "登録日時", "更新者メンバーID", "更新日時", "汎用項目１", "汎用項目２", "汎用項目３", "汎用項目４", "汎用項目５", "汎用項目６", _
-        "汎用項目７", "汎用項目８", "汎用項目９", "汎用項目１０", "汎用日付項目１", "汎用日付項目２", "汎用日付項目３", "汎用日付項目４", "汎用日付項目５", "汎用数値項目１", _
-        "汎用数値項目２", "汎用数値項目３", "汎用数値項目４", "汎用数値項目５", "汎用選択項目１", "汎用選択項目２", "汎用選択項目３", "汎用選択項目４", "汎用選択項目５", "汎用チェック項目１", _
-        "汎用チェック項目２", "汎用チェック項目３", "汎用チェック項目４", "汎用チェック項目５", "ファイルラベル区分", "ファイルラベルサイズ", "ファイルラベルサイズ", "ファイルラベル区分名", "同期状態" _
+        "通し番号", "キャビネット番号", "ｎ＋1", "毎年度利用区分1:毎年作成 2:単年のみ", "原課", "年度（和暦）", "分類名１", "第1ガイド", "色名", "第2ガイド", _
+        "2色名", "作成年度（和暦）", "個別フォルダー", "保存期間", "媒体種別", "保存番号", "廃棄年月日", "同期状態", "内容・取扱い", "備考", _
+        "ファイルID", "ファイル番号", "バーコード番号", "年度", "原課ID", "サブタイトル", "完結日", "完結区分-1：未完結 1：完結", "完結者メンバーID", "保管期間ID", _
+        "保管期間", "保管期間完了予定年", "保管期間完了予定年（和暦）", "保存期間ID", "保存期間満了時の措置ID", "保存期間満了時の措置", "分類コード１", "分類コード２", "分類コード３", "分類コード４", _
+        "分類名４", "分類コード５", "分類名５", "分類内ファイルソート順", "年度暦年区分1:年度 2:暦年", "色ID", "媒体種別ID", "保存場所ID1", "保存場所コード１", "保存場所１", _
+        "保存場所ID2", "保存場所コード２", "保存場所２", "保存場所ID3", "保存場所コード３", "保存場所３", "保存場所ID4", "保存場所コード４", "保存場所４", "保存場所ID5", _
+        "保存場所コード５", "保存場所５", "保存箱ID", "保存箱コード", "保存箱名称", "ファイルラベルID", "ファイルラベル", "ファイルラベル出力済み-1:未出力 1:出力", "背表紙用タイトル", "背表紙用サブタイトル", _
+        "公開用タイトル", "公開用サブタイトル", "公開区分-1:非公開 1:公開", "歴史資料区分-1:非該当 1:該当", "廃棄区分1:未廃棄 2:廃棄済 3:不明", "廃棄延長年", "廃棄延長理由", "廃棄予定年", "廃棄予定年（和暦）", "機密レベルID", _
+        "機密レベル名称", "作成所属名", "作成年度", "作成者名", "引継処理日", "棚卸処理日", "廃棄処理日", "履歴ファイル区分-1:非該当 1:該当", "機密ファイル区分-1:機密ファイル", "履歴番号", _
+        "履歴管理コメント", "登録者メンバーID", "登録日時", "更新者メンバーID", "更新日時", "汎用項目１", "汎用項目２", "汎用項目３", "汎用項目４", "汎用項目５", _
+        "汎用項目６", "汎用項目７", "汎用項目８", "汎用項目９", "汎用項目１０", "汎用日付項目１", "汎用日付項目２", "汎用日付項目３", "汎用日付項目４", "汎用日付項目５", _
+        "汎用数値項目１", "汎用数値項目２", "汎用数値項目３", "汎用数値項目４", "汎用数値項目５", "汎用選択項目１", "汎用選択項目２", "汎用選択項目３", "汎用選択項目４", "汎用選択項目５", _
+        "汎用チェック項目１", "汎用チェック項目２", "汎用チェック項目３", "汎用チェック項目４", "汎用チェック項目５", "ファイルラベル区分", "ファイルラベルサイズ", "ファイルラベルサイズ", "ファイルラベル区分名" _
     )
 
 End Function
@@ -4847,7 +6329,7 @@ Private Function FindColumnIndexFromHeaderArray( _
         If Not usedCols.Exists(CStr(c)) Then
             headerValue = NormalizeHeaderText(headerValues(1, c))
             For i = LBound(candidates) To UBound(candidates)
-                If StrComp(headerValue, NormalizeHeaderText(candidates(i)), vbTextCompare) = 0 Then
+                If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
                     FindColumnIndexFromHeaderArray = c
                     Exit Function
                 End If
@@ -4869,6 +6351,64 @@ SafeExit:
     HasArrayElements = False
 
 End Function
+
+Private Function CaptureColumnWidthsByHeader(ByVal ws As Worksheet) As Object
+
+    Dim widthMap As Object
+    Dim lastCol As Long
+    Dim c As Long
+    Dim headerText As String
+    Dim canonical As String
+
+    Set widthMap = CreateObject("Scripting.Dictionary")
+
+    If ws Is Nothing Then
+        Set CaptureColumnWidthsByHeader = widthMap
+        Exit Function
+    End If
+
+    lastCol = GetLastUsedCol(ws)
+    For c = 1 To lastCol
+        headerText = Trim$(CStr(ws.Cells(1, c).Value))
+        If Len(headerText) > 0 Then
+            canonical = CanonicalHeaderName(headerText)
+            If Not widthMap.Exists(canonical) Then
+                widthMap.Add canonical, ws.Columns(c).ColumnWidth
+            End If
+        End If
+    Next c
+
+    Set CaptureColumnWidthsByHeader = widthMap
+
+End Function
+
+Private Sub RestoreColumnWidthsByHeader(ByVal ws As Worksheet, ByVal widthMap As Object)
+
+    Dim lastCol As Long
+    Dim c As Long
+    Dim headerText As String
+    Dim canonical As String
+    Dim wasHidden As Boolean
+
+    If ws Is Nothing Then Exit Sub
+    If widthMap Is Nothing Then Exit Sub
+    If widthMap.Count = 0 Then Exit Sub
+
+    lastCol = GetLastUsedCol(ws)
+    For c = 1 To lastCol
+        headerText = Trim$(CStr(ws.Cells(1, c).Value))
+        If Len(headerText) > 0 Then
+            canonical = CanonicalHeaderName(headerText)
+            If widthMap.Exists(canonical) Then
+                wasHidden = ws.Columns(c).Hidden
+                ws.Columns(c).ColumnWidth = CDbl(widthMap(canonical))
+                ws.Columns(c).Hidden = wasHidden
+            End If
+        End If
+    Next c
+
+End Sub
+
 
 Private Sub CreateFormatAndWidthTemplate( _
     ByVal wsDst As Worksheet, _
@@ -4915,11 +6455,11 @@ Private Sub ReapplyFormatAndWidthFromTemplate( _
     ByVal columnWidthMap As Object, _
     ByVal wsTemplate As Worksheet)
 
-    Dim key As Variant
     Dim lastCol As Long
     Dim dstCol As Long
     Dim templateCol As Long
     Dim applyLastRow As Long
+    Dim key As Variant
 
     If wsDst Is Nothing Then Exit Sub
 
@@ -5022,11 +6562,11 @@ Private Sub ReapplyValidationFromTemplate( _
     ByVal validationTemplateMap As Object, _
     ByVal wsTemplate As Worksheet)
 
-    Dim key As Variant
     Dim lastCol As Long
     Dim dstCol As Long
     Dim templateCol As Long
     Dim applyLastRow As Long
+    Dim key As Variant
 
     If validationTemplateMap Is Nothing Then Exit Sub
     If wsTemplate Is Nothing Then Exit Sub
@@ -5120,9 +6660,9 @@ Private Sub WriteRowByFixedLayout( _
     For i = LBound(fixedHeaders) To UBound(fixedHeaders)
         headerName = CStr(fixedHeaders(i))
 
-        ' 年度暦年区分は固定で「暦年」を出力（新ファイル基準表の列有無に依存させない）
+        ' 年度暦年区分は固定で「年度」を出力（新ファイル基準表の列有無に依存させない）
         If headerName = "年度暦年区分" Then
-            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = "暦年"
+            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = "年度"
         Else
             sourceHeaderName = headerName
 
@@ -5132,10 +6672,15 @@ Private Sub WriteRowByFixedLayout( _
 
             If editHeaderMap.Exists(sourceHeaderName) Then
                 editCol = CLng(editHeaderMap(sourceHeaderName))
-                wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = wsEdit.Cells(srcRow, editCol).value
+            ElseIf editHeaderMap.Exists(CanonicalHeaderName(sourceHeaderName)) Then
+                editCol = CLng(editHeaderMap(CanonicalHeaderName(sourceHeaderName)))
             Else
                 wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = ""
+                GoTo ContinueFixedHeader
             End If
+
+            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = wsEdit.Cells(srcRow, editCol).value
+ContinueFixedHeader:
         End If
     Next i
 
@@ -5319,7 +6864,6 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
     Dim westernYear As String
 
     If Target Is Nothing Then Exit Sub
-    If Target.CountLarge > 1000 Then Exit Sub
 
     On Error GoTo ExitHandler
     Application.EnableEvents = False
@@ -5417,6 +6961,569 @@ ExitHandler:
     Application.EnableEvents = True
 
 End Sub
+
+Public Sub 新ファイル基準表_年度と原課ID再補完( _
+    Optional ByVal wsEdit As Worksheet = Nothing, _
+    Optional ByVal startRow As Long = 2, _
+    Optional ByVal endRow As Long = 0, _
+    Optional ByVal logMissing As Boolean = False)
+
+    Dim lastCol As Long
+    Dim lastRow As Long
+    Dim warekiCol As Long
+    Dim yearCol As Long
+    Dim genkaCol As Long
+    Dim genkaIdCol As Long
+    Dim prevEnableEvents As Boolean
+    Dim serialCol As Long
+    Dim titleCol As Long
+    Dim r As Long
+    Dim warekiText As String
+    Dim genkaText As String
+    Dim yearVal As String
+    Dim genkaId As String
+    Dim missingItems As String
+
+    On Error GoTo ExitHandler
+
+    If wsEdit Is Nothing Then Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    If wsEdit Is Nothing Then Exit Sub
+
+    lastCol = GetLastUsedCol(wsEdit)
+    lastRow = GetLastUsedRow(wsEdit)
+    If lastCol <= 0 Or lastRow < 2 Then Exit Sub
+
+    If startRow < 2 Then startRow = 2
+    If endRow <= 0 Or endRow > lastRow Then endRow = lastRow
+    If endRow < startRow Then Exit Sub
+
+    warekiCol = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    yearCol = FindHeaderColumn(wsEdit, lastCol, Array("年度"))
+    genkaCol = FindHeaderColumn(wsEdit, lastCol, Array("原課"))
+    genkaIdCol = FindHeaderColumn(wsEdit, lastCol, Array("原課ID"))
+
+    prevEnableEvents = Application.EnableEvents
+    Application.EnableEvents = False
+
+    For r = startRow To endRow
+        missingItems = ""
+
+        If warekiCol > 0 And yearCol > 0 Then
+            warekiText = CStr(wsEdit.Cells(r, warekiCol).Value)
+            If Len(Trim$(warekiText)) > 0 And Len(Trim$(CStr(wsEdit.Cells(r, yearCol).Value))) = 0 Then
+                yearVal = ConvertReiwaToWesternYear(warekiText)
+                wsEdit.Cells(r, yearCol).Value = yearVal
+            End If
+            If Len(Trim$(warekiText)) > 0 And Len(Trim$(CStr(wsEdit.Cells(r, yearCol).Value))) = 0 Then
+                missingItems = AppendMissingItemName(missingItems, "年度")
+            End If
+        End If
+
+        If genkaCol > 0 And genkaIdCol > 0 Then
+            genkaText = CStr(wsEdit.Cells(r, genkaCol).Value)
+            If Len(Trim$(genkaText)) > 0 And Len(Trim$(CStr(wsEdit.Cells(r, genkaIdCol).Value))) = 0 Then
+                genkaId = GetCodeFromCodeMaster("原課", genkaText)
+                wsEdit.Cells(r, genkaIdCol).Value = genkaId
+            End If
+            If Len(Trim$(genkaText)) > 0 And Len(Trim$(CStr(wsEdit.Cells(r, genkaIdCol).Value))) = 0 Then
+                missingItems = AppendMissingItemName(missingItems, "原課ID")
+            End If
+        End If
+
+        If logMissing And Len(missingItems) > 0 Then
+            serialCol = FindHeaderColumn(wsEdit, lastCol, Array("通し番号"))
+            titleCol = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("タイトル"))
+            Debug.Print Build補完不足Log(wsEdit, r, serialCol, titleCol, genkaCol, warekiCol, missingItems)
+        End If
+    Next r
+
+ExitHandler:
+    Application.EnableEvents = prevEnableEvents
+
+End Sub
+
+Public Sub 新ファイル基準表_分類コード再補完( _
+    Optional ByVal wsEdit As Worksheet = Nothing, _
+    Optional ByVal startRow As Long = 2, _
+    Optional ByVal endRow As Long = 0)
+
+    Dim lastCol As Long
+    Dim lastRow As Long
+    Dim prevEnableEvents As Boolean
+    Dim pairDefs As Variant
+    Dim displayCols() As Long
+    Dim codeCols() As Long
+    Dim syncCol As Long
+    Dim i As Long
+    Dim r As Long
+    Dim inputName As String
+    Dim codeValue As String
+    Dim currentCode As String
+    Dim isRegistrationRow As Boolean
+
+    prevEnableEvents = Application.EnableEvents
+    On Error GoTo ExitHandler
+    Application.EnableEvents = False
+
+    If wsEdit Is Nothing Then Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    If wsEdit Is Nothing Then GoTo ExitHandler
+
+    lastCol = GetLastUsedCol(wsEdit)
+    lastRow = GetLastUsedRow(wsEdit)
+    If lastCol <= 0 Or lastRow < 2 Then GoTo ExitHandler
+
+    If startRow < 2 Then startRow = 2
+    If endRow <= 0 Or endRow > lastRow Then endRow = lastRow
+    If endRow < startRow Then GoTo ExitHandler
+
+    pairDefs = Array( _
+        Array("分類名１", "分類コード１"), _
+        Array("分類名２", "分類コード２"), _
+        Array("分類名３", "分類コード３") _
+    )
+    ReDim displayCols(LBound(pairDefs) To UBound(pairDefs))
+    ReDim codeCols(LBound(pairDefs) To UBound(pairDefs))
+
+    syncCol = FindHeaderColumn(wsEdit, lastCol, Array("同期状態"))
+    For i = LBound(pairDefs) To UBound(pairDefs)
+        displayCols(i) = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates(CStr(pairDefs(i)(0))))
+        codeCols(i) = FindHeaderColumn(wsEdit, lastCol, Array(CStr(pairDefs(i)(1))))
+    Next i
+
+    For r = startRow To endRow
+        If syncCol > 0 Then
+            If IsIgnoredBySyncStatus(CStr(wsEdit.Cells(r, syncCol).Value)) Then GoTo ContinueNextClassificationRow
+        End If
+
+        isRegistrationRow = False
+        If syncCol > 0 Then
+            isRegistrationRow = (NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) = NormalizeCellValue("登録予定"))
+        End If
+
+        For i = LBound(pairDefs) To UBound(pairDefs)
+            If displayCols(i) > 0 And codeCols(i) > 0 Then
+                inputName = Trim$(CStr(wsEdit.Cells(r, displayCols(i)).Value))
+                currentCode = Trim$(CStr(wsEdit.Cells(r, codeCols(i)).Value))
+
+                If Len(inputName) = 0 Then
+                    If isRegistrationRow Then
+                        wsEdit.Cells(r, codeCols(i)).Value = ""
+                    End If
+                Else
+                    codeValue = GetCodeFromCodeMaster(CStr(pairDefs(i)(0)), inputName)
+                    If isRegistrationRow Then
+                        ' 登録予定行は差分インポートで新規登録するため、分類名から引き直した値で上書きする。
+                        wsEdit.Cells(r, codeCols(i)).Value = codeValue
+                    ElseIf Len(currentCode) = 0 Then
+                        ' 既存行は分類コードが空欄の場合のみ補完する。既存値は原則維持する。
+                        If Len(codeValue) > 0 Then wsEdit.Cells(r, codeCols(i)).Value = codeValue
+                    ElseIf Len(codeValue) > 0 And NormalizeCellValue(currentCode) <> NormalizeCellValue(codeValue) Then
+                        ' 既存行の不一致は自動変更せず、デバッグ出力に留める（ログシートはメインマクロのみ記録）。
+                        Debug.Print "分類コード不一致（自動変更なし） / 項目名=" & CStr(pairDefs(i)(0)) & _
+                            " / 表示名=" & inputName & " / 既存コード=" & currentCode & _
+                            " / コード管理CSVコード=" & codeValue & " / 対象行番号=" & CStr(r)
+                    End If
+                End If
+            End If
+        Next i
+ContinueNextClassificationRow:
+    Next r
+
+ExitHandler:
+    Application.EnableEvents = prevEnableEvents
+
+End Sub
+
+Public Sub 新ファイル基準表_登録予定分類コード採番( _
+    Optional ByVal wsEdit As Worksheet = Nothing, _
+    Optional ByVal startRow As Long = 2, _
+    Optional ByVal endRow As Long = 0, _
+    Optional ByVal targetRows As Collection = Nothing)
+
+    Dim lastCol As Long
+    Dim lastRow As Long
+    Dim prevEnableEvents As Boolean
+    Dim guide2Col As Long
+    Dim code2Col As Long
+    Dim guide3Col As Long
+    Dim code3Col As Long
+    Dim syncCol As Long
+    Dim r As Long
+    Dim guideName As String
+    Dim guideKey As String
+    Dim codeValue As String
+    Dim assignedCode As Long
+    Dim upperCode As Long
+    Dim lowerCode As Long
+    Dim failureText As String
+    Dim code2ByName As Object
+    Dim usedCode2 As Object
+    Dim code3ByName As Object
+    Dim usedCode3 As Object
+    Dim pendingGuide2Rows As Object
+    Dim pendingGuide2Names As Object
+    Dim pendingGuide2Order As Collection
+    Dim guideRows As Collection
+    Dim guideRow As Variant
+    Dim guideKeyValue As Variant
+    Dim firstGuideRow As Long
+    Dim targetRowsText As String
+    Dim rowsToProcess As Collection
+    Dim targetRow As Variant
+    Dim errNumber As Long
+    Dim errDescription As String
+
+    prevEnableEvents = Application.EnableEvents
+    On Error GoTo ErrorHandler
+    Application.EnableEvents = False
+
+    If wsEdit Is Nothing Then Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    If wsEdit Is Nothing Then GoTo SafeExit
+
+    lastCol = GetLastUsedCol(wsEdit)
+    lastRow = GetLastUsedRow(wsEdit)
+    If lastCol <= 0 Or lastRow < 2 Then GoTo SafeExit
+
+    If startRow < 2 Then startRow = 2
+    If endRow <= 0 Or endRow > lastRow Then endRow = lastRow
+    If endRow < startRow Then GoTo SafeExit
+
+    guide2Col = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("分類名２"))
+    code2Col = FindHeaderColumn(wsEdit, lastCol, Array("分類コード２"))
+    guide3Col = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("分類名３"))
+    code3Col = FindHeaderColumn(wsEdit, lastCol, Array("分類コード３"))
+    syncCol = FindHeaderColumn(wsEdit, lastCol, Array("同期状態"))
+
+    If guide2Col <= 0 Or code2Col <= 0 Or syncCol <= 0 Then GoTo SafeExit
+
+    Set code2ByName = BuildCodeMasterNameCodeMap("分類名２", usedCode2)
+    Set code3ByName = BuildCodeMasterNameCodeMap("分類名３", usedCode3)
+    Set rowsToProcess = BuildRowsToProcess(startRow, endRow, targetRows)
+    If rowsToProcess.Count = 0 Then GoTo SafeExit
+
+    Set pendingGuide2Rows = CreateObject("Scripting.Dictionary")
+    Set pendingGuide2Names = CreateObject("Scripting.Dictionary")
+    Set pendingGuide2Order = New Collection
+
+    ' 分類コード２は第1ガイド名単位で処理する。同名の登録予定行には同じコードを反映する。
+    For Each targetRow In rowsToProcess
+        r = CLng(targetRow)
+        If IsIgnoredBySyncStatus(CStr(wsEdit.Cells(r, syncCol).Value)) Then GoTo ContinueCollectGuide2
+        If NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) <> NormalizeCellValue("登録予定") Then GoTo ContinueCollectGuide2
+
+        guideName = Trim$(CStr(wsEdit.Cells(r, guide2Col).Value))
+        If Len(guideName) > 0 Then
+            guideKey = NormalizeClassificationGuideKey(guideName)
+            If code2ByName.Exists(guideKey) Then
+                wsEdit.Cells(r, code2Col).Value = CStr(code2ByName(guideKey))
+            Else
+                If Not pendingGuide2Rows.Exists(guideKey) Then
+                    Set guideRows = New Collection
+                    pendingGuide2Rows.Add guideKey, guideRows
+                    pendingGuide2Names.Add guideKey, guideName
+                    pendingGuide2Order.Add guideKey
+                End If
+                pendingGuide2Rows(guideKey).Add r
+            End If
+        End If
+
+ContinueCollectGuide2:
+    Next targetRow
+
+    For Each guideKeyValue In pendingGuide2Order
+        guideKey = CStr(guideKeyValue)
+        Set guideRows = pendingGuide2Rows(guideKey)
+        guideName = CStr(pendingGuide2Names(guideKey))
+        firstGuideRow = CLng(guideRows(1))
+        targetRowsText = CollectionToCsv(guideRows)
+
+        If code2ByName.Exists(guideKey) Then
+            codeValue = CStr(code2ByName(guideKey))
+            For Each guideRow In guideRows
+                wsEdit.Cells(CLng(guideRow), code2Col).Value = codeValue
+            Next guideRow
+        Else
+            upperCode = FindNearestClassificationCode(wsEdit, guide2Col, firstGuideRow - 1, startRow, -1, code2ByName)
+            lowerCode = FindNearestClassificationCode(wsEdit, guide2Col, firstGuideRow + 1, endRow, 1, code2ByName)
+            assignedCode = AllocateClassificationCode2(upperCode, lowerCode, usedCode2)
+
+            If assignedCode <= 0 Then
+                failureText = failureText & vbCrLf & _
+                    "第1ガイド=""" & guideName & """ 対象行=" & targetRowsText & _
+                    " 上側コード=" & CodeTextForLog(upperCode) & _
+                    " 下側コード=" & CodeTextForLog(lowerCode)
+            Else
+                codeValue = CStr(assignedCode)
+                AppendCodeMasterRecord "分類名２", codeValue, guideName
+                code2ByName.Add guideKey, codeValue
+                usedCode2(codeValue) = True
+                For Each guideRow In guideRows
+                    wsEdit.Cells(CLng(guideRow), code2Col).Value = codeValue
+                Next guideRow
+                Debug.Print "分類コード自動採番 / 項目名=分類名２ / 採番コード=" & codeValue & _
+                    " / 表示名=" & guideName & " / 対象行番号=" & targetRowsText
+            End If
+        End If
+    Next guideKeyValue
+
+    For Each targetRow In rowsToProcess
+        r = CLng(targetRow)
+        If IsIgnoredBySyncStatus(CStr(wsEdit.Cells(r, syncCol).Value)) Then GoTo ContinueNextRow
+        If NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) <> NormalizeCellValue("登録予定") Then GoTo ContinueNextRow
+
+        If guide3Col > 0 And code3Col > 0 Then
+            guideName = Trim$(CStr(wsEdit.Cells(r, guide3Col).Value))
+            If Len(guideName) = 0 Then
+                wsEdit.Cells(r, code3Col).Value = ""
+            Else
+                guideKey = NormalizeClassificationGuideKey(guideName)
+                If code3ByName.Exists(guideKey) Then
+                    wsEdit.Cells(r, code3Col).Value = CStr(code3ByName(guideKey))
+                Else
+                    assignedCode = AllocateNextClassificationCode(usedCode3)
+                    codeValue = CStr(assignedCode)
+                    AppendCodeMasterRecord "分類名３", codeValue, guideName
+                    code3ByName.Add guideKey, codeValue
+                    usedCode3(codeValue) = True
+                    wsEdit.Cells(r, code3Col).Value = codeValue
+                    Debug.Print "分類コード自動採番 / 項目名=分類名３ / 採番コード=" & codeValue & _
+                        " / 表示名=" & guideName & " / 対象行番号=" & CStr(r)
+                End If
+            End If
+        End If
+
+ContinueNextRow:
+    Next targetRow
+
+    If Len(failureText) > 0 Then
+        Err.Raise vbObjectError + 2601, , "分類コード２を採番できない登録予定行があります。差分インポートCSVの作成を中断します。" & failureText
+    End If
+
+SafeExit:
+    Application.EnableEvents = prevEnableEvents
+    Exit Sub
+
+ErrorHandler:
+    errNumber = Err.Number
+    errDescription = Err.Description
+    Application.EnableEvents = prevEnableEvents
+    Err.Raise errNumber, , errDescription
+
+End Sub
+
+Private Function BuildCodeMasterNameCodeMap(ByVal itemName As String, ByRef usedCodes As Object) As Object
+
+    Dim nameCodeMap As Object
+    Dim wsMaster As Worksheet
+    Dim lastRow As Long
+    Dim masterValues As Variant
+    Dim r As Long
+    Dim itemValue As String
+    Dim codeValue As String
+    Dim displayName As String
+    Dim displayKey As String
+
+    Set nameCodeMap = CreateObject("Scripting.Dictionary")
+    Set usedCodes = CreateObject("Scripting.Dictionary")
+
+    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    lastRow = GetLastUsedRow(wsMaster)
+    If lastRow < 2 Then
+        Set BuildCodeMasterNameCodeMap = nameCodeMap
+        Exit Function
+    End If
+
+    masterValues = wsMaster.Range(wsMaster.Cells(2, 1), wsMaster.Cells(lastRow, 3)).Value2
+    For r = 1 To UBound(masterValues, 1)
+        itemValue = NormalizeHeaderToken(CStr(masterValues(r, 1)))
+        If StrComp(itemValue, NormalizeHeaderToken(itemName), vbTextCompare) = 0 Then
+            codeValue = Trim$(CStr(masterValues(r, 2)))
+            displayName = Trim$(CStr(masterValues(r, 3)))
+            displayKey = NormalizeClassificationGuideKey(displayName)
+            If Len(displayKey) > 0 And Not nameCodeMap.Exists(displayKey) Then
+                nameCodeMap.Add displayKey, codeValue
+            End If
+            If IsNumeric(codeValue) Then usedCodes(CStr(CLng(codeValue))) = True
+        End If
+    Next r
+
+    Set BuildCodeMasterNameCodeMap = nameCodeMap
+
+End Function
+
+Private Function FindNearestClassificationCode( _
+    ByVal ws As Worksheet, _
+    ByVal guideCol As Long, _
+    ByVal firstRow As Long, _
+    ByVal limitRow As Long, _
+    ByVal stepValue As Long, _
+    ByVal nameCodeMap As Object) As Long
+
+    Dim r As Long
+    Dim guideName As String
+    Dim guideKey As String
+    Dim codeValue As String
+
+    If ws Is Nothing Then Exit Function
+    If guideCol <= 0 Then Exit Function
+    If stepValue = 0 Then Exit Function
+
+    r = firstRow
+    Do While (stepValue < 0 And r >= limitRow) Or (stepValue > 0 And r <= limitRow)
+        guideName = Trim$(CStr(ws.Cells(r, guideCol).Value))
+        If Len(guideName) > 0 Then
+            guideKey = NormalizeClassificationGuideKey(guideName)
+            If nameCodeMap.Exists(guideKey) Then
+                codeValue = CStr(nameCodeMap(guideKey))
+                If IsNumeric(codeValue) Then
+                    FindNearestClassificationCode = CLng(codeValue)
+                    Exit Function
+                End If
+            End If
+        End If
+        r = r + stepValue
+    Loop
+
+End Function
+
+Private Function AllocateClassificationCode2(ByVal upperCode As Long, ByVal lowerCode As Long, ByVal usedCodes As Object) As Long
+
+    Dim candidate As Long
+
+    If upperCode > 0 And lowerCode > 0 Then
+        If upperCode >= lowerCode - 1 Then Exit Function
+        For candidate = upperCode + 1 To lowerCode - 1
+            If Not usedCodes.Exists(CStr(candidate)) Then
+                AllocateClassificationCode2 = candidate
+                Exit Function
+            End If
+        Next candidate
+    ElseIf upperCode > 0 Then
+        candidate = upperCode + 10
+        Do While usedCodes.Exists(CStr(candidate))
+            candidate = candidate + 1
+        Loop
+        AllocateClassificationCode2 = candidate
+    Else
+        ' 下側だけ、または上下どちらも見つからない場合は並び順を壊す恐れがあるため採番しない。
+        AllocateClassificationCode2 = 0
+    End If
+
+End Function
+
+Private Function AllocateNextClassificationCode(ByVal usedCodes As Object) As Long
+
+    Dim key As Variant
+    Dim maxCode As Long
+    Dim candidate As Long
+
+    maxCode = 0
+    If Not usedCodes Is Nothing Then
+        For Each key In usedCodes.Keys
+            If IsNumeric(CStr(key)) Then
+                If CLng(key) > maxCode Then maxCode = CLng(key)
+            End If
+        Next key
+    End If
+
+    candidate = maxCode + 1
+    If candidate < 1 Then candidate = 1
+    Do While usedCodes.Exists(CStr(candidate))
+        candidate = candidate + 1
+    Loop
+    AllocateNextClassificationCode = candidate
+
+End Function
+
+Private Sub AppendCodeMasterRecord(ByVal itemName As String, ByVal codeValue As String, ByVal displayName As String)
+
+    Dim wsMaster As Worksheet
+    Dim nextRow As Long
+
+    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    nextRow = GetLastUsedRow(wsMaster) + 1
+    If nextRow < 2 Then nextRow = 2
+
+    wsMaster.Cells(nextRow, 1).Value = itemName
+    wsMaster.Cells(nextRow, 2).Value = codeValue
+    wsMaster.Cells(nextRow, 3).Value = displayName
+
+End Sub
+
+Private Function CodeTextForLog(ByVal codeValue As Long) As String
+
+    If codeValue > 0 Then
+        CodeTextForLog = CStr(codeValue)
+    Else
+        CodeTextForLog = "なし"
+    End If
+
+End Function
+
+Private Function NormalizeClassificationGuideKey(ByVal value As Variant) As String
+
+    Dim normalized As String
+
+    normalized = NormalizeForFolderNameSyncKey(value)
+    normalized = Replace(normalized, "・", "/")
+    normalized = Replace(normalized, "･", "/")
+    normalized = Replace(normalized, "／", "/")
+    normalized = Replace(normalized, " ", "")
+    NormalizeClassificationGuideKey = normalized
+
+End Function
+
+Private Function CollectionToCsv(ByVal values As Collection) As String
+
+    Dim item As Variant
+    Dim result As String
+
+    If values Is Nothing Then Exit Function
+
+    For Each item In values
+        If Len(result) > 0 Then result = result & ","
+        result = result & CStr(item)
+    Next item
+
+    CollectionToCsv = result
+
+End Function
+
+Private Function AppendMissingItemName(ByVal currentValue As String, ByVal itemName As String) As String
+    If Len(currentValue) > 0 Then
+        AppendMissingItemName = currentValue & "," & itemName
+    Else
+        AppendMissingItemName = itemName
+    End If
+End Function
+
+Private Function Build補完不足Log( _
+    ByVal wsEdit As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal serialCol As Long, _
+    ByVal titleCol As Long, _
+    ByVal genkaCol As Long, _
+    ByVal warekiCol As Long, _
+    ByVal missingItems As String) As String
+
+    Dim serialVal As String
+    Dim titleVal As String
+    Dim genkaVal As String
+    Dim warekiVal As String
+
+    If serialCol > 0 Then serialVal = Trim$(CStr(wsEdit.Cells(rowNo, serialCol).Value))
+    If titleCol > 0 Then titleVal = Trim$(CStr(wsEdit.Cells(rowNo, titleCol).Value))
+    If genkaCol > 0 Then genkaVal = Trim$(CStr(wsEdit.Cells(rowNo, genkaCol).Value))
+    If warekiCol > 0 Then warekiVal = Trim$(CStr(wsEdit.Cells(rowNo, warekiCol).Value))
+
+    Build補完不足Log = "[補完不足] 行=" & CStr(rowNo) & _
+                      " 通し番号=" & serialVal & _
+                      " タイトル=" & titleVal & _
+                      " 原課=" & genkaVal & _
+                      " 年度（和暦）=" & warekiVal & _
+                      " 不足項目=" & missingItems
+
+End Function
 
 '========================================================
 ' 新ファイル基準表: 年度（和暦）/保存期間 変更時に廃棄年月日を自動計算
@@ -5550,7 +7657,6 @@ Private Function RecalculateHaikiDateByRowMap(ByVal wsEdit As Worksheet, ByVal r
     Dim warekiCol As Long
     Dim saveTermCol As Long
     Dim haikiCol As Long
-    Dim key As Variant
     Dim rowNo As Long
     Dim warekiText As String
     Dim saveTermText As String
@@ -5560,6 +7666,7 @@ Private Function RecalculateHaikiDateByRowMap(ByVal wsEdit As Worksheet, ByVal r
     Dim prevCalculation As XlCalculation
     Dim errNo As Long
     Dim errDesc As String
+    Dim key As Variant
 
     On Error GoTo ErrorHandler
 
@@ -5741,12 +7848,12 @@ Public Sub UpdateHaikiDate(ByVal Target As Range)
     Dim workRange As Range
     Dim changedCell As Range
     Dim rowMap As Object
-    Dim key As Variant
     Dim rowNo As Long
     Dim warekiText As String
     Dim saveTermText As String
     Dim calcResult As String
     Dim prevEnableEvents As Boolean
+    Dim key As Variant
 
     If Target Is Nothing Then Exit Sub
 
@@ -6128,7 +8235,7 @@ Private Function GetHeaderColumnExact(ByVal ws As Worksheet, ByVal headerName As
 
     For c = 1 To lastCol
         headerValue = Trim(CStr(ws.Cells(1, c).value))
-        If StrComp(headerValue, Trim(headerName), vbBinaryCompare) = 0 Then
+        If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(Trim(headerName)), vbTextCompare) = 0 Then
             GetHeaderColumnExact = c
             Exit Function
         End If
@@ -6143,35 +8250,67 @@ End Function
 Private Function GetCodeFromCodeMaster(ByVal kubunName As String, ByVal displayName As String) As String
 
     Dim wsMaster As Worksheet
-    Dim lastRow As Long
+    Dim rowStart As Long
+    Dim rowEnd As Long
+
+    GetCodeFromCodeMaster = ""
+    rowStart = 2
+    rowEnd = 0
+
+    On Error GoTo SafeExit
+    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    If wsMaster Is Nothing Then GoTo SafeExit
+    rowEnd = GetLastUsedRow(wsMaster)
+    If rowEnd < rowStart Then GoTo SafeExit
+
+    GetCodeFromCodeMaster = GetCodeFromCodeMasterInRows(kubunName, displayName, wsMaster, rowStart, rowEnd)
+
+SafeExit:
+    ' 見つからない場合やエラー時は空文字のまま返す
+
+End Function
+
+Private Function GetCodeFromCodeMasterInRows( _
+    ByVal kubunName As String, _
+    ByVal displayName As String, _
+    ByVal wsMaster As Worksheet, _
+    ByVal rowStart As Long, _
+    ByVal rowEnd As Long) As String
+
+    Dim masterValues As Variant
     Dim r As Long
     Dim kubunValue As String
     Dim nameValue As String
 
-    GetCodeFromCodeMaster = ""
+    GetCodeFromCodeMasterInRows = ""
+    If wsMaster Is Nothing Then Exit Function
+    If rowEnd < rowStart Then Exit Function
 
-    On Error GoTo SafeExit
-
-    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
-    If wsMaster Is Nothing Then GoTo SafeExit
-
-    lastRow = GetLastUsedRow(wsMaster)
-    If lastRow < 2 Then GoTo SafeExit
-
-    ' コード管理CSV仕様: A列=項目名 / B列=コード / C列=表示名
-    For r = 2 To lastRow
-        kubunValue = Trim(CStr(wsMaster.Cells(r, 1).value))
-        nameValue = Trim(CStr(wsMaster.Cells(r, 3).value))
-
-        If StrComp(kubunValue, Trim(kubunName), vbBinaryCompare) = 0 _
-           And StrComp(nameValue, Trim(displayName), vbBinaryCompare) = 0 Then
-            GetCodeFromCodeMaster = Trim(CStr(wsMaster.Cells(r, 2).value))
-            Exit For
+    masterValues = wsMaster.Range(wsMaster.Cells(rowStart, 1), wsMaster.Cells(rowEnd, 3)).Value2
+    For r = 1 To UBound(masterValues, 1)
+        kubunValue = NormalizeHeaderToken(CStr(masterValues(r, 1)))
+        nameValue = NormalizeClassificationGuideKey(CStr(masterValues(r, 3)))
+        If StrComp(kubunValue, NormalizeHeaderToken(kubunName), vbTextCompare) = 0 _
+           And StrComp(nameValue, NormalizeClassificationGuideKey(displayName), vbTextCompare) = 0 Then
+            GetCodeFromCodeMasterInRows = Trim$(CStr(masterValues(r, 2)))
+            Exit Function
         End If
     Next r
 
-SafeExit:
-    ' 見つからない場合やエラー時は空文字のまま返す
+End Function
+
+Private Function NormalizeHeaderToken(ByVal textValue As String) As String
+
+    Dim normalized As String
+
+    normalized = CStr(textValue)
+    normalized = Replace(normalized, vbCr, " ")
+    normalized = Replace(normalized, vbLf, " ")
+    normalized = Replace(normalized, vbTab, " ")
+    normalized = Application.WorksheetFunction.Trim(normalized)
+    normalized = Replace(normalized, " ", "")
+    normalized = Replace(normalized, "　", "")
+    NormalizeHeaderToken = normalized
 
 End Function
 
@@ -6437,27 +8576,40 @@ Private Sub キャビネット別第1ガイド抽出_続きルール適用_NewSp
     Dim lastRow As Long
     Dim cabCol As Long
     Dim guideCol As Long
+    Dim colorCol As Long
+    Dim guide2Col As Long
+    Dim color2Col As Long
     Dim r As Long
     Dim rowSeq As Long
 
     Dim mapCabinets As Object            ' cabKey -> cabDisplay
-    Dim mapCabGuides As Object           ' cabKey -> (guideKey -> Array(guideDisplay, count, firstSeq))
+    Dim mapCabGuides As Object           ' cabKey -> (guideKey -> Array(guideDisplay, count, firstSeq, firstColor, childDict, childOrder))
     Dim mapGuideMinCab As Object         ' guideKey -> minCabKey
     Dim mapGuideDisplay As Object        ' guideKey -> firstDisplay
 
     Dim cabVal As String
     Dim guideVal As String
+    Dim colorVal As String
+    Dim guide2Val As String
+    Dim color2Val As String
     Dim cabKey As String
     Dim guideKey As String
+    Dim guide2Key As String
     Dim minCabKey As String
+    Dim missingHeaders As String
 
     Dim cabKeys() As String
     Dim guideKeys() As String
     Dim outRow As Long
     Dim i As Long
     Dim j As Long
+    Dim childIndex As Long
     Dim item As Variant
+    Dim childItem As Variant
     Dim oneCabGuides As Object
+    Dim childDict As Object
+    Dim childOrder As Collection
+    Dim outputFillMap As Object
     Dim outGuide As String
 
     On Error GoTo ErrorHandler
@@ -6467,12 +8619,17 @@ Private Sub キャビネット別第1ガイド抽出_続きルール適用_NewSp
 
     cabCol = FindHeaderCol(wsSrc, HEADER_ROW, Array("キャビネット番号"))
     guideCol = FindHeaderCol(wsSrc, HEADER_ROW, Array("分類名２", "分類名2", "第1ガイド", "第１ガイド"))
+    colorCol = FindHeaderCol(wsSrc, HEADER_ROW, Array("色名", "色", "１色", "1色"))
+    guide2Col = FindHeaderCol(wsSrc, HEADER_ROW, Array("分類名３", "分類名3", "第2ガイド", "第２ガイド"))
+    color2Col = FindHeaderCol(wsSrc, HEADER_ROW, Array("2色名", "２色名", "２色", "2色"))
 
-    If cabCol = 0 Then
-        Err.Raise vbObjectError + 3101, , "見出し「キャビネット番号」が見つかりません。"
-    End If
-    If guideCol = 0 Then
-        Err.Raise vbObjectError + 3102, , "見出し「分類名２（または分類名2）」が見つかりません。"
+    If cabCol = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "キャビネット番号")
+    If guideCol = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "第1ガイド（または分類名２）")
+    If colorCol = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "色名")
+    If guide2Col = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "第2ガイド（または分類名３）")
+    If color2Col = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "2色名")
+    If Len(missingHeaders) > 0 Then
+        Err.Raise vbObjectError + 3101, , "必要な見出しが見つかりません。" & vbCrLf & missingHeaders
     End If
 
     lastRow = GetLastUsedRow(wsSrc)
@@ -6481,11 +8638,15 @@ Private Sub キャビネット別第1ガイド抽出_続きルール適用_NewSp
     Set mapCabGuides = CreateObject("Scripting.Dictionary")
     Set mapGuideMinCab = CreateObject("Scripting.Dictionary")
     Set mapGuideDisplay = CreateObject("Scripting.Dictionary")
+    Set outputFillMap = CreateObject("Scripting.Dictionary")
 
     rowSeq = 0
     For r = DATA_START To lastRow
         cabVal = Trim$(CStr(wsSrc.Cells(r, cabCol).Value))
         guideVal = Trim$(CStr(wsSrc.Cells(r, guideCol).Value))
+        colorVal = Trim$(CStr(wsSrc.Cells(r, colorCol).Value))
+        guide2Val = Trim$(CStr(wsSrc.Cells(r, guide2Col).Value))
+        color2Val = Trim$(CStr(wsSrc.Cells(r, color2Col).Value))
         If Len(cabVal) = 0 Or Len(guideVal) = 0 Then GoTo ContinueRow
 
         cabKey = BuildCabinetKey(cabVal)
@@ -6511,18 +8672,55 @@ Private Sub キャビネット別第1ガイド抽出_続きルール適用_NewSp
         If oneCabGuides.Exists(guideKey) Then
             item = oneCabGuides(guideKey)
             item(1) = CLng(item(1)) + 1
-            oneCabGuides(guideKey) = item
+            If Len(CStr(item(3))) = 0 And Len(colorVal) > 0 Then
+                item(3) = colorVal
+                item(6) = wsSrc.Cells(r, colorCol).Interior.Color
+                item(7) = HasCellFill_ColorCopy(wsSrc.Cells(r, colorCol))
+            ElseIf Not CBool(item(7)) And HasCellFill_ColorCopy(wsSrc.Cells(r, colorCol)) Then
+                item(6) = wsSrc.Cells(r, colorCol).Interior.Color
+                item(7) = True
+            End If
         Else
-            oneCabGuides.Add guideKey, Array(guideVal, 1, rowSeq)
+            Set childDict = CreateObject("Scripting.Dictionary")
+            Set childOrder = New Collection
+            item = Array(guideVal, 1, rowSeq, colorVal, childDict, childOrder, wsSrc.Cells(r, colorCol).Interior.Color, HasCellFill_ColorCopy(wsSrc.Cells(r, colorCol)))
+            oneCabGuides.Add guideKey, item
         End If
+
+        item = oneCabGuides(guideKey)
+        Set childDict = item(4)
+        Set childOrder = item(5)
+        If Len(guide2Val) > 0 Then
+            guide2Key = NormalizeText(guide2Val)
+            If Not childDict.Exists(guide2Key) Then
+                childDict.Add guide2Key, Array(color2Val, guide2Val, wsSrc.Cells(r, color2Col).Interior.Color, HasCellFill_ColorCopy(wsSrc.Cells(r, color2Col)))
+                childOrder.Add guide2Key
+            Else
+                childItem = childDict(guide2Key)
+                If Len(CStr(childItem(0))) = 0 And Len(color2Val) > 0 Then
+                    childItem(0) = color2Val
+                    childItem(2) = wsSrc.Cells(r, color2Col).Interior.Color
+                    childItem(3) = HasCellFill_ColorCopy(wsSrc.Cells(r, color2Col))
+                    childDict(guide2Key) = childItem
+                ElseIf Not CBool(childItem(3)) And HasCellFill_ColorCopy(wsSrc.Cells(r, color2Col)) Then
+                    childItem(2) = wsSrc.Cells(r, color2Col).Interior.Color
+                    childItem(3) = True
+                    childDict(guide2Key) = childItem
+                End If
+            End If
+        End If
+        oneCabGuides(guideKey) = item
 
 ContinueRow:
     Next r
 
     wsDst.Cells.Clear
     wsDst.Cells(1, 1).Value = "キャビネット番号"
-    wsDst.Cells(1, 2).Value = "第1ガイド（続き適用／出現順）"
-    wsDst.Cells(1, 3).Value = "件数"
+    wsDst.Cells(1, 2).Value = "色名"
+    wsDst.Cells(1, 3).Value = "第1ガイド（続き適用／出現順）"
+    wsDst.Cells(1, 4).Value = "件数"
+    wsDst.Cells(1, 5).Value = "2色名"
+    wsDst.Cells(1, 6).Value = "第2ガイド"
 
     outRow = 2
     If mapCabinets.Count > 0 Then
@@ -6545,8 +8743,29 @@ ContinueRow:
                 End If
 
                 wsDst.Cells(outRow, 1).Value = mapCabinets(cabKey)
-                wsDst.Cells(outRow, 2).Value = outGuide
-                wsDst.Cells(outRow, 3).Value = CLng(item(1))
+                wsDst.Cells(outRow, 2).Value = CStr(item(3))
+                If CBool(item(7)) Then outputFillMap(CStr(outRow) & "|2") = CLng(item(6))
+                wsDst.Cells(outRow, 3).Value = outGuide
+                wsDst.Cells(outRow, 4).Value = CLng(item(1))
+
+                Set childDict = item(4)
+                Set childOrder = item(5)
+                If childOrder.Count > 0 Then
+                    For childIndex = 1 To childOrder.Count
+                        guide2Key = CStr(childOrder(childIndex))
+                        childItem = childDict(guide2Key)
+                        If childIndex = 1 Then
+                            wsDst.Cells(outRow, 5).Value = CStr(childItem(0))
+                            If CBool(childItem(3)) Then outputFillMap(CStr(outRow) & "|5") = CLng(childItem(2))
+                            wsDst.Cells(outRow, 6).Value = CStr(childItem(1))
+                        Else
+                            outRow = outRow + 1
+                            wsDst.Cells(outRow, 5).Value = CStr(childItem(0))
+                            If CBool(childItem(3)) Then outputFillMap(CStr(outRow) & "|5") = CLng(childItem(2))
+                            wsDst.Cells(outRow, 6).Value = CStr(childItem(1))
+                        End If
+                    Next childIndex
+                End If
                 outRow = outRow + 1
             Next j
         Next i
@@ -6558,12 +8777,39 @@ ContinueRow:
         .Borders.Weight = xlThin
     End With
     ApplyCabinetBanding wsDst, 2, 1
+    ApplyOutputFillMap_ColorCopy wsDst, outputFillMap
 
     MsgBox "「" & DST_SHEET & "」を作成しました。", vbInformation
     Exit Sub
 
 ErrorHandler:
     MsgBox "キャビネット別第1ガイド抽出でエラーが発生しました: " & Err.Description, vbExclamation
+
+End Sub
+
+Private Function HasCellFill_ColorCopy(ByVal targetCell As Range) As Boolean
+
+    If targetCell Is Nothing Then Exit Function
+    On Error Resume Next
+    HasCellFill_ColorCopy = (targetCell.Interior.Pattern <> xlNone)
+    On Error GoTo 0
+
+End Function
+
+Private Sub ApplyOutputFillMap_ColorCopy(ByVal ws As Worksheet, ByVal outputFillMap As Object)
+
+    Dim key As Variant
+    Dim parts As Variant
+
+    If ws Is Nothing Then Exit Sub
+    If outputFillMap Is Nothing Then Exit Sub
+
+    For Each key In outputFillMap.Keys
+        parts = Split(CStr(key), "|")
+        If UBound(parts) = 1 Then
+            ws.Cells(CLng(parts(0)), CLng(parts(1))).Interior.Color = CLng(outputFillMap(key))
+        End If
+    Next key
 
 End Sub
 
@@ -6713,7 +8959,7 @@ Private Sub ApplyCabinetBanding(ByVal ws As Worksheet, ByVal startRow As Long, B
 
     For r = startRow To lastRow
         currCab = CStr(ws.Cells(r, cabinetCol).Value)
-        If currCab <> prevCab Then
+        If Len(currCab) > 0 And currCab <> prevCab Then
             bandIndex = bandIndex + 1
             prevCab = currCab
         End If
@@ -6724,7 +8970,7 @@ Private Sub ApplyCabinetBanding(ByVal ws As Worksheet, ByVal startRow As Long, B
             fillColor = RGB(221, 235, 247)
         End If
 
-        ws.Range(ws.Cells(r, 1), ws.Cells(r, 3)).Interior.Color = fillColor
+        ws.Range(ws.Cells(r, 1), ws.Cells(r, 6)).Interior.Color = fillColor
     Next r
 
 End Sub
@@ -6761,14 +9007,7 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     Const SINGLE_SHEET_NAME1 As String = "個別フォルダシール"
     Const SINGLE_SHEET_NAME2 As String = "個別フォルダーシール"
     Const SINGLE_SHEET_NAME3 As String = "フォルダシール"
-    ' 1ページ = 20行（テンプレート「個別フォルダシール」1～20行）
-    Const PAGE_ROWS As Long = 20
-    ' 1ページ = 12面固定
-    Const SEALS_PER_PAGE As Long = 12
-    ' NOTE:
-    ' 右側ブロックの結合セル（M:U / S:U）をテンプレート通りに維持するため、
-    ' ページ複製範囲は U 列(21) までを対象にする。
-    Const PAGE_LAST_COL As Long = 21
+    ' 1ページ = 20行、12面、印刷範囲右端 = U列固定（モジュール定数を使用）
 
     Dim wsSrc As Worksheet
     Dim wsSingle As Worksheet
@@ -6810,7 +9049,9 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     If wsSingle Is Nothing Then Err.Raise vbObjectError + 2304, , "単発用の個別フォルダシールシートが見つかりません。"
     If wsMulti Is Nothing Then Err.Raise vbObjectError + 2305, , "大量出力用シート「" & MULTI_SHEET_NAME & "」が見つかりません。"
 
-    printLastCol = GetSealPrintAreaLastColumn(wsMulti, PAGE_LAST_COL)
+    ' 個別フォルダシール（複数）の横方向印刷範囲は常に A:U 固定。
+    ' 既存PrintArea/UsedRange/結合セルから右端列を再判定しない。
+    printLastCol = SEAL_PAGE_COL_LAST
 
     frmSeal.BuildIndexes_NewSpec wsSrc, serialIndex, headerIndex
     serialCol = CLng(headerIndex("通し番号"))
@@ -6834,30 +9075,31 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
         End If
     Next r
 
-    ' 既存の列幅・印刷範囲の最終列・余白・拡大縮小・印刷方向などのPageSetup設定は維持する
+    ' 既存の列幅・余白・拡大縮小・印刷方向などのPageSetup設定は維持する。
+    ' ただし印刷範囲は後段で A:U、必要ページ数×20行へ固定する。
 
     If targetRows.Count = 0 Then
         Err.Raise vbObjectError + 2307, , "該当するデータがありません。"
     End If
 
-    pageCount = CLng(Application.WorksheetFunction.RoundUp(CDbl(targetRows.Count) / CDbl(SEALS_PER_PAGE), 0))
+    pageCount = CLng(Application.WorksheetFunction.RoundUp(CDbl(targetRows.Count) / CDbl(SEAL_PER_PAGE), 0))
     requiredBlocks = pageCount
-    generatedBlocks = GetGeneratedSealBlockCount(wsMulti, PAGE_ROWS)
+    generatedBlocks = GetGeneratedSealBlockCount(wsMulti, SEAL_PAGE_ROWS)
 
     ' 既存ブロックを再利用し、不足分のみ12面単位で追加
     If generatedBlocks < requiredBlocks Then
         For addPageNo = generatedBlocks + 1 To requiredBlocks
-            pageTopRow = (addPageNo - 1) * PAGE_ROWS + 1
-            CopySealTemplatePageLayout wsMulti, wsMulti, pageTopRow, PAGE_ROWS, printLastCol
+            pageTopRow = (addPageNo - 1) * SEAL_PAGE_ROWS + 1
+            CopySealTemplatePageLayout wsMulti, wsMulti, pageTopRow, SEAL_PAGE_ROWS, printLastCol
         Next addPageNo
         generatedBlocks = requiredBlocks
     End If
 
     For pageNo = 1 To pageCount
-        pageTopRow = (pageNo - 1) * PAGE_ROWS + 1
+        pageTopRow = (pageNo - 1) * SEAL_PAGE_ROWS + 1
 
-        For slot = 1 To SEALS_PER_PAGE
-            idx = (pageNo - 1) * SEALS_PER_PAGE + slot
+        For slot = 1 To SEAL_PER_PAGE
+            idx = (pageNo - 1) * SEAL_PER_PAGE + slot
             If idx <= targetRows.Count Then
                 srcRow = CLng(targetRows(idx))
                 WriteOneSeal_NewSpec_WithRowOffset _
@@ -6876,13 +9118,16 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     ' 今回未使用の既存ブロックは削除せず残し、値だけクリア
     If generatedBlocks > pageCount Then
         For clearPageNo = pageCount + 1 To generatedBlocks
-            For slot = 1 To SEALS_PER_PAGE
-                ClearOneSealSlot_WithRowOffset wsMulti, slot, (clearPageNo - 1) * PAGE_ROWS
+            For slot = 1 To SEAL_PER_PAGE
+                ClearOneSealSlot_WithRowOffset wsMulti, slot, (clearPageNo - 1) * SEAL_PAGE_ROWS
             Next slot
         Next clearPageNo
     End If
 
-    ConfigureMultiSealFixedPrintLayout wsMulti, targetRows.Count, PAGE_ROWS, SEALS_PER_PAGE, printLastCol
+    ConfigureMultiSealFixedPrintLayout wsMulti, targetRows.Count, SEAL_PAGE_ROWS, SEAL_PER_PAGE, printLastCol
+
+    ' 複数シートの作成と印刷レイアウト設定が正常完了した場合だけモードを更新する。
+    固定印刷モードを複数に設定する
 
     MsgBox "個別フォルダシール（複数）を作成しました。" & vbCrLf & _
            "対象件数: " & targetRows.Count & " 件" & vbCrLf & _
@@ -6911,57 +9156,40 @@ Private Sub ConfigureMultiSealFixedPrintLayout( _
     Dim printLastRow As Long
 
     If ws Is Nothing Then Exit Sub
-    If pageRows <= 0 Then Exit Sub
-    If sealsPerPage <= 0 Then Exit Sub
 
+    ' 個別フォルダシール（複数）は、横方向を必ず A:U 固定にする。
+    ' 引数 pageRows/sealsPerPage/printLastCol は互換性維持のため受け取るが、
+    ' 印刷範囲の算定はモジュール定数（20行、12面、U列）だけを使う。
     If outputCount <= 0 Then
         requiredPages = 1
     Else
-        requiredPages = CLng(Application.WorksheetFunction.RoundUp(CDbl(outputCount) / CDbl(sealsPerPage), 0))
+        requiredPages = CLng(Application.WorksheetFunction.RoundUp(CDbl(outputCount) / CDbl(SEAL_PER_PAGE), 0))
     End If
     If requiredPages < 1 Then requiredPages = 1
 
-    If printLastCol <= 0 Then printLastCol = GetSealPrintAreaLastColumn(ws, 21)
-    printLastRow = requiredPages * pageRows
+    printLastRow = requiredPages * SEAL_PAGE_ROWS
 
-    ConfigureSealPageBreaks ws, pageRows, requiredPages
-    ws.PageSetup.PrintArea = ws.Range(ws.Cells(1, 1), ws.Cells(printLastRow, printLastCol)).Address
+    ' PageSetup.PrintArea 設定箇所:
+    ' 右端列は常に U列、下端行だけを必要ページ数×20行へ伸縮する。
+    With ws.PageSetup
+        .PrintArea = ws.Range(ws.Cells(1, 1), ws.Cells(printLastRow, SEAL_PAGE_COL_LAST)).Address
+        ' Excelの自動改ページが中途半端な位置に出ないよう、印刷幅/高さをページ数に固定する。
+        .Zoom = False
+        .FitToPagesWide = 1
+        .FitToPagesTall = requiredPages
+    End With
+
+    ' 改ページ設定箇所:
+    ' 21行目、41行目、61行目…の上にだけ手動水平改ページを作る。
+    ConfigureSealPageBreaks ws, SEAL_PAGE_ROWS, requiredPages
 
 End Sub
 
 Private Function GetSealPrintAreaLastColumn(ByVal ws As Worksheet, ByVal defaultLastCol As Long) As Long
 
-    Dim areaText As String
-    Dim printRange As Range
-    Dim oneArea As Range
-    Dim lastCol As Long
-
-    On Error GoTo Fallback
-
-    If ws Is Nothing Then GoTo Fallback
-
-    areaText = Trim$(ws.PageSetup.PrintArea)
-    If Len(areaText) > 0 Then
-        Set printRange = ws.Range(areaText)
-        For Each oneArea In printRange.Areas
-            If oneArea.Column + oneArea.Columns.Count - 1 > lastCol Then
-                lastCol = oneArea.Column + oneArea.Columns.Count - 1
-            End If
-        Next oneArea
-    End If
-
-    If lastCol <= 0 Then lastCol = defaultLastCol
-    If lastCol <= 0 Then lastCol = 21
-
-    GetSealPrintAreaLastColumn = lastCol
-    Exit Function
-
-Fallback:
-    If defaultLastCol > 0 Then
-        GetSealPrintAreaLastColumn = defaultLastCol
-    Else
-        GetSealPrintAreaLastColumn = 21
-    End If
+    ' 個別フォルダシール（複数）の印刷範囲右端は U列固定。
+    ' 既存のPrintArea、UsedRange、最終入力列、結合セル範囲から再判定しない。
+    GetSealPrintAreaLastColumn = SEAL_PAGE_COL_LAST
 
 End Function
 
@@ -6982,7 +9210,7 @@ Private Function GetGeneratedSealBlockCount(ByVal ws As Worksheet, ByVal pageRow
         rowBottom = rngPrint.Row + rngPrint.Rows.Count - 1
     End If
 
-    Set lastDataCell = ws.Range(ws.Cells(1, 1), ws.Cells(ws.Rows.Count, 21)).Find( _
+    Set lastDataCell = ws.Range(ws.Cells(1, 1), ws.Cells(ws.Rows.Count, SEAL_PAGE_COL_LAST)).Find( _
         What:="*", LookIn:=xlFormulas, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
     If Not lastDataCell Is Nothing Then dataBottom = lastDataCell.Row
 
@@ -7003,14 +9231,20 @@ Private Sub ConfigureSealPageBreaks(ByVal ws As Worksheet, ByVal pageRows As Lon
     Dim pageNo As Long
     Dim pageTopRow As Long
 
+    ' 既存の手動改ページ/過去に残った改ページをいったん全リセットする。
     ws.ResetAllPageBreaks
 
-    If blockCount <= 1 Then Exit Sub
+    If blockCount > 1 Then
+        For pageNo = 2 To blockCount
+            pageTopRow = (pageNo - 1) * pageRows + 1
+            ' 手動改ページは20行ごと（21行目、41行目、61行目…の上）だけに固定する。
+            ws.HPageBreaks.Add Before:=ws.Rows(pageTopRow)
+        Next pageNo
+    End If
 
-    For pageNo = 2 To blockCount
-        pageTopRow = (pageNo - 1) * pageRows + 1
-        ws.HPageBreaks.Add Before:=ws.Cells(pageTopRow, 1)
-    Next pageNo
+    ' Excelが計算した途中行（例: 16行目前後）の青い点線を画面上に残さない。
+    ' 印刷制御はPrintArea、FitToPagesWide/Tall、上記手動HPageBreaksで固定する。
+    ws.DisplayPageBreaks = False
 
 End Sub
 
@@ -7149,9 +9383,6 @@ End Sub
 Public Sub ClearAllSeals_NewSpec()
 
     Const MULTI_SHEET_NAME As String = "個別フォルダシール（複数）"
-    Const PAGE_ROWS As Long = 20
-    Const PAGE_LAST_COL As Long = 21
-
     Dim wsSingle As Worksheet
     Dim wsMulti As Worksheet
     Dim slot As Long
@@ -7162,7 +9393,7 @@ Public Sub ClearAllSeals_NewSpec()
 
     Set wsSingle = ResolveWorksheetByCandidates(ThisWorkbook, Array("個別フォルダシール", "個別フォルダーシール", "フォルダシール"))
     If Not wsSingle Is Nothing Then
-        For slot = 1 To 12
+        For slot = 1 To SEAL_PER_PAGE
             ClearOneSealSlot wsSingle, slot
         Next slot
         clearedSingle = True
@@ -7170,17 +9401,18 @@ Public Sub ClearAllSeals_NewSpec()
 
     Set wsMulti = ResolveWorksheetByCandidates(ThisWorkbook, Array(MULTI_SHEET_NAME))
     If Not wsMulti Is Nothing Then
-        generatedBlocks = GetGeneratedSealBlockCount(wsMulti, PAGE_ROWS)
+        generatedBlocks = GetGeneratedSealBlockCount(wsMulti, SEAL_PAGE_ROWS)
         For pageNo = 1 To generatedBlocks
-            For slot = 1 To 12
-                ClearOneSealSlot_WithRowOffset wsMulti, slot, (pageNo - 1) * PAGE_ROWS
+            For slot = 1 To SEAL_PER_PAGE
+                ClearOneSealSlot_WithRowOffset wsMulti, slot, (pageNo - 1) * SEAL_PAGE_ROWS
             Next slot
         Next pageNo
-        ' クリア後は1ページ固定に戻す（列範囲はテンプレートどおり A:U）
-        ConfigureSealPageBreaks wsMulti, PAGE_ROWS, 1
-        wsMulti.PageSetup.PrintArea = wsMulti.Range(wsMulti.Cells(1, 1), wsMulti.Cells(PAGE_ROWS, PAGE_LAST_COL)).Address
+        ' クリア処理では既存の印刷範囲・改ページを維持し、値だけをクリアする。
+        ' PageSetup.PrintAreaを1ページ分へ勝手に縮めない。
         clearedMulti = True
     End If
+
+    If clearedSingle Or clearedMulti Then 固定印刷モードを未設定に戻す
 
     If clearedSingle And clearedMulti Then
         MsgBox "単発用シートと複数用シートをクリアしました。", vbInformation
@@ -7229,6 +9461,7 @@ Public Sub 旧基準表_継続文書移行()
     Dim newColCreatedWareki As Long
     Dim newColTitle As Long
     Dim newColBiko As Long
+    Dim newColSyncStatus As Long
     Dim newColMediaType As Long
 
     Dim oldLastRow As Long
@@ -7305,7 +9538,13 @@ Public Sub 旧基準表_継続文書移行()
     newColCreatedWareki = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "作成年度（和暦）")
     newColTitle = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "タイトル")
     newColBiko = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "備考")
+    newColSyncStatus = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "同期状態")
     newColMediaType = GetHeaderColumnByName_Mig(wsNew, newHeaderRow, "媒体種別")
+
+    If newColSyncStatus = 0 Then
+        newColSyncStatus = wsNew.Cells(newHeaderRow, wsNew.Columns.Count).End(xlToLeft).Column + 1
+        wsNew.Cells(newHeaderRow, newColSyncStatus).Value = "同期状態"
+    End If
 
     If oldColKeizoku = 0 Then StopWithMissingColumn "継続"
     If oldColGuide1 = 0 Then StopWithMissingColumn "第１ガイド"
@@ -7323,10 +9562,11 @@ Public Sub 旧基準表_継続文書移行()
     If newColCreatedWareki = 0 Then StopWithMissingColumn "作成年度（和暦）"
     If newColTitle = 0 Then StopWithMissingColumn "タイトル"
     If newColBiko = 0 Then StopWithMissingColumn "備考"
+    If newColSyncStatus = 0 Then StopWithMissingColumn "同期状態"
     If newColMediaType = 0 Then StopWithMissingColumn "媒体種別"
 
     DebugLog "[列番号][旧] 継続=" & oldColKeizoku & " 第１ガイド=" & oldColGuide1 & " １色=" & oldColColor1 & " 第２ガイド=" & oldColGuide2 & " ２色=" & oldColColor2 & " 年度=" & oldColNendo & " 個別フォルダー=" & oldColKobetsu & " 媒体=" & oldColMedia
-    DebugLog "[列番号][新] 分類名２=" & newColClass2 & " 色名=" & newColColor & " 分類名３=" & newColClass3 & " 2色名=" & newColColor2 & " 年度（和暦）=" & newColWareki & " 作成年度（和暦）=" & newColCreatedWareki & " タイトル=" & newColTitle & " 備考=" & newColBiko & " 媒体種別=" & newColMediaType
+    DebugLog "[列番号][新] 分類名２=" & newColClass2 & " 色名=" & newColColor & " 分類名３=" & newColClass3 & " 2色名=" & newColColor2 & " 年度（和暦）=" & newColWareki & " 作成年度（和暦）=" & newColCreatedWareki & " タイトル=" & newColTitle & " 備考=" & newColBiko & " 同期状態=" & newColSyncStatus & " 媒体種別=" & newColMediaType
 
     oldLastRow = wsOld.Cells(wsOld.Rows.Count, 1).End(xlUp).Row
     If oldLastRow < oldDataStartRow Then
@@ -7416,7 +9656,7 @@ NextRowMigImport:
                 wsNew.Cells(insertRow + j - 1, newColCreatedWareki).Value = rec(4)
                 wsNew.Cells(insertRow + j - 1, newColTitle).Value = rec(5)
                 wsNew.Cells(insertRow + j - 1, newColMediaType).Value = Trim$(CStr(rec(6)))
-                wsNew.Cells(insertRow + j - 1, newColBiko).Value = "マクロ差込"
+                wsNew.Cells(insertRow + j - 1, newColSyncStatus).Value = "管理対象外"
                 movedCount = movedCount + 1
             Next j
         End If
@@ -7542,7 +9782,7 @@ Private Function HeaderExistsInRow_Mig(ByVal ws As Worksheet, ByVal rowNo As Lon
     Dim c As Long
 
     For c = 1 To lastCol
-        If StrComp(NormalizeTextForMatch(GetRawCellMerged(ws, rowNo, c)), NormalizeTextForMatch(headerName), vbBinaryCompare) = 0 Then
+        If StrComp(NormalizeMigrationHeaderName(GetRawCellMerged(ws, rowNo, c)), NormalizeMigrationHeaderName(headerName), vbTextCompare) = 0 Then
             HeaderExistsInRow_Mig = True
             Exit Function
         End If
@@ -7558,11 +9798,32 @@ Private Function GetHeaderColumnByName_Mig(ByVal ws As Worksheet, ByVal headerRo
     lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
 
     For c = 1 To lastCol
-        If StrComp(NormalizeTextForMatch(GetRawCellMerged(ws, headerRow, c)), NormalizeTextForMatch(headerName), vbBinaryCompare) = 0 Then
+        If StrComp(NormalizeMigrationHeaderName(GetRawCellMerged(ws, headerRow, c)), NormalizeMigrationHeaderName(headerName), vbTextCompare) = 0 Then
             GetHeaderColumnByName_Mig = c
             Exit Function
         End If
     Next c
+
+End Function
+
+Private Function NormalizeMigrationHeaderName(ByVal headerName As String) As String
+
+    Dim normalized As String
+
+    normalized = NormalizeTextForMatch(CStr(headerName))
+    normalized = Replace(normalized, " ", "")
+    normalized = Replace(normalized, "　", "")
+
+    Select Case normalized
+        Case "分類名2", "分類名２", "第1ガイド", "第１ガイド"
+            NormalizeMigrationHeaderName = "分類名２"
+        Case "分類名3", "分類名３", "第2ガイド", "第２ガイド"
+            NormalizeMigrationHeaderName = "分類名３"
+        Case "タイトル", "個別フォルダー", "個別フォルダ"
+            NormalizeMigrationHeaderName = "タイトル"
+        Case Else
+            NormalizeMigrationHeaderName = normalized
+    End Select
 
 End Function
 
@@ -7782,3 +10043,1055 @@ Private Function IsPaperMedia(ByVal rawValue As String) As Boolean
     IsPaperMedia = (StrComp(NormalizeMediaValue(rawValue), "紙", vbBinaryCompare) = 0)
 
 End Function
+
+
+
+'========================================================
+' 新ファイル基準表: 新規行向けの色自動入力（既存色は上書きしない）
+'========================================================
+Public Sub AutoFillColorForRow(ByVal ws As Worksheet, ByVal targetRow As Long)
+
+    Dim lastCol As Long
+    Dim colorCol As Long
+    Dim autoColor As String
+
+    If ws Is Nothing Then Exit Sub
+    If targetRow < 2 Then Exit Sub
+
+    lastCol = GetLastUsedCol(ws)
+    If lastCol <= 0 Then Exit Sub
+
+    colorCol = FindHeaderColumn(ws, lastCol, Array("色", "色名", "１色", "1色"))
+    If colorCol <= 0 Then Exit Sub
+    If Len(NormalizeText_ColorRule(CStr(ws.Cells(targetRow, colorCol).Value))) > 0 Then Exit Sub
+
+    autoColor = GetAutoColorForRow(ws, targetRow)
+    If Len(autoColor) = 0 Then Exit Sub
+
+    ws.Cells(targetRow, colorCol).Value = autoColor
+
+End Sub
+
+Public Function GetAutoColorForRow(ByVal ws As Worksheet, ByVal targetRow As Long) As String
+
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim guide1Col As Long
+    Dim colorCol As Long
+    Dim guide1Text As String
+    Dim guide1Key As String
+    Dim rowNo As Long
+    Dim rowGuideKey As String
+    Dim rowColor As String
+    Dim sameGuideColors As Object
+    Dim sameGuideColorKeys As Variant
+    Dim previousColor As String
+    Dim nextColor As String
+
+    If ws Is Nothing Then Exit Function
+    If targetRow < 2 Then Exit Function
+
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+    If lastRow < 2 Or lastCol <= 0 Then Exit Function
+
+    guide1Col = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("第1ガイド"))
+    colorCol = FindHeaderColumn(ws, lastCol, Array("色", "色名", "１色", "1色"))
+    If guide1Col <= 0 Or colorCol <= 0 Then Exit Function
+    If Len(NormalizeText_ColorRule(CStr(ws.Cells(targetRow, colorCol).Value))) > 0 Then Exit Function
+
+    guide1Text = Trim$(CStr(ws.Cells(targetRow, guide1Col).Value))
+    guide1Key = BuildGuideKey_ColorRule(guide1Text)
+    If Len(guide1Key) = 0 Then Exit Function
+
+    Set sameGuideColors = CreateObject("Scripting.Dictionary")
+    For rowNo = 2 To lastRow
+        If rowNo <> targetRow Then
+            rowGuideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, guide1Col).Value)
+            If StrComp(rowGuideKey, guide1Key, vbBinaryCompare) = 0 Then
+                rowColor = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colorCol).Value))
+                If Len(rowColor) > 0 Then
+                    If Not sameGuideColors.Exists(rowColor) Then sameGuideColors.Add rowColor, True
+                End If
+            End If
+        End If
+    Next rowNo
+
+    If sameGuideColors.Count = 1 Then
+        sameGuideColorKeys = sameGuideColors.Keys
+        GetAutoColorForRow = CStr(sameGuideColorKeys(LBound(sameGuideColorKeys)))
+        Exit Function
+    ElseIf sameGuideColors.Count > 1 Then
+        MsgBox "同じ第1ガイドに複数の色が存在するため、色を自動判定できません。" & vbCrLf & _
+               "先に色チェックを実行し、既存データを修正してください。" & vbCrLf & _
+               "対象行: " & CStr(targetRow) & vbCrLf & _
+               "第1ガイド: " & guide1Text, vbExclamation
+        Exit Function
+    End If
+
+    previousColor = FindAdjacentDifferentGuideColor_ColorRule(ws, targetRow, guide1Col, colorCol, -1, guide1Key)
+    nextColor = FindAdjacentDifferentGuideColor_ColorRule(ws, targetRow, guide1Col, colorCol, 1, guide1Key)
+    GetAutoColorForRow = SelectAutoColorAvoiding_ColorRule(previousColor, nextColor)
+
+End Function
+
+Private Function FindAdjacentDifferentGuideColor_ColorRule( _
+    ByVal ws As Worksheet, _
+    ByVal targetRow As Long, _
+    ByVal guide1Col As Long, _
+    ByVal colorCol As Long, _
+    ByVal stepValue As Long, _
+    ByVal targetGuideKey As String) As String
+
+    Dim rowNo As Long
+    Dim lastRow As Long
+    Dim rowGuideKey As String
+    Dim rowColor As String
+
+    If ws Is Nothing Then Exit Function
+    If stepValue = 0 Then Exit Function
+
+    lastRow = GetLastUsedRow(ws)
+    rowNo = targetRow + stepValue
+
+    Do While rowNo >= 2 And rowNo <= lastRow
+        rowGuideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, guide1Col).Value)
+        rowColor = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colorCol).Value))
+        If Len(rowGuideKey) > 0 And StrComp(rowGuideKey, targetGuideKey, vbBinaryCompare) <> 0 And Len(rowColor) > 0 Then
+            FindAdjacentDifferentGuideColor_ColorRule = rowColor
+            Exit Function
+        End If
+        rowNo = rowNo + stepValue
+    Loop
+
+End Function
+
+Private Function SelectAutoColorAvoiding_ColorRule(ByVal previousColor As String, ByVal nextColor As String) As String
+
+    Dim colors As Variant
+    Dim startIndex As Long
+    Dim i As Long
+    Dim candidate As String
+
+    colors = GetColorRotationList_ColorRule()
+    previousColor = NormalizeColorName_ColorRule(previousColor)
+    nextColor = NormalizeColorName_ColorRule(nextColor)
+    startIndex = NextColorStartIndex_ColorRule(colors, previousColor)
+
+    For i = 0 To UBound(colors) - LBound(colors)
+        candidate = CStr(colors((startIndex + i) Mod (UBound(colors) - LBound(colors) + 1)))
+        If StrComp(candidate, previousColor, vbBinaryCompare) <> 0 And StrComp(candidate, nextColor, vbBinaryCompare) <> 0 Then
+            SelectAutoColorAvoiding_ColorRule = candidate
+            Exit Function
+        End If
+    Next i
+
+    For i = LBound(colors) To UBound(colors)
+        candidate = CStr(colors(i))
+        If StrComp(candidate, previousColor, vbBinaryCompare) <> 0 Then
+            SelectAutoColorAvoiding_ColorRule = candidate
+            Exit Function
+        End If
+    Next i
+
+    SelectAutoColorAvoiding_ColorRule = CStr(colors(LBound(colors)))
+
+End Function
+
+Private Function NextColorStartIndex_ColorRule(ByVal colors As Variant, ByVal previousColor As String) As Long
+
+    Dim i As Long
+
+    previousColor = NormalizeColorName_ColorRule(previousColor)
+    For i = LBound(colors) To UBound(colors)
+        If StrComp(CStr(colors(i)), previousColor, vbBinaryCompare) = 0 Then
+            NextColorStartIndex_ColorRule = (i + 1) Mod (UBound(colors) - LBound(colors) + 1)
+            Exit Function
+        End If
+    Next i
+
+    NextColorStartIndex_ColorRule = LBound(colors)
+
+End Function
+
+Private Function GetColorRotationList_ColorRule() As Variant
+    GetColorRotationList_ColorRule = Array("白色", "赤色", "青色", "黄色", "緑色")
+End Function
+
+'========================================================
+' 新ファイル基準表: 色ルールチェック（結果出力のみ・値は変更しない）
+'========================================================
+Public Sub 色ルールチェック()
+
+    Const RESULT_SHEET_NAME As String = "色チェック結果"
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim ws As Worksheet
+    Dim wsResult As Worksheet
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim colGuide1 As Long
+    Dim colGuide2 As Long
+    Dim colColor As Long
+    Dim rowNo As Long
+    Dim outRow As Long
+    Dim errorCount As Long
+    Dim warningCount As Long
+    Dim guide1Text As String
+    Dim guide2Text As String
+    Dim colorText As String
+    Dim guide1Key As String
+    Dim guide2Key As String
+    Dim groupKey As String
+    Dim previousGuide1Key As String
+    Dim previousColorText As String
+    Dim guide1Colors As Object
+    Dim groupColors As Object
+    Dim rule1MismatchRows As Object
+    Dim missingHeaders As String
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+
+    Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+
+    If lastRow < 2 Or lastCol <= 0 Then
+        MsgBox "新ファイル基準表にチェック対象データがありません。", vbInformation
+        GoTo SafeExit
+    End If
+
+    colGuide1 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("第1ガイド"))
+    colGuide2 = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("第2ガイド"))
+    colColor = FindHeaderColumn(ws, lastCol, Array("色", "色名", "１色", "1色"))
+
+    If colGuide1 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "第1ガイド")
+    If colGuide2 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "第2ガイド")
+    If colColor = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "色")
+
+    If Len(missingHeaders) > 0 Then
+        MsgBox "色チェックを中止しました。" & vbCrLf & _
+               "不足している見出し:" & vbCrLf & missingHeaders, vbExclamation
+        GoTo SafeExit
+    End If
+
+    Set wsResult = GetOrCreateWorksheet_ColorCheck(RESULT_SHEET_NAME)
+    wsResult.Cells.Clear
+    wsResult.Range("A1:G1").Value = Array("区分", "行番号", "第1ガイド", "第2ガイド", "色", "内容", "修正案")
+    wsResult.Rows(1).Font.Bold = True
+    outRow = 2
+
+    Set guide1Colors = CreateObject("Scripting.Dictionary")
+    Set groupColors = CreateObject("Scripting.Dictionary")
+    Set rule1MismatchRows = CreateObject("Scripting.Dictionary")
+
+    For rowNo = 2 To lastRow
+        guide1Text = Trim$(CStr(ws.Cells(rowNo, colGuide1).Value))
+        guide2Text = Trim$(CStr(ws.Cells(rowNo, colGuide2).Value))
+        colorText = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor).Value))
+
+        If Len(guide1Text) = 0 And Len(guide2Text) = 0 And Len(colorText) = 0 Then GoTo ContinueNextColorCheckRow
+
+        guide1Key = BuildGuideKey_ColorRule(guide1Text)
+        guide2Key = BuildGuideKey_ColorRule(guide2Text)
+        groupKey = BuildGroupKey_ColorRule(guide1Key, guide2Key)
+
+        If Len(colorText) = 0 Then
+            AppendColorCheckResult wsResult, outRow, "エラー", rowNo, guide1Text, guide2Text, colorText, _
+                "色が未入力です。", "色を入力してください。"
+            errorCount = errorCount + 1
+        End If
+
+        If Len(guide1Key) > 0 And Len(colorText) > 0 Then
+            If guide1Colors.Exists(guide1Key) Then
+                If StrComp(CStr(guide1Colors(guide1Key)), colorText, vbBinaryCompare) <> 0 Then
+                    AppendColorCheckResult wsResult, outRow, "エラー", rowNo, guide1Text, guide2Text, colorText, _
+                        "同じ第1ガイド内で色が一致していません。", "同じ第1ガイドの色に統一してください。"
+                    errorCount = errorCount + 1
+                    rule1MismatchRows(CStr(rowNo)) = True
+                End If
+            Else
+                guide1Colors.Add guide1Key, colorText
+            End If
+        End If
+
+        If Len(guide1Key) > 0 And Len(guide2Key) > 0 And Len(colorText) > 0 Then
+            If groupColors.Exists(groupKey) Then
+                If StrComp(CStr(groupColors(groupKey)), colorText, vbBinaryCompare) <> 0 Then
+                    If Not rule1MismatchRows.Exists(CStr(rowNo)) Then
+                        AppendColorCheckResult wsResult, outRow, "エラー", rowNo, guide1Text, guide2Text, colorText, _
+                            "同じ第1ガイド・第2ガイドの組み合わせで色が一致していません。", "同じ第1ガイド・第2ガイドの色に統一してください。"
+                        errorCount = errorCount + 1
+                    End If
+                End If
+            Else
+                groupColors.Add groupKey, colorText
+            End If
+        End If
+
+        If Len(previousGuide1Key) > 0 And Len(guide1Key) > 0 Then
+            If StrComp(previousGuide1Key, guide1Key, vbBinaryCompare) <> 0 Then
+                If Len(colorText) > 0 And StrComp(previousColorText, colorText, vbBinaryCompare) = 0 Then
+                    AppendColorCheckResult wsResult, outRow, "注意", rowNo, guide1Text, guide2Text, colorText, _
+                        "第1ガイドが切り替わっていますが、色が直前のグループと連続しています。年度切替・削除・過年度落とし等による可能性があります。", _
+                        "必要に応じて別色へ変更してください。"
+                    warningCount = warningCount + 1
+                End If
+            End If
+        End If
+
+        If Len(guide1Key) > 0 Then
+            previousGuide1Key = guide1Key
+            previousColorText = colorText
+        End If
+
+ContinueNextColorCheckRow:
+    Next rowNo
+
+    wsResult.Columns("A:G").AutoFit
+
+    If errorCount = 0 And warningCount = 0 Then
+        MsgBox "色チェックが完了しました。" & vbCrLf & _
+               "問題は見つかりませんでした。", vbInformation
+    Else
+        MsgBox "色チェックが完了しました。" & vbCrLf & _
+               "エラー：" & CStr(errorCount) & "件" & vbCrLf & _
+               "注意：" & CStr(warningCount) & "件" & vbCrLf & vbCrLf & _
+               "詳細は「" & RESULT_SHEET_NAME & "」シートを確認してください。", vbInformation
+    End If
+
+SafeExit:
+    On Error Resume Next
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    On Error GoTo 0
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "色チェック中にエラーが発生しました。" & vbCrLf & Err.Description, vbExclamation
+    Resume SafeExit
+
+End Sub
+
+Private Function GetOrCreateWorksheet_ColorCheck(ByVal sheetName As String) As Worksheet
+
+    On Error Resume Next
+    Set GetOrCreateWorksheet_ColorCheck = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If GetOrCreateWorksheet_ColorCheck Is Nothing Then
+        Set GetOrCreateWorksheet_ColorCheck = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        GetOrCreateWorksheet_ColorCheck.Name = sheetName
+    End If
+
+End Function
+
+Private Sub AppendColorCheckResult( _
+    ByVal wsResult As Worksheet, _
+    ByRef outRow As Long, _
+    ByVal categoryText As String, _
+    ByVal sourceRow As Long, _
+    ByVal guide1Text As String, _
+    ByVal guide2Text As String, _
+    ByVal colorText As String, _
+    ByVal detailText As String, _
+    ByVal suggestionText As String)
+
+    wsResult.Cells(outRow, 1).Value = categoryText
+    wsResult.Cells(outRow, 2).Value = sourceRow
+    wsResult.Cells(outRow, 3).Value = guide1Text
+    wsResult.Cells(outRow, 4).Value = guide2Text
+    wsResult.Cells(outRow, 5).Value = colorText
+    wsResult.Cells(outRow, 6).Value = detailText
+    wsResult.Cells(outRow, 7).Value = suggestionText
+    outRow = outRow + 1
+
+End Sub
+
+'========================================================
+' 新ファイル基準表: 旧ファイル基準表の考え方に基づく色ルール修正
+'========================================================
+Public Sub 新ファイル基準表_色ルール修正()
+
+    Const PROC_NAME As String = "新ファイル基準表_色ルール修正"
+
+    Dim oldScreenUpdating As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim oldCalculation As XlCalculation
+    Dim ws As Worksheet
+    Dim lastRow As Long
+    Dim lastCol As Long
+    Dim colGuide1 As Long
+    Dim colColor1 As Long
+    Dim colGuide2 As Long
+    Dim colColor2 As Long
+    Dim colFolder As Long
+    Dim colRemarks As Long
+    Dim missingHeaders As String
+    Dim guideOrder As Collection
+    Dim guideGroups As Object
+    Dim guideFirstGroup As Object
+    Dim groupColorCounts As Object
+    Dim groupFirstColors As Object
+    Dim groupHasMacroRows As Object
+    Dim groupAssignedColors As Object
+    Dim guideAssignedColors As Object
+    Dim changedRows As Object
+    Dim changedCellCount As Long
+    Dim rowNo As Long
+    Dim guideIndex As Long
+    Dim groupIndex As Long
+    Dim guideKey As String
+    Dim guide2Key As String
+    Dim groupKey As String
+    Dim firstGroupKey As String
+    Dim remarksText As String
+    Dim colorValue As String
+    Dim selectedColor As String
+    Dim previousGroupColor As String
+    Dim previousGroupKey As String
+    Dim groupList As Collection
+    Dim colorCounts As Object
+    Dim previousColorCounts As Object
+    Dim preservedGroupCount As Long
+    Dim filledGroupCount As Long
+    Dim adjacentAdjustedGroupCount As Long
+    Dim guideAdjacentAdjustedCount As Long
+    Dim adjustmentLoop As Long
+    Dim adjustedInLoop As Boolean
+    Dim currentGuideKey As String
+    Dim previousGuideKey As String
+    Dim currentGuideColor As String
+    Dim previousGuideColor As String
+    Dim newGuideColor As String
+    Dim guideAdjacentAdjusted As Object
+    Dim validationMessage As String
+    Dim maxGuideColorRun As Long
+    Dim maxGuide2ColorRun As Long
+
+    On Error GoTo ErrorHandler
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldEnableEvents = Application.EnableEvents
+    oldCalculation = Application.Calculation
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+
+    Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    lastRow = GetLastUsedRow(ws)
+    lastCol = GetLastUsedCol(ws)
+
+    If lastRow < 2 Or lastCol < 1 Then
+        MsgBox "新ファイル基準表に処理対象データがありません。", vbInformation
+        GoTo SafeExit
+    End If
+
+    colGuide1 = GetExactHeaderColumn_ColorRule(ws, lastCol, "第1ガイド")
+    colColor1 = GetExactHeaderColumn_ColorRule(ws, lastCol, "色名")
+    colGuide2 = GetExactHeaderColumn_ColorRule(ws, lastCol, "第2ガイド")
+    colColor2 = GetExactHeaderColumn_ColorRule(ws, lastCol, "2色名")
+    colFolder = GetExactHeaderColumn_ColorRule(ws, lastCol, "個別フォルダー")
+    colRemarks = GetExactHeaderColumn_ColorRule(ws, lastCol, "備考")
+
+    If colGuide1 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "第1ガイド")
+    If colColor1 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "色名")
+    If colGuide2 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "第2ガイド")
+    If colColor2 = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "2色名")
+    If colFolder = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "個別フォルダー")
+    If colRemarks = 0 Then missingHeaders = AppendMissingHeader_ColorRule(missingHeaders, "備考")
+
+    If Len(missingHeaders) > 0 Then
+        MsgBox "新ファイル基準表_色ルール修正を中止しました。" & vbCrLf & _
+               "不足している見出し:" & vbCrLf & missingHeaders, vbExclamation
+        GoTo SafeExit
+    End If
+
+    Set guideOrder = New Collection
+    Set guideGroups = CreateObject("Scripting.Dictionary")
+    Set guideFirstGroup = CreateObject("Scripting.Dictionary")
+    Set groupColorCounts = CreateObject("Scripting.Dictionary")
+    Set groupFirstColors = CreateObject("Scripting.Dictionary")
+    Set groupHasMacroRows = CreateObject("Scripting.Dictionary")
+    Set groupAssignedColors = CreateObject("Scripting.Dictionary")
+    Set guideAssignedColors = CreateObject("Scripting.Dictionary")
+    Set changedRows = CreateObject("Scripting.Dictionary")
+    Set guideAdjacentAdjusted = CreateObject("Scripting.Dictionary")
+
+    ' 1回目の走査: 第1ガイド単位と、第1ガイド+第2ガイド単位の出現順、既存有効色を記録する。
+    For rowNo = 2 To lastRow
+        guideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
+        guide2Key = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide2).Value)
+        groupKey = BuildGroupKey_ColorRule(guideKey, guide2Key)
+
+        If Not guideGroups.Exists(guideKey) Then
+            guideGroups.Add guideKey, New Collection
+            guideOrder.Add guideKey
+        End If
+
+        If Not CollectionContainsText_ColorRule(guideGroups(guideKey), groupKey) Then
+            guideGroups(guideKey).Add groupKey
+            If Not guideFirstGroup.Exists(guideKey) Then guideFirstGroup.Add guideKey, groupKey
+        End If
+
+        If Not groupColorCounts.Exists(groupKey) Then
+            Set colorCounts = CreateObject("Scripting.Dictionary")
+            groupColorCounts.Add groupKey, colorCounts
+        End If
+
+        colorValue = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor2).Value))
+        If IsValidColor_ColorRule(colorValue) Then
+            Set colorCounts = groupColorCounts(groupKey)
+            If colorCounts.Exists(colorValue) Then
+                colorCounts(colorValue) = CLng(colorCounts(colorValue)) + 1
+            Else
+                colorCounts.Add colorValue, 1
+            End If
+            If Not groupFirstColors.Exists(groupKey) Then groupFirstColors.Add groupKey, colorValue
+        End If
+
+        remarksText = CStr(ws.Cells(rowNo, colRemarks).Value)
+        If ContainsMacroInserted_ColorRule(remarksText) Then groupHasMacroRows(groupKey) = True
+    Next rowNo
+
+    ' 第2ガイドの2色名を決定する。既存有効色があれば、多数決（同数なら先出）で原則維持する。
+    For guideIndex = 1 To guideOrder.Count
+        guideKey = CStr(guideOrder(guideIndex))
+        Set groupList = guideGroups(guideKey)
+        previousGroupColor = vbNullString
+        previousGroupKey = vbNullString
+
+        For groupIndex = 1 To groupList.Count
+            groupKey = CStr(groupList(groupIndex))
+            Set colorCounts = groupColorCounts(groupKey)
+
+            If colorCounts.Count > 0 Then
+                selectedColor = SelectExistingGroupColor_ColorRule(colorCounts, CStr(groupFirstColors(groupKey)))
+                preservedGroupCount = preservedGroupCount + 1
+            Else
+                selectedColor = SelectNextColor_ColorRule(previousGroupColor, groupIndex - 1)
+                filledGroupCount = filledGroupCount + 1
+            End If
+
+            If Len(previousGroupColor) > 0 Then
+                If StrComp(selectedColor, previousGroupColor, vbBinaryCompare) = 0 Then
+                    If colorCounts.Count = 0 Or Not groupHasMacroRows.Exists(groupKey) Then
+                        selectedColor = SelectNextColor_ColorRule(previousGroupColor, groupIndex - 1)
+                        If colorCounts.Count > 0 Then preservedGroupCount = preservedGroupCount - 1
+                        adjacentAdjustedGroupCount = adjacentAdjustedGroupCount + 1
+                    ElseIf Len(previousGroupKey) > 0 Then
+                        Set previousColorCounts = groupColorCounts(previousGroupKey)
+                        If previousColorCounts.Count = 0 And Not groupHasMacroRows.Exists(previousGroupKey) Then
+                            groupAssignedColors(previousGroupKey) = SelectNextColor_ColorRule(selectedColor, groupIndex - 2)
+                            adjacentAdjustedGroupCount = adjacentAdjustedGroupCount + 1
+                        End If
+                    End If
+                End If
+            End If
+
+            groupAssignedColors.Add groupKey, selectedColor
+            previousGroupColor = selectedColor
+            previousGroupKey = groupKey
+        Next groupIndex
+
+        firstGroupKey = CStr(guideFirstGroup(guideKey))
+        guideAssignedColors.Add guideKey, CStr(groupAssignedColors(firstGroupKey))
+    Next guideIndex
+
+    ' 第1ガイドが変わる箇所で同じ色名が連続しないよう、必要な第1ガイド色と先頭第2ガイド色だけを調整する。
+    For adjustmentLoop = 1 To 5
+        adjustedInLoop = False
+        previousGuideKey = vbNullString
+
+        For rowNo = 2 To lastRow
+            currentGuideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
+            If Len(previousGuideKey) > 0 Then
+                If StrComp(currentGuideKey, previousGuideKey, vbBinaryCompare) <> 0 Then
+                    previousGuideColor = CStr(guideAssignedColors(previousGuideKey))
+                    currentGuideColor = CStr(guideAssignedColors(currentGuideKey))
+                    If StrComp(currentGuideColor, previousGuideColor, vbBinaryCompare) = 0 Then
+                        newGuideColor = SelectDifferentColor_ColorRule(currentGuideColor, previousGuideColor)
+                        guideAssignedColors(currentGuideKey) = newGuideColor
+                        groupAssignedColors(CStr(guideFirstGroup(currentGuideKey))) = newGuideColor
+                        If Not guideAdjacentAdjusted.Exists(currentGuideKey) Then
+                            guideAdjacentAdjusted.Add currentGuideKey, True
+                            guideAdjacentAdjustedCount = guideAdjacentAdjustedCount + 1
+                        End If
+                        adjustedInLoop = True
+                    End If
+                End If
+            End If
+            previousGuideKey = currentGuideKey
+        Next rowNo
+
+        If Not adjustedInLoop Then Exit For
+    Next adjustmentLoop
+
+    ' 2回目の走査: 色名は第1ガイド単位で統一し、2色名は第1ガイド+第2ガイド単位で反映する。
+    For rowNo = 2 To lastRow
+        guideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
+        guide2Key = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide2).Value)
+        groupKey = BuildGroupKey_ColorRule(guideKey, guide2Key)
+
+        ApplyColorValue_ColorRule ws.Cells(rowNo, colColor1), CStr(guideAssignedColors(guideKey)), "色名", changedCellCount, changedRows, rowNo
+        ApplyColorValue_ColorRule ws.Cells(rowNo, colColor2), CStr(groupAssignedColors(groupKey)), "2色名", changedCellCount, changedRows, rowNo
+    Next rowNo
+
+    maxGuideColorRun = CalculateMaxConsecutiveColor_ColorRule(ws, lastRow, colColor1)
+    maxGuide2ColorRun = CalculateMaxConsecutiveColor_ColorRule(ws, lastRow, colColor2)
+    validationMessage = BuildColorRuleIssueMessage_ColorRule(ws, lastRow, colGuide1, colColor1, colGuide2, colColor2)
+
+    If Len(validationMessage) = 0 Then validationMessage = "チェック結果: 問題なし"
+
+    MsgBox "新ファイル基準表の色ルール修正が完了しました。" & vbCrLf & _
+           "変更したセル数: " & CStr(changedCellCount) & vbCrLf & _
+           "変更した行数: " & CStr(changedRows.Count) & vbCrLf & _
+           "既存色を維持した2色名グループ数: " & CStr(preservedGroupCount) & vbCrLf & _
+           "空欄または不正色のため新規補完した2色名グループ数: " & CStr(filledGroupCount) & vbCrLf & _
+           "隣接色の連続回避のため変更した2色名グループ数: " & CStr(adjacentAdjustedGroupCount) & vbCrLf & _
+           "第1ガイド連続回避のため変更した第1ガイド数: " & CStr(guideAdjacentAdjustedCount) & vbCrLf & _
+           "第1ガイド色名の最大連続数: " & CStr(maxGuideColorRun) & vbCrLf & _
+           "第2ガイド2色名の最大連続数: " & CStr(maxGuide2ColorRun) & vbCrLf & _
+           validationMessage, vbInformation
+
+SafeExit:
+    On Error Resume Next
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.EnableEvents = oldEnableEvents
+    Application.Calculation = oldCalculation
+    On Error GoTo 0
+    Exit Sub
+
+ErrorHandler:
+    MsgBox PROC_NAME & "でエラーが発生しました。" & vbCrLf & Err.Description, vbExclamation
+    Resume SafeExit
+
+End Sub
+
+Private Function GetExactHeaderColumn_ColorRule(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal headerName As String) As Long
+
+    Dim colNo As Long
+
+    If ws Is Nothing Then Exit Function
+
+    For colNo = 1 To lastCol
+        If StrComp(Trim$(CStr(ws.Cells(1, colNo).Value)), headerName, vbBinaryCompare) = 0 Then
+            GetExactHeaderColumn_ColorRule = colNo
+            Exit Function
+        End If
+    Next colNo
+
+End Function
+
+Private Function AppendMissingHeader_ColorRule(ByVal currentMessage As String, ByVal headerName As String) As String
+
+    If Len(currentMessage) > 0 Then currentMessage = currentMessage & vbCrLf
+    AppendMissingHeader_ColorRule = currentMessage & "・" & headerName
+
+End Function
+
+Private Function NormalizeText_ColorRule(ByVal valueText As String) As String
+
+    Dim s As String
+
+    s = CStr(valueText)
+    s = Replace(s, vbCr, "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, vbTab, "")
+    s = Replace(s, ChrW(&H3000), " ")
+    s = Trim$(s)
+
+    NormalizeText_ColorRule = s
+
+End Function
+
+Public Function NormalizeGuideKey(ByVal s As String) As String
+
+    Dim normalized As String
+    Dim i As Long
+    Dim ch As String
+    Dim codePoint As Long
+    Dim resultText As String
+
+    normalized = CStr(s)
+    normalized = Replace(normalized, vbCr, "")
+    normalized = Replace(normalized, vbLf, "")
+    normalized = Replace(normalized, vbTab, "")
+    normalized = Replace(normalized, ChrW(&H200B), "") ' ゼロ幅スペース
+    normalized = Replace(normalized, ChrW(&H200C), "")
+    normalized = Replace(normalized, ChrW(&H200D), "")
+    normalized = Replace(normalized, ChrW(&HFEFF), "")
+    normalized = Replace(normalized, ChrW(&HA0), "") ' ノーブレークスペース
+    normalized = Replace(normalized, ChrW(&H3000), "")
+    normalized = Replace(normalized, " ", "")
+
+    normalized = Replace(normalized, "／", "/")
+    normalized = Replace(normalized, "＼", "/")
+    normalized = Replace(normalized, "\", "/")
+    normalized = Replace(normalized, "･", "・")
+    normalized = Replace(normalized, "·", "・")
+    normalized = Replace(normalized, "－", "-")
+    normalized = Replace(normalized, "―", "-")
+    normalized = Replace(normalized, "‐", "-")
+    normalized = Replace(normalized, "‑", "-")
+    normalized = Replace(normalized, "–", "-")
+    normalized = Replace(normalized, "—", "-")
+    normalized = Replace(normalized, "ー", "-")
+    normalized = Replace(normalized, "ｰ", "-")
+
+    On Error Resume Next
+    normalized = StrConv(normalized, vbNarrow)
+    normalized = StrConv(normalized, vbLowerCase)
+    On Error GoTo 0
+
+    normalized = Trim$(normalized)
+
+    For i = 1 To Len(normalized)
+        ch = Mid$(normalized, i, 1)
+        codePoint = AscW(ch)
+        If codePoint < 0 Then codePoint = codePoint + 65536
+        If codePoint >= 32 And codePoint <> 127 Then resultText = resultText & ch
+    Next i
+
+    NormalizeGuideKey = resultText
+
+End Function
+
+Private Function BuildGuideKey_ColorRule(ByVal valueText As Variant) As String
+    BuildGuideKey_ColorRule = NormalizeGuideKey(CStr(valueText))
+End Function
+
+Private Function BuildBlockContextKey_ColorRule( _
+    ByVal ws As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal colClass1 As Long, _
+    ByVal colDepartment As Long, _
+    ByVal colYear As Long) As String
+
+    Dim keyText As String
+
+    If colClass1 > 0 Then keyText = keyText & NormalizeGuideKey(CStr(ws.Cells(rowNo, colClass1).Value))
+    keyText = keyText & ChrW(&H1E)
+    If colDepartment > 0 Then keyText = keyText & NormalizeGuideKey(CStr(ws.Cells(rowNo, colDepartment).Value))
+    keyText = keyText & ChrW(&H1E)
+    If colYear > 0 Then keyText = keyText & NormalizeGuideKey(CStr(ws.Cells(rowNo, colYear).Value))
+
+    BuildBlockContextKey_ColorRule = keyText
+
+End Function
+
+Private Function BuildGroupKey_ColorRule(ByVal guide1Key As String, ByVal guide2Key As String) As String
+    BuildGroupKey_ColorRule = guide1Key & ChrW(&H1F) & guide2Key
+End Function
+
+Private Function ContainsMacroInserted_ColorRule(ByVal remarksText As String) As Boolean
+    ContainsMacroInserted_ColorRule = (InStr(1, NormalizeText_ColorRule(remarksText), "マクロ差込", vbBinaryCompare) > 0)
+End Function
+
+Private Function NormalizeColorName_ColorRule(ByVal colorName As String) As String
+
+    Select Case NormalizeText_ColorRule(colorName)
+        Case "白", "白色"
+            NormalizeColorName_ColorRule = "白色"
+        Case "赤", "赤色"
+            NormalizeColorName_ColorRule = "赤色"
+        Case "青", "青色"
+            NormalizeColorName_ColorRule = "青色"
+        Case "黄", "黄色"
+            NormalizeColorName_ColorRule = "黄色"
+        Case "緑", "緑色"
+            NormalizeColorName_ColorRule = "緑色"
+        Case Else
+            NormalizeColorName_ColorRule = NormalizeText_ColorRule(colorName)
+    End Select
+
+End Function
+
+Private Function IsValidColor_ColorRule(ByVal colorName As String) As Boolean
+
+    Select Case NormalizeColorName_ColorRule(colorName)
+        Case "白色", "赤色", "青色", "黄色", "緑色"
+            IsValidColor_ColorRule = True
+    End Select
+
+End Function
+
+Private Function SelectExistingGroupColor_ColorRule(ByVal colorCounts As Object, ByVal firstColor As String) As String
+
+    Dim key As Variant
+    Dim bestColor As String
+    Dim bestCount As Long
+
+    If colorCounts Is Nothing Then Exit Function
+    If colorCounts.Count = 0 Then Exit Function
+
+    bestColor = NormalizeColorName_ColorRule(firstColor)
+    If colorCounts.Exists(bestColor) Then bestCount = CLng(colorCounts(bestColor))
+
+    For Each key In colorCounts.Keys
+        If CLng(colorCounts(key)) > bestCount Then
+            bestColor = CStr(key)
+            bestCount = CLng(colorCounts(key))
+        End If
+    Next key
+
+    SelectExistingGroupColor_ColorRule = bestColor
+
+End Function
+
+Private Function SelectDifferentColor_ColorRule(ByVal currentColor As String, ByVal avoidColor As String) As String
+
+    Dim colors As Variant
+    Dim i As Long
+    Dim candidate As String
+
+    colors = Array("白色", "赤色", "青色", "黄色", "緑色")
+    currentColor = NormalizeColorName_ColorRule(currentColor)
+    avoidColor = NormalizeColorName_ColorRule(avoidColor)
+
+    If IsValidColor_ColorRule(currentColor) Then
+        If StrComp(currentColor, avoidColor, vbBinaryCompare) <> 0 Then
+            SelectDifferentColor_ColorRule = currentColor
+            Exit Function
+        End If
+    End If
+
+    For i = 0 To UBound(colors)
+        candidate = CStr(colors(i))
+        If StrComp(candidate, avoidColor, vbBinaryCompare) <> 0 Then
+            SelectDifferentColor_ColorRule = candidate
+            Exit Function
+        End If
+    Next i
+
+    SelectDifferentColor_ColorRule = CStr(colors(0))
+
+End Function
+
+Private Function SelectNextColor_ColorRule(ByVal previousColor As String, ByVal offset As Long) As String
+
+    Dim colors As Variant
+    Dim idx As Long
+    Dim i As Long
+    Dim candidate As String
+
+    colors = Array("白色", "赤色", "青色", "黄色", "緑色")
+    idx = offset Mod (UBound(colors) - LBound(colors) + 1)
+
+    For i = 0 To UBound(colors)
+        candidate = CStr(colors((idx + i) Mod (UBound(colors) + 1)))
+        If StrComp(candidate, previousColor, vbBinaryCompare) <> 0 Then
+            SelectNextColor_ColorRule = candidate
+            Exit Function
+        End If
+    Next i
+
+    SelectNextColor_ColorRule = CStr(colors(0))
+
+End Function
+
+Private Function CollectionContainsText_ColorRule(ByVal targetCollection As Collection, ByVal valueText As String) As Boolean
+
+    Dim item As Variant
+
+    For Each item In targetCollection
+        If StrComp(CStr(item), valueText, vbBinaryCompare) = 0 Then
+            CollectionContainsText_ColorRule = True
+            Exit Function
+        End If
+    Next item
+
+End Function
+
+Private Sub ApplyColorValue_ColorRule( _
+    ByVal targetCell As Range, _
+    ByVal newColor As String, _
+    ByVal colorHeaderName As String, _
+    ByRef changedCellCount As Long, _
+    ByVal changedRows As Object, _
+    ByVal rowNo As Long)
+
+    Dim oldColor As String
+    Dim oldColorForComment As String
+    Dim commentText As String
+
+    oldColor = NormalizeText_ColorRule(CStr(targetCell.Value))
+    newColor = NormalizeColorName_ColorRule(newColor)
+
+    If StrComp(oldColor, newColor, vbBinaryCompare) = 0 Then Exit Sub
+
+    targetCell.Value = newColor
+    targetCell.Font.Color = RGB(255, 0, 0)
+
+    If Len(oldColor) = 0 Then
+        oldColorForComment = "（空欄）"
+    Else
+        oldColorForComment = oldColor
+    End If
+
+    commentText = "マクロにより" & colorHeaderName & "を変更しました。" & vbCrLf & _
+                  "変更前：" & oldColorForComment & vbCrLf & _
+                  "変更後：" & newColor
+    AppendCellComment_ColorRule targetCell, commentText
+
+    changedCellCount = changedCellCount + 1
+    If Not changedRows.Exists(CStr(rowNo)) Then changedRows.Add CStr(rowNo), True
+
+End Sub
+
+Private Function CalculateMaxConsecutiveColor_ColorRule( _
+    ByVal ws As Worksheet, _
+    ByVal lastRow As Long, _
+    ByVal colNo As Long) As Long
+
+    Dim rowNo As Long
+    Dim currentColor As String
+    Dim previousColor As String
+    Dim currentRun As Long
+
+    If ws Is Nothing Then Exit Function
+    If lastRow < 2 Or colNo <= 0 Then Exit Function
+
+    For rowNo = 2 To lastRow
+        currentColor = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colNo).Value))
+        If Len(currentColor) = 0 Then
+            previousColor = vbNullString
+            currentRun = 0
+        ElseIf StrComp(currentColor, previousColor, vbBinaryCompare) = 0 Then
+            currentRun = currentRun + 1
+        Else
+            previousColor = currentColor
+            currentRun = 1
+        End If
+
+        If currentRun > CalculateMaxConsecutiveColor_ColorRule Then
+            CalculateMaxConsecutiveColor_ColorRule = currentRun
+        End If
+    Next rowNo
+
+End Function
+
+Private Function BuildColorRuleIssueMessage_ColorRule( _
+    ByVal ws As Worksheet, _
+    ByVal lastRow As Long, _
+    ByVal colGuide1 As Long, _
+    ByVal colColor1 As Long, _
+    ByVal colGuide2 As Long, _
+    ByVal colColor2 As Long) As String
+
+    Dim guideColors As Object
+    Dim groupColors As Object
+    Dim rowNo As Long
+    Dim guideKey As String
+    Dim guide2Key As String
+    Dim groupKey As String
+    Dim color1 As String
+    Dim color2 As String
+    Dim previousGuideKey As String
+    Dim previousColor1 As String
+    Dim issueCount As Long
+    Dim messageText As String
+
+    If ws Is Nothing Then Exit Function
+    If lastRow < 2 Then Exit Function
+
+    Set guideColors = CreateObject("Scripting.Dictionary")
+    Set groupColors = CreateObject("Scripting.Dictionary")
+
+    For rowNo = 2 To lastRow
+        guideKey = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide1).Value)
+        guide2Key = BuildGuideKey_ColorRule(ws.Cells(rowNo, colGuide2).Value)
+        groupKey = BuildGroupKey_ColorRule(guideKey, guide2Key)
+        color1 = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor1).Value))
+        color2 = NormalizeColorName_ColorRule(CStr(ws.Cells(rowNo, colColor2).Value))
+
+        If guideColors.Exists(guideKey) Then
+            If StrComp(CStr(guideColors(guideKey)), color1, vbBinaryCompare) <> 0 Then
+                AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, BuildColorRuleIssueDetail_ColorRule(ws, rowNo, colGuide1, colColor1, colGuide2, colColor2, "同じ正規化済み第1ガイドの色名が未統一です。")
+            End If
+        Else
+            guideColors.Add guideKey, color1
+        End If
+
+        If groupColors.Exists(groupKey) Then
+            If StrComp(CStr(groupColors(groupKey)), color2, vbBinaryCompare) <> 0 Then
+                AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, BuildColorRuleIssueDetail_ColorRule(ws, rowNo, colGuide1, colColor1, colGuide2, colColor2, "同じ正規化済み第1ガイド+第2ガイドの2色名が未統一です。")
+            End If
+        Else
+            groupColors.Add groupKey, color2
+        End If
+
+        If Len(previousGuideKey) > 0 Then
+            If StrComp(guideKey, previousGuideKey, vbBinaryCompare) <> 0 Then
+                If StrComp(color1, previousColor1, vbBinaryCompare) = 0 Then
+                    AppendColorRuleIssue_ColorRule messageText, issueCount, rowNo, BuildColorRuleIssueDetail_ColorRule(ws, rowNo, colGuide1, colColor1, colGuide2, colColor2, "第1ガイド切替箇所で色名が連続しています。")
+                End If
+            End If
+        End If
+
+        previousGuideKey = guideKey
+        previousColor1 = color1
+    Next rowNo
+
+    If issueCount > 0 Then
+        BuildColorRuleIssueMessage_ColorRule = "チェック結果: 要確認 " & CStr(issueCount) & "件" & vbCrLf & messageText
+    End If
+
+End Function
+
+Private Function BuildColorRuleIssueDetail_ColorRule( _
+    ByVal ws As Worksheet, _
+    ByVal rowNo As Long, _
+    ByVal colGuide1 As Long, _
+    ByVal colColor1 As Long, _
+    ByVal colGuide2 As Long, _
+    ByVal colColor2 As Long, _
+    ByVal issueText As String) As String
+
+    BuildColorRuleIssueDetail_ColorRule = issueText & _
+        " 第1ガイド=[" & CStr(ws.Cells(rowNo, colGuide1).Value) & "]" & _
+        " 第2ガイド=[" & CStr(ws.Cells(rowNo, colGuide2).Value) & "]" & _
+        " 色名=[" & CStr(ws.Cells(rowNo, colColor1).Value) & "]" & _
+        " 2色名=[" & CStr(ws.Cells(rowNo, colColor2).Value) & "]"
+
+End Function
+
+Private Sub AppendColorRuleIssue_ColorRule( _
+    ByRef messageText As String, _
+    ByRef issueCount As Long, _
+    ByVal rowNo As Long, _
+    ByVal issueText As String)
+
+    issueCount = issueCount + 1
+    Debug.Print "[色ルール確認] " & CStr(rowNo) & "行目: " & issueText
+    If issueCount <= 20 Then
+        If Len(messageText) > 0 Then messageText = messageText & vbCrLf
+        messageText = messageText & "・" & CStr(rowNo) & "行目: " & issueText
+    End If
+
+End Sub
+
+Private Sub AppendCellComment_ColorRule(ByVal targetCell As Range, ByVal appendText As String)
+
+    Dim existingText As String
+
+    On Error Resume Next
+    existingText = ""
+    If Not targetCell.Comment Is Nothing Then existingText = targetCell.Comment.Text
+    On Error GoTo 0
+
+    On Error Resume Next
+    If Len(existingText) > 0 Then
+        targetCell.Comment.Text Text:=existingText & vbCrLf & vbCrLf & appendText
+    Else
+        targetCell.AddComment appendText
+    End If
+    On Error GoTo 0
+
+End Sub

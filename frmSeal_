@@ -1,4 +1,4 @@
-﻿Option Explicit
+Option Explicit
 
 Private mSyncingMoveModeButtons As Boolean
 Private Const FRM_SEAL_WIDTH_LARGE As Double = 740
@@ -51,6 +51,25 @@ End Sub
 Private Sub CommandButton7_Click()
 
     新ファイル基準表_通し番号_手動再採番
+
+End Sub
+
+
+Private Sub btnRegisterFixedPrint_Click()
+
+    固定印刷設定を登録する
+
+End Sub
+
+Private Sub btnFixedPrint_Click()
+
+    固定設定で印刷する
+
+End Sub
+
+Private Sub cmdColorCheck_Click()
+
+    Call 色ルールチェック
 
 End Sub
 
@@ -349,6 +368,9 @@ Private Sub ApplySingleSlots_NewSpec(ByVal frm As Object)
         End If
     Next slot
 
+    ' 全転記処理がエラーなく完了した場合だけ、今回の印刷対象を単件にする。
+    固定印刷モードを単件に設定する
+
     If Len(missingList) > 0 Then
         MsgBox "個別フォルダシールへ反映しました（一部未該当は空欄）。" & vbCrLf & missingList, vbExclamation
     Else
@@ -538,9 +560,9 @@ Public Sub BuildIndexes_NewSpec(ByVal wsSrc As Worksheet, ByRef serialIndex As O
     lastRow = LastUsedRow(wsSrc)
 
     headerIndex("通し番号") = FindHeaderByCandidates(wsSrc, lastCol, Array("通し番号"))
-    headerIndex("タイトル") = FindHeaderByCandidates(wsSrc, lastCol, Array("タイトル"))
-    headerIndex("分類名2") = FindHeaderByCandidates(wsSrc, lastCol, Array("分類名２", "分類名2"))
-    headerIndex("分類名3") = FindHeaderByCandidates(wsSrc, lastCol, Array("分類名３", "分類名3"))
+    headerIndex("タイトル") = FindHeaderByCandidates(wsSrc, lastCol, Array("個別フォルダー", "個別フォルダ", "タイトル"))
+    headerIndex("分類名2") = FindHeaderByCandidates(wsSrc, lastCol, Array("第1ガイド", "第１ガイド", "分類名２", "分類名2"))
+    headerIndex("分類名3") = FindHeaderByCandidates(wsSrc, lastCol, Array("第2ガイド", "第２ガイド", "分類名３", "分類名3"))
     headerIndex("年度和暦") = FindHeaderByCandidates(wsSrc, lastCol, Array("年度（和暦）", "年度(和暦)"))
     headerIndex("保存期間") = FindHeaderByCandidates(wsSrc, lastCol, Array("保存期間"))
     headerIndex("キャビネット番号") = FindHeaderByCandidates(wsSrc, lastCol, Array("キャビネット番号"))
@@ -683,27 +705,12 @@ Public Function FindHeaderByCandidates(ByVal ws As Worksheet, ByVal lastCol As L
     For c = 1 To lastCol
         hv = NormalizeSealHeaderName(CStr(ws.Cells(1, c).Value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(hv, NormalizeSealHeaderName(CStr(candidates(i))), vbBinaryCompare) = 0 Then
+            If StrComp(NormalizeSealHeaderName(hv), NormalizeSealHeaderName(Trim$(CStr(candidates(i)))), vbTextCompare) = 0 Then
                 FindHeaderByCandidates = c
                 Exit Function
             End If
         Next i
     Next c
-
-End Function
-
-Public Function NormalizeSealHeaderName(ByVal s As String) As String
-
-    Dim t As String
-
-    t = Trim$(CStr(s))
-    t = Replace(t, "　", " ")
-    Do While InStr(t, "  ") > 0
-        t = Replace(t, "  ", " ")
-    Loop
-    t = StrConv(t, vbNarrow)
-
-    NormalizeSealHeaderName = t
 
 End Function
 
