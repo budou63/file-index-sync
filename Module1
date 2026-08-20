@@ -5084,9 +5084,10 @@ Private Function FindHeaderColumnByCandidatesAtRow( _
     If lastCol <= 0 Then Exit Function
 
     For c = 1 To lastCol
-        headerValue = NormalizeHeaderText(ws.Cells(headerRow, c).Value)
+        ' NormalizeHeaderToken は改行・タブ・全角/半角スペースを既存ルールで正規化する。
+        headerValue = NormalizeHeaderToken(CStr(ws.Cells(headerRow, c).Value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(headerValue, NormalizeHeaderText(candidates(i)), vbTextCompare) = 0 Then
+            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(NormalizeHeaderToken(CStr(candidates(i)))), vbTextCompare) = 0 Then
                 FindHeaderColumnByCandidatesAtRow = c
                 Exit Function
             End If
@@ -5102,7 +5103,7 @@ Private Sub BuildHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal h
     Dim canonical As String
 
     For c = 1 To lastCol
-        rawHeader = NormalizeHeaderText(ws.Cells(1, c).Value)
+        rawHeader = NormalizeHeaderToken(CStr(ws.Cells(1, c).value))
         If rawHeader <> "" Then
             canonical = CanonicalHeaderName(rawHeader)
             If Not headerMap.Exists(canonical) Then
@@ -5265,7 +5266,7 @@ Private Sub BuildSourceHeaderMap(ByVal wsSrc As Worksheet, ByVal srcLastCol As L
     srcHeaderMap.RemoveAll
 
     For srcCol = 1 To srcLastCol
-        headerText = NormalizeHeaderText(wsSrc.Cells(1, srcCol).Value)
+        headerText = NormalizeHeaderToken(CStr(wsSrc.Cells(1, srcCol).Value))
         If headerText <> "" Then
             canonical = CanonicalHeaderName(headerText)
             If Not srcHeaderMap.Exists(canonical) Then
@@ -6101,6 +6102,23 @@ Private Function IsFileIdentityBlank(ByVal ws As Worksheet, ByVal rowNo As Long,
 
 End Function
 
+' 列を新規追加する際は、内部比較用の正規名ではなく
+' 既存の新ファイル基準表で使用している表示名を見出しに設定する。
+Private Function PreferredDisplayHeaderName(ByVal headerName As String) As String
+
+    Select Case CanonicalHeaderName(headerName)
+        Case "分類名２"
+            PreferredDisplayHeaderName = "第1ガイド"
+        Case "分類名３"
+            PreferredDisplayHeaderName = "第2ガイド"
+        Case "タイトル"
+            PreferredDisplayHeaderName = "個別フォルダー"
+        Case Else
+            PreferredDisplayHeaderName = headerName
+    End Select
+
+End Function
+
 Private Function EnsureColumnByHeader(ByVal ws As Worksheet, ByVal headerMap As Object, ByVal headerName As String) As Long
 
     Dim canonical As String
@@ -6151,16 +6169,10 @@ Public Function NormalizeHeaderText(ByVal headerValue As Variant) As String
 
     If IsError(headerValue) Or IsNull(headerValue) Or IsEmpty(headerValue) Then Exit Function
 
-    normalized = CStr(headerValue)
-    normalized = Replace(normalized, vbCrLf, "")
-    normalized = Replace(normalized, vbCr, "")
-    normalized = Replace(normalized, vbLf, "")
-    normalized = Replace(normalized, vbTab, "")
+    normalized = NormalizeHeaderToken(CStr(headerValue))
     normalized = Replace(normalized, ChrW(&HA0), "")
     normalized = Replace(normalized, ChrW(&H200B), "")
     normalized = Replace(normalized, ChrW(&HFEFF), "")
-    normalized = Replace(normalized, " ", "")
-    normalized = Replace(normalized, "　", "")
     normalized = Replace(normalized, "（", "(")
     normalized = Replace(normalized, "）", ")")
     normalized = Replace(normalized, "＋", "+")
@@ -6171,22 +6183,11 @@ SafeExit:
 
 End Function
 
-Private Function PreferredDisplayHeaderName(ByVal headerName As String) As String
+Public Function GetHeaderColumn(ByVal ws As Worksheet, ByVal headerName As String) As Long
 
-    Select Case CanonicalHeaderName(headerName)
-        Case "分類名１"
-            PreferredDisplayHeaderName = "分類名１"
-        Case "分類名２"
-            PreferredDisplayHeaderName = "分類名２"
-        Case "分類名３"
-            PreferredDisplayHeaderName = "分類名３"
-        Case "タイトル"
-            PreferredDisplayHeaderName = "タイトル"
-        Case "ｎ＋1"
-            PreferredDisplayHeaderName = "ｎ＋1"
-        Case Else
-            PreferredDisplayHeaderName = Trim$(CStr(headerName))
-    End Select
+    If ws Is Nothing Then Exit Function
+
+    GetHeaderColumn = FindHeaderColumn(ws, GetLastUsedCol(ws), GetStep2HeaderCandidates(headerName))
 
 End Function
 
@@ -6201,9 +6202,9 @@ Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, 
     If lastCol <= 0 Then Exit Function
 
     For c = 1 To lastCol
-        headerValue = NormalizeHeaderText(ws.Cells(1, c).Value)
+        headerValue = NormalizeHeaderToken(CStr(ws.Cells(1, c).value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(headerValue, NormalizeHeaderText(candidates(i)), vbTextCompare) = 0 Then
+            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(NormalizeHeaderToken(CStr(candidates(i)))), vbTextCompare) = 0 Then
                 FindHeaderColumn = c
                 Exit Function
             End If
@@ -6372,9 +6373,9 @@ Private Function FindColumnIndexFromHeaderArray( _
 
     For c = 1 To UBound(headerValues, 2)
         If Not usedCols.Exists(CStr(c)) Then
-            headerValue = NormalizeHeaderText(headerValues(1, c))
+            headerValue = NormalizeHeaderToken(CStr(headerValues(1, c)))
             For i = LBound(candidates) To UBound(candidates)
-                If StrComp(headerValue, NormalizeHeaderText(candidates(i)), vbTextCompare) = 0 Then
+                If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(NormalizeHeaderToken(CStr(candidates(i)))), vbTextCompare) = 0 Then
                     FindColumnIndexFromHeaderArray = c
                     Exit Function
                 End If
