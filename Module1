@@ -6353,9 +6353,9 @@ Private Function FindColumnIndexFromHeaderArray( _
 
     For c = 1 To UBound(headerValues, 2)
         If Not usedCols.Exists(CStr(c)) Then
-            headerValue = NormalizeHeaderText(headerValues(1, c))
+            headerValue = NormalizeHeaderToken(CStr(headerValues(1, c)))
             For i = LBound(candidates) To UBound(candidates)
-                If StrComp(headerValue, CStr(candidates(i)), vbTextCompare) = 0 Then
+                If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(NormalizeHeaderToken(CStr(candidates(i)))), vbTextCompare) = 0 Then
                     FindColumnIndexFromHeaderArray = c
                     Exit Function
                 End If
