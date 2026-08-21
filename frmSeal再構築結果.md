@@ -1,3 +1,44 @@
+﻿# frmSeal 再構築結果
+
+対象: サンプルデータ\新ファイル基準表 - コピー.xlsm の UserForm rmSeal
+
+注記: この環境では Excel COM の起動に失敗したため、.xlsm 本体のVBAプロジェクトへ直接インポートはしていません。反映用のフォームコードはリポジトリ直下の rmSeal_ に整理済みです。
+
+## コントロール一覧表
+
+| Name | Type | Caption | 役割 |
+|---|---|---|---|
+| frmSeal | UserForm | 個別フォルダシール（12面） | 個別フォルダシール操作フォーム |
+| tbID1 ～ tbID12 | TextBox |  | 単件入力用の12枠通し番号 |
+| TextBox1 | TextBox |  | 複数入力の開始番号（優先） |
+| TextBox2 | TextBox |  | 複数入力の終了番号（優先） |
+| txtBulkStart | TextBox |  | 複数入力の開始番号（互換フォールバック） |
+| txtBulkEnd | TextBox |  | 複数入力の終了番号（互換フォールバック） |
+| txtSerial | TextBox |  | 補助互換入力、クリア対象 |
+| txtStart | TextBox |  | 補助互換入力、クリア対象・開始番号候補 |
+| btnApply | CommandButton |  | 単件/複数入力を判定して反映 |
+| btnClear | CommandButton |  | 入力欄とシール面をクリア |
+| btnApplyBulk | CommandButton |  | btnApply と同じ反映処理を実行する互換ボタン |
+| btnDuplicateCheck | CommandButton |  | 重複フォルダ候補のマーキングと並び替え |
+| tglDuplicateCheckMode | ToggleButton | 重複確認 / 確認完了 | 重複確認モードの開始/完了切替 |
+| tglMoveMode | ToggleButton | 移動開始 / 移動確定 | 行移動モード開始/確定 |
+| cmdMoveUp | CommandButton |  | 選択行を上へ移動 |
+| cmdMoveDown | CommandButton |  | 選択行を下へ移動 |
+| cmdMoveToRow | CommandButton |  | 指定行へ移動 |
+| cmdMoveByClick | CommandButton |  | クリック移動モード開始 |
+| cmdMoveCancel | CommandButton |  | 行移動モードをキャンセル |
+| cmdMoveUndo | CommandButton |  | 行移動を元に戻す |
+| CommandButton1 | CommandButton |  | CSV取込_シンプル版 |
+| CommandButton2 | CommandButton |  | 手順2_新ファイル基準表を作成する |
+| CommandButton3 | CommandButton |  | 手順4_差分インポートCSVを作成する |
+| CommandButton4 | CommandButton |  | 手順5_差分インポートCSVを外部出力する |
+| CommandButton5 | CommandButton |  | キャビネットガイド作成_実行 |
+| CommandButton6 | CommandButton |  | 旧基準表_継続文書移行 |
+| CommandButton7 | CommandButton |  | 新ファイル基準表_通し番号_手動再採番 |
+
+## frmSealコード全文
+
+`b
 Option Explicit
 
 Private mSyncingMoveModeButtons As Boolean
@@ -51,25 +92,6 @@ End Sub
 Private Sub CommandButton7_Click()
 
     新ファイル基準表_通し番号_手動再採番
-
-End Sub
-
-
-Private Sub btnRegisterFixedPrint_Click()
-
-    固定印刷設定を登録する
-
-End Sub
-
-Private Sub btnFixedPrint_Click()
-
-    固定設定で印刷する
-
-End Sub
-
-Private Sub cmdColorCheck_Click()
-
-    Call 色ルールチェック
 
 End Sub
 
@@ -368,9 +390,6 @@ Private Sub ApplySingleSlots_NewSpec(ByVal frm As Object)
         End If
     Next slot
 
-    ' 全転記処理がエラーなく完了した場合だけ、今回の印刷対象を単件にする。
-    固定印刷モードを単件に設定する
-
     If Len(missingList) > 0 Then
         MsgBox "個別フォルダシールへ反映しました（一部未該当は空欄）。" & vbCrLf & missingList, vbExclamation
     Else
@@ -560,9 +579,9 @@ Public Sub BuildIndexes_NewSpec(ByVal wsSrc As Worksheet, ByRef serialIndex As O
     lastRow = LastUsedRow(wsSrc)
 
     headerIndex("通し番号") = FindHeaderByCandidates(wsSrc, lastCol, Array("通し番号"))
-    headerIndex("タイトル") = FindHeaderByCandidates(wsSrc, lastCol, Array("個別フォルダー", "個別フォルダ", "タイトル"))
-    headerIndex("分類名2") = FindHeaderByCandidates(wsSrc, lastCol, Array("第1ガイド", "第１ガイド", "分類名２", "分類名2"))
-    headerIndex("分類名3") = FindHeaderByCandidates(wsSrc, lastCol, Array("第2ガイド", "第２ガイド", "分類名３", "分類名3"))
+    headerIndex("タイトル") = FindHeaderByCandidates(wsSrc, lastCol, Array("タイトル"))
+    headerIndex("分類名2") = FindHeaderByCandidates(wsSrc, lastCol, Array("分類名２", "分類名2"))
+    headerIndex("分類名3") = FindHeaderByCandidates(wsSrc, lastCol, Array("分類名３", "分類名3"))
     headerIndex("年度和暦") = FindHeaderByCandidates(wsSrc, lastCol, Array("年度（和暦）", "年度(和暦)"))
     headerIndex("保存期間") = FindHeaderByCandidates(wsSrc, lastCol, Array("保存期間"))
     headerIndex("キャビネット番号") = FindHeaderByCandidates(wsSrc, lastCol, Array("キャビネット番号"))
@@ -705,7 +724,7 @@ Public Function FindHeaderByCandidates(ByVal ws As Worksheet, ByVal lastCol As L
     For c = 1 To lastCol
         hv = NormalizeSealHeaderName(CStr(ws.Cells(1, c).Value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(NormalizeSealHeaderName(hv), NormalizeSealHeaderName(Trim$(CStr(candidates(i)))), vbTextCompare) = 0 Then
+            If StrComp(hv, NormalizeSealHeaderName(CStr(candidates(i))), vbBinaryCompare) = 0 Then
                 FindHeaderByCandidates = c
                 Exit Function
             End If
@@ -714,9 +733,18 @@ Public Function FindHeaderByCandidates(ByVal ws As Worksheet, ByVal lastCol As L
 
 End Function
 
-Private Function NormalizeSealHeaderName(ByVal headerValue As Variant) As String
+Public Function NormalizeSealHeaderName(ByVal s As String) As String
 
-    NormalizeSealHeaderName = NormalizeHeaderText(headerValue)
+    Dim t As String
+
+    t = Trim$(CStr(s))
+    t = Replace(t, "　", " ")
+    Do While InStr(t, "  ") > 0
+        t = Replace(t, "  ", " ")
+    Loop
+    t = StrConv(t, vbNarrow)
+
+    NormalizeSealHeaderName = t
 
 End Function
 
@@ -755,3 +783,49 @@ Private Function LastUsedCol(ByVal ws As Worksheet) As Long
     End If
 
 End Function
+
+`
+
+## 不足依存一覧（このフォーム単体では未定義の外部Sub/Function）
+
+以下はフォーム外の標準モジュール等に依存します。リポジトリ上の Module1 では該当定義を確認済みです。
+
+| 外部Sub/Function | 用途 |
+|---|---|
+| CSV取込_シンプル版 | CSV取り込み |
+| 手順2_新ファイル基準表を作成する | 新ファイル基準表作成 |
+| 手順4_差分インポートCSVを作成する | 差分インポートCSV作成 |
+| 手順5_差分インポートCSVを外部出力する | 差分インポートCSV外部出力 |
+| キャビネットガイド作成_実行 | キャビネットガイド作成 |
+| 旧基準表_継続文書移行 | 旧基準表からの継続文書移行 |
+| 新ファイル基準表_通し番号_手動再採番 | 通し番号の手動再採番 |
+| 重複フォルダ候補をマーキングして並び替え | 重複候補マーキング/並び替え |
+| 重複確認モードを開始する | 重複確認モード開始 |
+| 重複確認モードを完了する | 重複確認モード完了 |
+| 行移動モード開始_または確定 | 行移動モード開始/確定 |
+| 行移動_上へ | 行を上へ移動 |
+| 行移動_下へ | 行を下へ移動 |
+| 行移動_指定行へ | 指定行へ移動 |
+| 行移動_移動先クリック開始 | クリック移動開始 |
+| 行移動_キャンセル | 行移動キャンセル |
+| 行移動_元に戻す | 行移動のUndo |
+| IsRowMoveModeActive | 行移動モード状態判定 |
+| IsRowMoveUndoAvailable | 行移動Undo可否判定 |
+| GenerateMultiSealSheets_NewSpec | 複数シール作成 |
+| ClearAllSeals_NewSpec | シール面全クリア |
+| ClearOneSealSlot | 1枠クリア |
+| GroupBase | 12面レイアウト座標算出 |
+| ClearMergeTarget | 結合セル対応クリア |
+| PutMergeTopLeft | 結合セル左上への値設定 |
+
+## 動作確認チェックリスト
+
+| 項目 | 確認内容 |
+|---|---|
+| 単件入力 | 	bID1～tbID12 の任意枠に通し番号を入力し、tnApply で該当枠へ反映されること |
+| 複数入力 | TextBox1 と TextBox2 に開始/終了番号を入力し、GenerateMultiSealSheets_NewSpec startNo, endNo が実行されること |
+| 単件＋複数同時入力 | 両方に入力した場合、警告が出て処理されないこと |
+| 複数片側入力 | 開始/終了の片側のみ入力した場合、警告が出て処理されないこと |
+| 重複確認トグル | 	glDuplicateCheckMode が 重複確認 と 確認完了 を切り替え、開始/完了マクロを呼ぶこと |
+| 行移動モードON/OFF | 	glMoveMode が 移動開始 と 移動確定 を切り替え、背景色とUndo可否が同期されること |
+| クリア処理 | 	bID1～tbID12, TextBox1, TextBox2, 	xtSerial, 	xtStart が空になり、ClearAllSeals_NewSpec が呼ばれること |

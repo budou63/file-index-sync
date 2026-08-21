@@ -1450,9 +1450,44 @@ Public Sub 後処理_行移動後()
 
 End Sub
 
+Private Function ResolveMacroTargetWorkbook() As Workbook
+
+    Dim wb As Workbook
+
+    ' 通常は、マクロを格納しているブックを優先する。
+    If WorkbookHasWorksheet(ThisWorkbook, SHEET_MOKUROKU_CSV) _
+       And WorkbookHasWorksheet(ThisWorkbook, SHEET_NEW_FILE_STANDARD) Then
+        Set ResolveMacroTargetWorkbook = ThisWorkbook
+        Exit Function
+    End If
+
+    ' PERSONAL.XLSB 等にマクロを置いた場合でも、対象シートを持つブックを明示的に選ぶ。
+    For Each wb In Application.Workbooks
+        If WorkbookHasWorksheet(wb, SHEET_MOKUROKU_CSV) _
+           And WorkbookHasWorksheet(wb, SHEET_NEW_FILE_STANDARD) Then
+            Set ResolveMacroTargetWorkbook = wb
+            Exit Function
+        End If
+    Next wb
+
+End Function
+
+Private Function WorkbookHasWorksheet(ByVal wb As Workbook, ByVal sheetName As String) As Boolean
+
+    Dim ws As Worksheet
+
+    On Error Resume Next
+    Set ws = wb.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If Not ws Is Nothing Then WorkbookHasWorksheet = True
+
+End Function
+
 Public Sub CSV取込_シンプル版()
 
     Dim ws As Worksheet
+    Dim wbHost As Workbook
     Dim filePath As Variant
     Dim wbCSV As Workbook
     Dim wsCSV As Worksheet
@@ -1489,9 +1524,14 @@ Public Sub CSV取込_シンプル版()
     filePath = Application.GetOpenFilename("CSV Files (*.csv), *.csv")
     
     If filePath = False Then Exit Sub
+
+    Set wbHost = ResolveMacroTargetWorkbook()
+    If wbHost Is Nothing Then
+        Err.Raise vbObjectError + 2100, , "目録CSV と新ファイル基準表を含む対象ブックが見つかりません。"
+    End If
     
     ' 目録CSVシート
-    Set ws = ThisWorkbook.Worksheets("目録CSV")
+    Set ws = wbHost.Worksheets(SHEET_MOKUROKU_CSV)
     
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
@@ -3597,6 +3637,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     Dim wsSrc As Worksheet
     Dim wsDst As Worksheet
+    Dim wbHost As Workbook
     Dim srcLastRow As Long
     Dim srcLastCol As Long
     Dim dstLastCol As Long
@@ -3672,9 +3713,13 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     On Error GoTo ErrorHandler
 
-    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
-    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
-    Set newFileStandardColumnWidths = CaptureColumnWidthsByHeader(wsDst)
+    Set wbHost = ResolveMacroTargetWorkbook()
+    If wbHost Is Nothing Then
+        Err.Raise vbObjectError + 2000, , "目録CSV と新ファイル基準表を含む対象ブックが見つかりません。"
+    End If
+
+    Set wsSrc = wbHost.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = wbHost.Worksheets(SHEET_NEW_FILE_STANDARD)
     Set srcToDstMap = CreateObject("Scripting.Dictionary")
     Set srcHeaderMap = CreateObject("Scripting.Dictionary")
     Set existingDstHeaders = CreateObject("Scripting.Dictionary")
@@ -5086,9 +5131,10 @@ Private Function FindHeaderColumnByCandidatesAtRow( _
     If lastCol <= 0 Then Exit Function
 
     For c = 1 To lastCol
-        headerValue = Trim$(CStr(ws.Cells(headerRow, c).Value))
+        ' NormalizeHeaderToken は改行・タブ・全角/半角スペースを既存ルールで正規化する。
+        headerValue = NormalizeHeaderToken(CStr(ws.Cells(headerRow, c).Value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(CStr(candidates(i))), vbTextCompare) = 0 Then
+            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(NormalizeHeaderToken(CStr(candidates(i)))), vbTextCompare) = 0 Then
                 FindHeaderColumnByCandidatesAtRow = c
                 Exit Function
             End If
@@ -5104,7 +5150,7 @@ Private Sub BuildHeaderMap(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal h
     Dim canonical As String
 
     For c = 1 To lastCol
-        rawHeader = Trim(CStr(ws.Cells(1, c).value))
+        rawHeader = NormalizeHeaderToken(CStr(ws.Cells(1, c).value))
         If rawHeader <> "" Then
             canonical = CanonicalHeaderName(rawHeader)
             If Not headerMap.Exists(canonical) Then
@@ -5267,7 +5313,7 @@ Private Sub BuildSourceHeaderMap(ByVal wsSrc As Worksheet, ByVal srcLastCol As L
     srcHeaderMap.RemoveAll
 
     For srcCol = 1 To srcLastCol
-        headerText = Trim$(CStr(wsSrc.Cells(1, srcCol).Value))
+        headerText = NormalizeHeaderToken(CStr(wsSrc.Cells(1, srcCol).Value))
         If headerText <> "" Then
             canonical = CanonicalHeaderName(headerText)
             If Not srcHeaderMap.Exists(canonical) Then
@@ -6103,6 +6149,23 @@ Private Function IsFileIdentityBlank(ByVal ws As Worksheet, ByVal rowNo As Long,
 
 End Function
 
+' 列を新規追加する際は、内部比較用の正規名ではなく
+' 既存の新ファイル基準表で使用している表示名を見出しに設定する。
+Private Function PreferredDisplayHeaderName(ByVal headerName As String) As String
+
+    Select Case CanonicalHeaderName(headerName)
+        Case "分類名２"
+            PreferredDisplayHeaderName = "第1ガイド"
+        Case "分類名３"
+            PreferredDisplayHeaderName = "第2ガイド"
+        Case "タイトル"
+            PreferredDisplayHeaderName = "個別フォルダー"
+        Case Else
+            PreferredDisplayHeaderName = headerName
+    End Select
+
+End Function
+
 Private Function EnsureColumnByHeader(ByVal ws As Worksheet, ByVal headerMap As Object, ByVal headerName As String) As Long
 
     Dim canonical As String
@@ -6126,7 +6189,7 @@ Private Function CanonicalHeaderName(ByVal headerName As String) As String
 
     Dim normalized As String
 
-    normalized = NormalizeHeaderToken(CStr(headerName))
+    normalized = NormalizeHeaderText(headerName)
 
     Select Case normalized
         Case "分類名1", "分類名１"
@@ -6145,26 +6208,33 @@ Private Function CanonicalHeaderName(ByVal headerName As String) As String
 
 End Function
 
+Public Function NormalizeHeaderText(ByVal headerValue As Variant) As String
+
+    Dim normalized As String
+
+    On Error GoTo SafeExit
+
+    If IsError(headerValue) Or IsNull(headerValue) Or IsEmpty(headerValue) Then Exit Function
+
+    normalized = NormalizeHeaderToken(CStr(headerValue))
+    normalized = Replace(normalized, ChrW(&HA0), "")
+    normalized = Replace(normalized, ChrW(&H200B), "")
+    normalized = Replace(normalized, ChrW(&HFEFF), "")
+    normalized = Replace(normalized, "（", "(")
+    normalized = Replace(normalized, "）", ")")
+    normalized = Replace(normalized, "＋", "+")
+    normalized = Replace(normalized, "－", "-")
+    NormalizeHeaderText = Trim$(ConvertZenkakuAlnumToHankaku(normalized))
+
+SafeExit:
+
+End Function
+
 Public Function GetHeaderColumn(ByVal ws As Worksheet, ByVal headerName As String) As Long
 
     If ws Is Nothing Then Exit Function
 
     GetHeaderColumn = FindHeaderColumn(ws, GetLastUsedCol(ws), GetStep2HeaderCandidates(headerName))
-
-End Function
-
-Private Function PreferredDisplayHeaderName(ByVal headerName As String) As String
-
-    Select Case CanonicalHeaderName(headerName)
-        Case "分類名２"
-            PreferredDisplayHeaderName = "第1ガイド"
-        Case "分類名３"
-            PreferredDisplayHeaderName = "第2ガイド"
-        Case "タイトル"
-            PreferredDisplayHeaderName = "個別フォルダー"
-        Case Else
-            PreferredDisplayHeaderName = headerName
-    End Select
 
 End Function
 
@@ -6179,9 +6249,9 @@ Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal lastCol As Long, 
     If lastCol <= 0 Then Exit Function
 
     For c = 1 To lastCol
-        headerValue = Trim(CStr(ws.Cells(1, c).value))
+        headerValue = NormalizeHeaderToken(CStr(ws.Cells(1, c).value))
         For i = LBound(candidates) To UBound(candidates)
-            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(CStr(candidates(i))), vbTextCompare) = 0 Then
+            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(NormalizeHeaderToken(CStr(candidates(i)))), vbTextCompare) = 0 Then
                 FindHeaderColumn = c
                 Exit Function
             End If
@@ -6350,9 +6420,9 @@ Private Function FindColumnIndexFromHeaderArray( _
 
     For c = 1 To UBound(headerValues, 2)
         If Not usedCols.Exists(CStr(c)) Then
-            headerValue = Trim$(CStr(headerValues(1, c)))
+            headerValue = NormalizeHeaderToken(CStr(headerValues(1, c)))
             For i = LBound(candidates) To UBound(candidates)
-                If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(CStr(candidates(i))), vbTextCompare) = 0 Then
+                If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(NormalizeHeaderToken(CStr(candidates(i)))), vbTextCompare) = 0 Then
                     FindColumnIndexFromHeaderArray = c
                     Exit Function
                 End If
