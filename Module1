@@ -2863,8 +2863,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Application.EnableEvents = False
 
     ' Step4開始時点の既存コードをスナップショットし、この実行中の採番結果を判定へ混入させない。
-    Set firstGuideCodeMap = BuildCodeMasterNameCodeMap("分類名２", firstGuideUsedCodes)
-    Set secondGuideCodeMap = BuildCodeMasterNameCodeMap("分類名３", secondGuideUsedCodes)
+    Set firstGuideCodeMap = BuildCodeMasterNameCodeMap("分類名２", firstGuideUsedCodes, False)
+    Set secondGuideCodeMap = BuildCodeMasterNameCodeMap("分類名３", secondGuideUsedCodes, False)
 
     srcLastRow = GetLastUsedRow(wsSrc)
     srcUsedLastCol = GetLastUsedCol(wsSrc)
@@ -3053,6 +3053,8 @@ ContinueNextEditRow:
     End If
 
     If targetRows.Count > 0 Then
+        ValidateStep4GuideCodeStates wsEdit, newRegistrationRowList
+
         For Each targetRow In targetRows
             If newRegistrationRows.Exists(CStr(CLng(targetRow))) Then
                 guideSeatCheckReason = GetStep4GuideSeatCheckReason( _
@@ -3236,6 +3238,136 @@ End Function
 Private Function BuildNormalizedGuidePairKey(ByVal guide1Name As String, ByVal guide2Name As String) As String
 
     BuildNormalizedGuidePairKey = NormalizeForDiffCompare(guide1Name) & "|" & NormalizeForDiffCompare(guide2Name)
+
+End Function
+
+Private Sub ValidateStep4GuideCodeStates(ByVal wsEdit As Worksheet, ByVal rowsToValidate As Collection)
+
+    Dim lastCol As Long
+    Dim guideCols As Variant
+    Dim guideKinds As Variant
+    Dim guideItems As Variant
+    Dim rowValue As Variant
+    Dim i As Long
+    Dim guideName As String
+    Dim issue As String
+    Dim issues As String
+
+    If wsEdit Is Nothing Or rowsToValidate Is Nothing Then Exit Sub
+    lastCol = GetLastUsedCol(wsEdit)
+    guideCols = Array( _
+        FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("分類名２")), _
+        FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("分類名３")))
+    guideKinds = Array("第1ガイド", "第2ガイド")
+    guideItems = Array("分類名２", "分類名３")
+
+    For Each rowValue In rowsToValidate
+        For i = LBound(guideCols) To UBound(guideCols)
+            If CLng(guideCols(i)) > 0 Then
+                guideName = Trim$(CStr(wsEdit.Cells(CLng(rowValue), CLng(guideCols(i))).Value))
+                If Len(guideName) > 0 Then
+                    issue = GetStep4GuideCodeStateIssue(CStr(guideKinds(i)), CStr(guideItems(i)), guideName)
+                    If Len(issue) > 0 Then issues = issues & vbCrLf & "行=" & CStr(rowValue) & " " & issue
+                End If
+            End If
+        Next i
+    Next rowValue
+
+    If Len(issues) > 0 Then
+        Err.Raise vbObjectError + 2602, , "コード管理CSVの座コード状態に競合または要確認があります。Step4を中断しました。" & vbCrLf & issues
+    End If
+
+End Sub
+
+Private Function GetStep4GuideCodeStateIssue( _
+    ByVal guideRole As String, _
+    ByVal itemName As String, _
+    ByVal displayName As String) As String
+
+    Dim wsMaster As Worksheet
+    Dim lastRow As Long
+    Dim r As Long
+    Dim itemValue As String
+    Dim nameKey As String
+    Dim rowNameKey As String
+    Dim codeValue As String
+    Dim stateValue As String
+    Dim systemCodes As Object
+    Dim provisionalCodes As Object
+    Dim systemCodeList As String
+    Dim firstSystemCode As String
+    Dim stateIssue As String
+    Dim key As Variant
+
+    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    lastRow = GetLastUsedRow(wsMaster)
+    EnsureCodeMasterRangeHasNoErrors wsMaster, lastRow
+    Set systemCodes = CreateObject("Scripting.Dictionary")
+    Set provisionalCodes = CreateObject("Scripting.Dictionary")
+    nameKey = NormalizeClassificationGuideKey(displayName)
+
+    For r = 2 To lastRow
+        itemValue = NormalizeHeaderToken(CStr(wsMaster.Cells(r, 1).Value))
+        rowNameKey = NormalizeClassificationGuideKey(CStr(wsMaster.Cells(r, 3).Value))
+        If StrComp(itemValue, NormalizeHeaderToken(itemName), vbTextCompare) = 0 _
+           And StrComp(rowNameKey, nameKey, vbTextCompare) = 0 Then
+            codeValue = Trim$(CStr(wsMaster.Cells(r, 2).Value))
+            stateValue = Trim$(CStr(wsMaster.Cells(r, 4).Value))
+            If Left$(stateValue, 2) = "競合" Then
+                stateIssue = "状態=" & stateValue
+                If Len(codeValue) > 0 Then provisionalCodes(codeValue) = True
+            ElseIf Left$(stateValue, 3) = "要確認" Then
+                stateIssue = "状態=" & stateValue
+                If Len(codeValue) > 0 Then provisionalCodes(codeValue) = True
+            ElseIf stateValue = "システム" Then
+                If Not systemCodes.Exists(codeValue) Then systemCodes.Add codeValue, True
+            ElseIf stateValue = "仮採番" Then
+                If Not provisionalCodes.Exists(codeValue) Then provisionalCodes.Add codeValue, True
+            Else
+                GetStep4GuideCodeStateIssue = guideRole & "「" & displayName & "」コード=" & codeValue & " 状態が未設定です。手順3を再実行してください。"
+                Exit Function
+            End If
+        End If
+    Next r
+
+    If Len(stateIssue) > 0 Then
+        For Each key In systemCodes.Keys
+            If Len(systemCodeList) > 0 Then systemCodeList = systemCodeList & ","
+            systemCodeList = systemCodeList & CStr(key)
+        Next key
+        If systemCodes.Count > 0 Then
+            GetStep4GuideCodeStateIssue = guideRole & "「" & displayName & "」仮採番コード=" & Join(provisionalCodes.Keys, ",") & " システムコード=" & systemCodeList & " " & stateIssue
+        Else
+            GetStep4GuideCodeStateIssue = guideRole & "「" & displayName & "」仮採番コード=" & Join(provisionalCodes.Keys, ",") & " " & stateIssue
+        End If
+        Exit Function
+    End If
+
+    If systemCodes.Count > 1 Then
+        For Each key In systemCodes.Keys
+            If Len(systemCodeList) > 0 Then systemCodeList = systemCodeList & ","
+            systemCodeList = systemCodeList & CStr(key)
+        Next key
+        GetStep4GuideCodeStateIssue = guideRole & "「" & displayName & "」システムコード=" & systemCodeList & "（同名複数のためStep4を自動処理できません）"
+        Exit Function
+    End If
+
+    If systemCodes.Count = 1 Then
+        For Each key In systemCodes.Keys
+            firstSystemCode = CStr(key)
+            Exit For
+        Next key
+        For Each key In provisionalCodes.Keys
+            If CStr(key) <> firstSystemCode Then
+                GetStep4GuideCodeStateIssue = guideRole & "「" & displayName & "」仮採番コード=" & CStr(key) & " システムコード=" & firstSystemCode
+                Exit Function
+            End If
+        Next key
+    End If
+
+    If systemCodes.Count = 0 And provisionalCodes.Count > 1 Then
+        GetStep4GuideCodeStateIssue = guideRole & "「" & displayName & "」に仮採番コードが複数あります。"
+    End If
 
 End Function
 
@@ -6893,6 +7025,7 @@ Public Sub 手順3_コード管理CSVを作成する()
     Dim nameValue As String
     Dim uniqueKey As String
     Dim dict As Object
+    Dim pendingGuideRows As Collection
 
     On Error GoTo ErrorHandler
 
@@ -6905,6 +7038,9 @@ Public Sub 手順3_コード管理CSVを作成する()
 
     srcLastCol = GetLastHeaderCol(wsSrc)
     srcLastRow = GetLastUsedRow(wsSrc)
+    EnsureCodeMasterRangeHasNoErrors wsDst, GetLastUsedRow(wsDst)
+    ' 既存の仮採番・競合・要確認行を消去前にメモリへ退避する。
+    Set pendingGuideRows = CapturePendingGuideCodeRows(wsDst)
 
     pairDefs = Array( _
         Array("原課", Array("原課ID"), Array("原課")), _
@@ -6917,7 +7053,7 @@ Public Sub 手順3_コード管理CSVを作成する()
     )
 
     wsDst.Cells.Clear
-    wsDst.Range("A1:C1").value = Array("項目名", "コード", "表示名")
+    wsDst.Range("A1:D1").Value = Array("項目名", "コード", "表示名", "状態")
     outRow = 2
 
     ' ① 実データからコード⇔表示名を抽出（見出し未存在はスキップ）
@@ -6936,13 +7072,18 @@ Public Sub 手順3_コード管理CSVを作成する()
                     dict.Add uniqueKey, True
                     wsDst.Cells(outRow, 1).value = pairDefs(i)(0)
                     wsDst.Cells(outRow, 2).value = codeValue
-                    wsDst.Cells(outRow, 3).value = nameValue
+                    wsDst.Cells(outRow, 3).Value = nameValue
+                    If pairDefs(i)(0) = "分類名２" Or pairDefs(i)(0) = "分類名３" Then
+                        wsDst.Cells(outRow, 4).Value = "システム"
+                    End If
                     outRow = outRow + 1
                 End If
             End If
         Next r
 ContinuePairLoop:
     Next i
+
+    RestorePendingGuideCodeRows wsDst, pendingGuideRows, dict, outRow
 
     ' ② 固定選択肢マスタを追加（重複キーで除外）
     AddCodeMasterRecord wsDst, dict, outRow, "毎年度利用区分", "1", "毎年作成"
@@ -6970,13 +7111,14 @@ ContinuePairLoop:
 
     AddCodeMasterRecord wsDst, dict, outRow, "機密ファイル区分", "-1", "機密ファイル"
 
-    With wsDst.Range("A1:C1")
+    With wsDst.Range("A1:D1")
         .Font.Bold = True
         .Interior.Color = RGB(242, 242, 242)
     End With
 
-    wsDst.Range("A1:C1").AutoFilter
-    wsDst.Columns("A:C").AutoFit
+    ApplyCodeMasterStatusFormatting wsDst, outRow - 1
+    wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(outRow - 1, 4)).AutoFilter
+    wsDst.Columns("A:D").AutoFit
 
     MsgBox "コード管理CSV の作成が完了しました。" & vbCrLf & _
            "出力件数: " & outRow - 2 & " 件", vbInformation
@@ -6992,13 +7134,146 @@ ErrorHandler:
 
 End Sub
 
+Private Sub EnsureCodeMasterRangeHasNoErrors(ByVal wsMaster As Worksheet, ByVal lastRow As Long)
+
+    Dim r As Long
+    Dim c As Long
+
+    If wsMaster Is Nothing Then Exit Sub
+    If lastRow < 2 Then Exit Sub
+    For r = 2 To lastRow
+        For c = 1 To 4
+            If IsError(wsMaster.Cells(r, c).Value) Then
+                Err.Raise vbObjectError + 2603, , _
+                    "コード管理CSVにエラー値があります（行=" & CStr(r) & "、列=" & CStr(c) & "）。" & _
+                    "データを修正してから再実行してください。"
+            End If
+        Next c
+    Next r
+
+End Sub
+
+Private Function CapturePendingGuideCodeRows(ByVal wsMaster As Worksheet) As Collection
+
+    Dim pending As New Collection
+    Dim lastRow As Long
+    Dim r As Long
+    Dim itemName As String
+    Dim stateValue As String
+
+    If wsMaster Is Nothing Then
+        Set CapturePendingGuideCodeRows = pending
+        Exit Function
+    End If
+
+    lastRow = GetLastUsedRow(wsMaster)
+    EnsureCodeMasterRangeHasNoErrors wsMaster, lastRow
+    For r = 2 To lastRow
+        itemName = Trim$(CStr(wsMaster.Cells(r, 1).Value))
+        stateValue = Trim$(CStr(wsMaster.Cells(r, 4).Value))
+        If itemName = "分類名２" Or itemName = "分類名３" Then
+            If Len(stateValue) = 0 Then stateValue = "仮採番" ' 旧版でD列未設定のコードも最新CSV照合までは保持する。
+            If stateValue = "仮採番" Or Left$(stateValue, 2) = "競合" Or Left$(stateValue, 3) = "要確認" Then
+                If Len(Trim$(CStr(wsMaster.Cells(r, 2).Value))) > 0 And Len(Trim$(CStr(wsMaster.Cells(r, 3).Value))) > 0 Then
+                    pending.Add Array(itemName, Trim$(CStr(wsMaster.Cells(r, 2).Value)), _
+                        Trim$(CStr(wsMaster.Cells(r, 3).Value)), stateValue)
+                End If
+            End If
+        End If
+    Next r
+
+    Set CapturePendingGuideCodeRows = pending
+
+End Function
+
+Private Sub RestorePendingGuideCodeRows( _
+    ByVal wsMaster As Worksheet, _
+    ByVal pendingRows As Collection, _
+    ByVal dict As Object, _
+    ByRef outRow As Long)
+
+    Dim pending As Variant
+    Dim lastSystemRow As Long
+    Dim r As Long
+    Dim itemName As String
+    Dim codeValue As String
+    Dim displayName As String
+    Dim displayKey As String
+    Dim systemCode As String
+    Dim stateValue As String
+    Dim exactFound As Boolean
+    Dim candidateCodes As Object
+    Dim candidateCodeKey As Variant
+
+    If wsMaster Is Nothing Then Exit Sub
+    If pendingRows Is Nothing Then Exit Sub
+    lastSystemRow = outRow - 1
+
+    For Each pending In pendingRows
+        itemName = CStr(pending(0))
+        codeValue = CStr(pending(1))
+        displayName = CStr(pending(2))
+        displayKey = NormalizeClassificationGuideKey(displayName)
+        exactFound = False
+        Set candidateCodes = CreateObject("Scripting.Dictionary")
+
+        For r = 2 To lastSystemRow
+            If CStr(wsMaster.Cells(r, 1).Value) = itemName _
+               And CStr(wsMaster.Cells(r, 4).Value) = "システム" _
+               And NormalizeClassificationGuideKey(CStr(wsMaster.Cells(r, 3).Value)) = displayKey Then
+                systemCode = Trim$(CStr(wsMaster.Cells(r, 2).Value))
+                If Not candidateCodes.Exists(systemCode) Then candidateCodes.Add systemCode, True
+                If systemCode = codeValue Then exactFound = True
+            End If
+        Next r
+
+        If exactFound Then GoTo ContinuePendingRow
+        Select Case candidateCodes.Count
+            Case 0
+                stateValue = "仮採番"
+            Case 1
+                For Each candidateCodeKey In candidateCodes.Keys
+                    systemCode = CStr(candidateCodeKey)
+                    Exit For
+                Next candidateCodeKey
+                stateValue = "競合（システム=" & systemCode & "）"
+            Case Else
+                stateValue = "要確認（同名複数）"
+        End Select
+        AddCodeMasterRecord wsMaster, dict, outRow, itemName, codeValue, displayName, stateValue
+ContinuePendingRow:
+    Next pending
+
+End Sub
+
+Private Sub ApplyCodeMasterStatusFormatting(ByVal wsMaster As Worksheet, ByVal lastRow As Long)
+
+    Dim r As Long
+    Dim stateValue As String
+    Dim statusCell As Range
+
+    If wsMaster Is Nothing Then Exit Sub
+    For r = 2 To lastRow
+        Set statusCell = wsMaster.Cells(r, 4)
+        stateValue = Trim$(CStr(statusCell.Value))
+        statusCell.Interior.Pattern = xlNone
+        If stateValue = "仮採番" Then
+            statusCell.Interior.Color = RGB(255, 242, 204)
+        ElseIf Left$(stateValue, 2) = "競合" Or Left$(stateValue, 3) = "要確認" Then
+            statusCell.Interior.Color = RGB(244, 204, 204)
+        End If
+    Next r
+
+End Sub
+
 Private Sub AddCodeMasterRecord( _
     ByVal wsDst As Worksheet, _
     ByVal dict As Object, _
     ByRef outRow As Long, _
     ByVal itemName As String, _
     ByVal codeValue As String, _
-    ByVal displayName As String)
+    ByVal displayName As String, _
+    Optional ByVal statusValue As String = "")
 
     Dim uniqueKey As String
 
@@ -7006,9 +7281,10 @@ Private Sub AddCodeMasterRecord( _
     If dict.Exists(uniqueKey) Then Exit Sub
 
     dict.Add uniqueKey, True
-    wsDst.Cells(outRow, 1).value = itemName
-    wsDst.Cells(outRow, 2).value = codeValue
-    wsDst.Cells(outRow, 3).value = displayName
+    wsDst.Cells(outRow, 1).Value = itemName
+    wsDst.Cells(outRow, 2).Value = codeValue
+    wsDst.Cells(outRow, 3).Value = displayName
+    wsDst.Cells(outRow, 4).Value = statusValue
     outRow = outRow + 1
 
 End Sub
@@ -7387,8 +7663,8 @@ Public Sub 新ファイル基準表_登録予定分類コード採番( _
 
     If guide2Col <= 0 Or code2Col <= 0 Or syncCol <= 0 Then GoTo SafeExit
 
-    Set code2ByName = BuildCodeMasterNameCodeMap("分類名２", usedCode2)
-    Set code3ByName = BuildCodeMasterNameCodeMap("分類名３", usedCode3)
+    Set code2ByName = BuildCodeMasterNameCodeMap("分類名２", usedCode2, True)
+    Set code3ByName = BuildCodeMasterNameCodeMap("分類名３", usedCode3, True)
     Set rowsToProcess = BuildRowsToProcess(startRow, endRow, targetRows)
     If rowsToProcess.Count = 0 Then GoTo SafeExit
 
@@ -7445,7 +7721,7 @@ ContinueCollectGuide2:
                     " 下側コード=" & CodeTextForLog(lowerCode)
             Else
                 codeValue = CStr(assignedCode)
-                AppendCodeMasterRecord "分類名２", codeValue, guideName
+                AppendCodeMasterRecord "分類名２", codeValue, guideName, "仮採番"
                 code2ByName.Add guideKey, codeValue
                 usedCode2(codeValue) = True
                 For Each guideRow In guideRows
@@ -7473,7 +7749,7 @@ ContinueCollectGuide2:
                 Else
                     assignedCode = AllocateNextClassificationCode(usedCode3)
                     codeValue = CStr(assignedCode)
-                    AppendCodeMasterRecord "分類名３", codeValue, guideName
+                    AppendCodeMasterRecord "分類名３", codeValue, guideName, "仮採番"
                     code3ByName.Add guideKey, codeValue
                     usedCode3(codeValue) = True
                     wsEdit.Cells(r, code3Col).Value = codeValue
@@ -7502,7 +7778,10 @@ ErrorHandler:
 
 End Sub
 
-Private Function BuildCodeMasterNameCodeMap(ByVal itemName As String, ByRef usedCodes As Object) As Object
+Private Function BuildCodeMasterNameCodeMap( _
+    ByVal itemName As String, _
+    ByRef usedCodes As Object, _
+    Optional ByVal includeProvisional As Boolean = True) As Object
 
     Dim nameCodeMap As Object
     Dim wsMaster As Worksheet
@@ -7513,30 +7792,55 @@ Private Function BuildCodeMasterNameCodeMap(ByVal itemName As String, ByRef used
     Dim codeValue As String
     Dim displayName As String
     Dim displayKey As String
+    Dim stateValue As String
+    Dim existingValue As String
+    Dim invalidDisplayKeys As Object
+    Dim invalidKey As Variant
 
     Set nameCodeMap = CreateObject("Scripting.Dictionary")
+    nameCodeMap.CompareMode = vbTextCompare
     Set usedCodes = CreateObject("Scripting.Dictionary")
+    Set invalidDisplayKeys = CreateObject("Scripting.Dictionary")
+    invalidDisplayKeys.CompareMode = vbTextCompare
 
     Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
     lastRow = GetLastUsedRow(wsMaster)
+    EnsureCodeMasterRangeHasNoErrors wsMaster, lastRow
     If lastRow < 2 Then
         Set BuildCodeMasterNameCodeMap = nameCodeMap
         Exit Function
     End If
 
-    masterValues = wsMaster.Range(wsMaster.Cells(2, 1), wsMaster.Cells(lastRow, 3)).Value2
+    masterValues = wsMaster.Range(wsMaster.Cells(2, 1), wsMaster.Cells(lastRow, 4)).Value2
     For r = 1 To UBound(masterValues, 1)
         itemValue = NormalizeHeaderToken(CStr(masterValues(r, 1)))
         If StrComp(itemValue, NormalizeHeaderToken(itemName), vbTextCompare) = 0 Then
             codeValue = Trim$(CStr(masterValues(r, 2)))
             displayName = Trim$(CStr(masterValues(r, 3)))
+            stateValue = Trim$(CStr(masterValues(r, 4)))
             displayKey = NormalizeClassificationGuideKey(displayName)
-            If Len(displayKey) > 0 And Not nameCodeMap.Exists(displayKey) Then
-                nameCodeMap.Add displayKey, codeValue
-            End If
             If IsNumeric(codeValue) Then usedCodes(CStr(CLng(codeValue))) = True
+
+            If Len(displayKey) > 0 And Len(codeValue) > 0 Then
+                If Left$(stateValue, 2) = "競合" Or Left$(stateValue, 3) = "要確認" Then
+                    invalidDisplayKeys(displayKey) = True
+                ElseIf stateValue = "システム" Or (includeProvisional And stateValue = "仮採番") Then
+                    If Not nameCodeMap.Exists(displayKey) Then
+                        nameCodeMap.Add displayKey, codeValue
+                    Else
+                        existingValue = CStr(nameCodeMap(displayKey))
+                        If stateValue = "システム" And existingValue <> codeValue Then
+                            nameCodeMap(displayKey) = codeValue
+                        End If
+                    End If
+                End If
+            End If
         End If
     Next r
+
+    For Each invalidKey In invalidDisplayKeys.Keys
+        If nameCodeMap.Exists(CStr(invalidKey)) Then nameCodeMap.Remove CStr(invalidKey)
+    Next invalidKey
 
     Set BuildCodeMasterNameCodeMap = nameCodeMap
 
@@ -7626,7 +7930,11 @@ Private Function AllocateNextClassificationCode(ByVal usedCodes As Object) As Lo
 
 End Function
 
-Private Sub AppendCodeMasterRecord(ByVal itemName As String, ByVal codeValue As String, ByVal displayName As String)
+Private Sub AppendCodeMasterRecord( _
+    ByVal itemName As String, _
+    ByVal codeValue As String, _
+    ByVal displayName As String, _
+    Optional ByVal statusValue As String = "")
 
     Dim wsMaster As Worksheet
     Dim nextRow As Long
@@ -7638,6 +7946,8 @@ Private Sub AppendCodeMasterRecord(ByVal itemName As String, ByVal codeValue As 
     wsMaster.Cells(nextRow, 1).Value = itemName
     wsMaster.Cells(nextRow, 2).Value = codeValue
     wsMaster.Cells(nextRow, 3).Value = displayName
+    wsMaster.Cells(nextRow, 4).Value = statusValue
+    If statusValue = "仮採番" Then wsMaster.Cells(nextRow, 4).Interior.Color = RGB(255, 242, 204)
 
 End Sub
 
@@ -8461,6 +8771,67 @@ SafeExit:
 
 End Function
 
+Private Function GetCodeFromCodeMasterStatusAware( _
+    ByVal kubunName As String, _
+    ByVal displayName As String, _
+    ByVal wsMaster As Worksheet, _
+    ByVal rowStart As Long, _
+    ByVal rowEnd As Long) As String
+
+    Dim masterValues As Variant
+    Dim passNo As Long
+    Dim r As Long
+    Dim itemValue As String
+    Dim nameValue As String
+    Dim codeValue As String
+    Dim stateValue As String
+    Dim desiredState As String
+    Dim matches As Object
+    Dim matchKey As Variant
+
+    If wsMaster Is Nothing Or rowEnd < rowStart Then Exit Function
+    EnsureCodeMasterRangeHasNoErrors wsMaster, rowEnd
+    masterValues = wsMaster.Range(wsMaster.Cells(rowStart, 1), wsMaster.Cells(rowEnd, 4)).Value2
+    For r = 1 To UBound(masterValues, 1)
+        itemValue = NormalizeHeaderToken(CStr(masterValues(r, 1)))
+        nameValue = NormalizeClassificationGuideKey(CStr(masterValues(r, 3)))
+        stateValue = Trim$(CStr(masterValues(r, 4)))
+        If StrComp(itemValue, NormalizeHeaderToken(kubunName), vbTextCompare) = 0 _
+           And StrComp(nameValue, NormalizeClassificationGuideKey(displayName), vbTextCompare) = 0 _
+           And (Left$(stateValue, 2) = "競合" Or Left$(stateValue, 3) = "要確認") Then Exit Function
+    Next r
+
+    For passNo = 1 To 2
+        If passNo = 1 Then
+            desiredState = "システム"
+        Else
+            desiredState = "仮採番"
+        End If
+        Set matches = CreateObject("Scripting.Dictionary")
+        For r = 1 To UBound(masterValues, 1)
+            itemValue = NormalizeHeaderToken(CStr(masterValues(r, 1)))
+            nameValue = NormalizeClassificationGuideKey(CStr(masterValues(r, 3)))
+            stateValue = Trim$(CStr(masterValues(r, 4)))
+            If StrComp(itemValue, NormalizeHeaderToken(kubunName), vbTextCompare) = 0 _
+               And StrComp(nameValue, NormalizeClassificationGuideKey(displayName), vbTextCompare) = 0 _
+               And stateValue = desiredState Then
+                codeValue = Trim$(CStr(masterValues(r, 2)))
+                If Len(codeValue) > 0 Then matches(codeValue) = True
+            End If
+        Next r
+        If matches.Count = 1 Then
+            For Each matchKey In matches.Keys
+                GetCodeFromCodeMasterStatusAware = CStr(matchKey)
+                Exit For
+            Next matchKey
+            Exit Function
+        ElseIf matches.Count > 1 Then
+            Exit Function
+        End If
+    Next passNo
+
+End Function
+
 Private Function GetCodeFromCodeMasterInRows( _
     ByVal kubunName As String, _
     ByVal displayName As String, _
@@ -8476,6 +8847,12 @@ Private Function GetCodeFromCodeMasterInRows( _
     GetCodeFromCodeMasterInRows = ""
     If wsMaster Is Nothing Then Exit Function
     If rowEnd < rowStart Then Exit Function
+
+    If NormalizeHeaderToken(kubunName) = NormalizeHeaderToken("分類名２") _
+       Or NormalizeHeaderToken(kubunName) = NormalizeHeaderToken("分類名３") Then
+        GetCodeFromCodeMasterInRows = GetCodeFromCodeMasterStatusAware(kubunName, displayName, wsMaster, rowStart, rowEnd)
+        Exit Function
+    End If
 
     masterValues = wsMaster.Range(wsMaster.Cells(rowStart, 1), wsMaster.Cells(rowEnd, 3)).Value2
     For r = 1 To UBound(masterValues, 1)
