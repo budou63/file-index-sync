@@ -21,29 +21,41 @@ def procedure(name: str) -> str:
 
 
 def resolve(source_rows: list[dict], edit_row: dict, edit_name_counts: dict[tuple, int]) -> str:
-    """Model the requested safety contract: ID first, then unique name fallback."""
-    def id_key(row: dict) -> tuple[str, str, str] | None:
-        values = tuple(row.get(k, "") for k in ("id", "no", "barcode"))
-        return values if any(values) else None
+    """Model ID-first matching with unique auxiliary-ID and name fallbacks."""
+    def value(row: dict, key: str) -> str:
+        return row.get(key, "") or ""
 
     def name_key(row: dict) -> tuple | None:
-        values = tuple(row.get(k, "") for k in ("year", "class2", "class3", "title"))
-        return values if all(values) else None
+        parts = tuple(value(row, k) for k in ("year", "class2", "class3", "title"))
+        return parts if all(parts) else None
 
-    row_id = id_key(edit_row)
-    if row_id is not None:
-        matches = [row for row in source_rows if id_key(row) == row_id]
+    if value(edit_row, "id"):
+        matches = [row for row in source_rows if value(row, "id") == value(edit_row, "id")]
         return "existing" if len(matches) == 1 else "difficult"
 
-    row_name = name_key(edit_row)
-    if row_name is None:
-        return "difficult"
-    matches = [row for row in source_rows if name_key(row) == row_name]
-    if len(matches) == 1 and edit_name_counts[row_name] == 1:
+    auxiliary_hits: dict[int, dict] = {}
+    for field in ("no", "barcode"):
+        token = value(edit_row, field)
+        if token:
+            matches = [row for row in source_rows if value(row, field) == token]
+            if len(matches) > 1:
+                return "difficult"
+            if matches:
+                auxiliary_hits[id(matches[0])] = matches[0]
+    if len(auxiliary_hits) == 1:
         return "existing"
-    if not matches:
-        return "difficult" if edit_row.get("status") == "同期済" else "new"
-    return "difficult"
+    if len(auxiliary_hits) > 1:
+        return "difficult"
+
+    key = name_key(edit_row)
+    if key is None:
+        return "difficult"
+    matches = [row for row in source_rows if name_key(row) == key]
+    if len(matches) == 1 and edit_name_counts.get(key, 0) == 1:
+        return "existing"
+    if matches:
+        return "difficult"
+    return "difficult" if edit_row.get("status") == "同期済" else "new"
 
 
 class Step4IdentityResolutionTests(unittest.TestCase):
@@ -70,11 +82,43 @@ class Step4IdentityResolutionTests(unittest.TestCase):
         key = ("2026", "総務", "庶務", "旧題")
         self.assertEqual(resolve([self.SOURCE_ROW], edit_without_id, {key: 2}), "difficult")
 
-    def test_step4_uses_reusable_id_and_name_identity_helpers(self) -> None:
+    def test_file_id_match_ignores_missing_file_number(self) -> None:
+        source = {**self.SOURCE_ROW}
+        edit = {**self.SOURCE_ROW, "no": ""}
+        self.assertEqual(resolve([source], edit, defaultdict(int)), "existing")
+
+    def test_file_id_match_takes_priority_over_barcode_mismatch(self) -> None:
+        source = {**self.SOURCE_ROW}
+        edit = {**self.SOURCE_ROW, "barcode": "B-OTHER"}
+        self.assertEqual(resolve([source], edit, defaultdict(int)), "existing")
+
+    def test_missing_file_id_uses_unique_file_number(self) -> None:
+        source = {**self.SOURCE_ROW, "id": ""}
+        edit = {**source}
+        self.assertEqual(resolve([source], edit, defaultdict(int)), "existing")
+
+    def test_missing_file_id_uses_unique_barcode(self) -> None:
+        source = {**self.SOURCE_ROW, "id": "", "no": ""}
+        edit = {**source}
+        self.assertEqual(resolve([source], edit, defaultdict(int)), "existing")
+
+    def test_auxiliary_id_ambiguity_is_difficult(self) -> None:
+        source = [{**self.SOURCE_ROW, "id": ""}, {**self.SOURCE_ROW, "id": "", "title": "別"}]
+        edit = {**self.SOURCE_ROW, "id": "", "title": "新題"}
+        self.assertEqual(resolve(source, edit, defaultdict(int)), "difficult")
+
+    def test_step4_reports_guide_count_after_output_increment(self) -> None:
         step4 = procedure("手順4_差分インポートCSVを作成する")
-        self.assertIn("BuildFileKeyFromSheetRow", step4)
+        self.assertGreater(step4.index("Debug.Print BuildStep4SummaryText"), step4.index("guideSeatCheckCount = guideSeatCheckCount + 1"))
+
+    def test_step4_uses_reusable_identity_helpers(self) -> None:
+        step4 = procedure("手順4_差分インポートCSVを作成する")
+        resolver = procedure("ResolveStep4RowMatch")
+        self.assertIn("GetHeaderMapCellValue", step4)
         self.assertIn("BuildFolderNameSyncKeyFromSheetRow", step4)
-        self.assertIn("ResolveStep4RowMatch", step4)
+        self.assertIn("srcFileNoMap", step4)
+        self.assertIn("srcBarcodeMap", step4)
+        self.assertIn("srcIdMap.Exists(fileIdValue)", resolver)
         self.assertNotIn("BuildHeaderBasedKey(yearVal, titleVal, category2Val, mediaVal, periodVal)", step4)
 
     def test_step4_compares_mutable_fields_after_identity_resolution(self) -> None:

@@ -2782,6 +2782,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim compareEditCols() As Long
     Dim i As Long
     Dim srcIdMap As Object
+    Dim srcFileNoMap As Object
+    Dim srcBarcodeMap As Object
     Dim srcNameMap As Object
     Dim editNameMap As Object
     Dim usedSrcRows As Object
@@ -2822,6 +2824,9 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim processedRowCount As Long
     Dim matchKind As String
     Dim fileKey As String
+    Dim fileIdValue As String
+    Dim fileNoValue As String
+    Dim barcodeValue As String
     Dim nameKey As String
     Dim newRegistrationRows As Object
     Dim newRegistrationRowList As Collection
@@ -2845,6 +2850,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     Set wsOut = ThisWorkbook.Worksheets(SHEET_DIFF_IMPORT)
     Set srcIdMap = CreateObject("Scripting.Dictionary")
+    Set srcFileNoMap = CreateObject("Scripting.Dictionary")
+    Set srcBarcodeMap = CreateObject("Scripting.Dictionary")
     Set srcNameMap = CreateObject("Scripting.Dictionary")
     Set editNameMap = CreateObject("Scripting.Dictionary")
     Set usedSrcRows = CreateObject("Scripting.Dictionary")
@@ -2956,11 +2963,15 @@ Public Sub 手順4_差分インポートCSVを作成する()
             existingGuide2Dict(BuildNormalizedGuidePairKey(guide1Val, guide2Val)) = True
         End If
 
-        fileKey = BuildFileKeyFromSheetRow(wsSrc, r, srcHeaderMap)
-        If Len(fileKey) > 0 Then
+        fileIdValue = GetHeaderMapCellValue(wsSrc, r, srcHeaderMap, "ファイルID")
+        fileNoValue = GetHeaderMapCellValue(wsSrc, r, srcHeaderMap, "ファイル番号")
+        barcodeValue = GetHeaderMapCellValue(wsSrc, r, srcHeaderMap, "バーコード番号")
+        If Len(fileIdValue) > 0 Then
             srcIdRowCount = srcIdRowCount + 1
-            AddRowToKeyBucket srcIdMap, fileKey, r
+            AddRowToKeyBucket srcIdMap, fileIdValue, r
         End If
+        If Len(fileNoValue) > 0 Then AddRowToKeyBucket srcFileNoMap, fileNoValue, r
+        If Len(barcodeValue) > 0 Then AddRowToKeyBucket srcBarcodeMap, barcodeValue, r
         nameKey = BuildFolderNameSyncKeyFromSheetRow(wsSrc, r, srcLastCol)
         If Len(nameKey) > 0 Then AddRowToKeyBucket srcNameMap, nameKey, r
     Next r
@@ -3004,11 +3015,13 @@ Public Sub 手順4_差分インポートCSVを作成する()
         End If
 
         processedRowCount = processedRowCount + 1
-        fileKey = BuildFileKeyFromSheetRow(wsEdit, r, editHeaderMap)
-        If Len(fileKey) > 0 Then editIdRowCount = editIdRowCount + 1
+        fileIdValue = GetHeaderMapCellValue(wsEdit, r, editHeaderMap, "ファイルID")
+        fileNoValue = GetHeaderMapCellValue(wsEdit, r, editHeaderMap, "ファイル番号")
+        barcodeValue = GetHeaderMapCellValue(wsEdit, r, editHeaderMap, "バーコード番号")
+        If Len(fileIdValue) > 0 Or Len(fileNoValue) > 0 Or Len(barcodeValue) > 0 Then editIdRowCount = editIdRowCount + 1
         nameKey = BuildFolderNameSyncKeyFromSheetRow(wsEdit, r, editLastCol)
         srcRow = 0
-        matchKind = ResolveStep4RowMatch(fileKey, nameKey, srcIdMap, srcNameMap, editNameMap, usedSrcRows, srcRow)
+        matchKind = ResolveStep4RowMatch(fileIdValue, fileNoValue, barcodeValue, nameKey, srcIdMap, srcFileNoMap, srcBarcodeMap, srcNameMap, editNameMap, usedSrcRows, srcRow)
 
         Select Case matchKind
             Case "ID", "NAME"
@@ -3077,8 +3090,6 @@ ContinueNextEditRow:
         新ファイル基準表_登録予定分類コード採番 wsEdit, 2, editLastRow, newRegistrationRowList
     End If
 
-    Debug.Print BuildStep4SummaryText(processedRowCount, excludedMacroInsertCount, idMatchCount, nameMatchCount, noDifferenceCount, existingUpdateCount, newRegistrationCount, ambiguousCount, inconsistentCount, guideSeatCheckCount)
-
     wsOut.Cells.Clear
     ' 1行目に固定見出しを厳密順で出力
     For i = LBound(fixedHeaders) To UBound(fixedHeaders)
@@ -3099,6 +3110,8 @@ ContinueNextEditRow:
             outRow = outRow + 1
         Next targetRow
     End If
+
+    Debug.Print BuildStep4SummaryText(processedRowCount, excludedMacroInsertCount, idMatchCount, nameMatchCount, noDifferenceCount, existingUpdateCount, newRegistrationCount, ambiguousCount, inconsistentCount, guideSeatCheckCount)
 
     With wsOut.Range(wsOut.Cells(1, 1), wsOut.Cells(1, UBound(fixedHeaders) - LBound(fixedHeaders) + 1))
         .Font.Bold = True
@@ -11078,10 +11091,25 @@ Private Function BuildGroupKey_ColorRule(ByVal guide1Key As String, ByVal guide2
     BuildGroupKey_ColorRule = guide1Key & ChrW(&H1F) & guide2Key
 End Function
 
+Private Function GetHeaderMapCellValue(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal headerMap As Object, ByVal headerName As String) As String
+
+    Dim canonical As String
+
+    canonical = CanonicalHeaderName(headerName)
+    If ws Is Nothing Or headerMap Is Nothing Then Exit Function
+    If Not headerMap.Exists(canonical) Then Exit Function
+    GetHeaderMapCellValue = GetTrimmedCell(ws, rowNo, CLng(headerMap(canonical)))
+
+End Function
+
 Private Function ResolveStep4RowMatch( _
-    ByVal fileKey As String, _
+    ByVal fileIdValue As String, _
+    ByVal fileNoValue As String, _
+    ByVal barcodeValue As String, _
     ByVal nameKey As String, _
     ByVal srcIdMap As Object, _
+    ByVal srcFileNoMap As Object, _
+    ByVal srcBarcodeMap As Object, _
     ByVal srcNameMap As Object, _
     ByVal editNameMap As Object, _
     ByVal usedSrcRows As Object, _
@@ -11089,13 +11117,13 @@ Private Function ResolveStep4RowMatch( _
 
     Dim candidates As Collection
     Dim candidateRow As Variant
+    Dim auxiliaryRow As Long
+    Dim anyIdentity As Boolean
 
-    If Len(fileKey) > 0 Then
-        If Not srcIdMap.Exists(fileKey) Then
-            ResolveStep4RowMatch = "DIFFICULT"
-            Exit Function
-        End If
-        Set candidates = srcIdMap(fileKey)
+    anyIdentity = (Len(fileIdValue) > 0 Or Len(fileNoValue) > 0 Or Len(barcodeValue) > 0)
+
+    If Len(fileIdValue) > 0 And srcIdMap.Exists(fileIdValue) Then
+        Set candidates = srcIdMap(fileIdValue)
         If candidates.Count <> 1 Then
             ResolveStep4RowMatch = "DIFFICULT"
             Exit Function
@@ -11103,10 +11131,45 @@ Private Function ResolveStep4RowMatch( _
         candidateRow = candidates(1)
         If usedSrcRows.Exists(CStr(candidateRow)) Then
             ResolveStep4RowMatch = "DIFFICULT"
+        Else
+            srcRow = CLng(candidateRow)
+            ResolveStep4RowMatch = "ID"
+        End If
+        Exit Function
+    End If
+
+    ' IDが利用できない場合のみ補助IDを照合する。複数・相互矛盾は安全側で判定困難。
+    If Len(fileNoValue) > 0 And srcFileNoMap.Exists(fileNoValue) Then
+        Set candidates = srcFileNoMap(fileNoValue)
+        If candidates.Count <> 1 Then
+            ResolveStep4RowMatch = "DIFFICULT"
             Exit Function
         End If
-        srcRow = CLng(candidateRow)
-        ResolveStep4RowMatch = "ID"
+        auxiliaryRow = CLng(candidates(1))
+    End If
+    If Len(barcodeValue) > 0 And srcBarcodeMap.Exists(barcodeValue) Then
+        Set candidates = srcBarcodeMap(barcodeValue)
+        If candidates.Count <> 1 Then
+            ResolveStep4RowMatch = "DIFFICULT"
+            Exit Function
+        End If
+        If auxiliaryRow > 0 And auxiliaryRow <> CLng(candidates(1)) Then
+            ResolveStep4RowMatch = "DIFFICULT"
+            Exit Function
+        End If
+        auxiliaryRow = CLng(candidates(1))
+    End If
+    If auxiliaryRow > 0 Then
+        If usedSrcRows.Exists(CStr(auxiliaryRow)) Then
+            ResolveStep4RowMatch = "DIFFICULT"
+        Else
+            srcRow = auxiliaryRow
+            ResolveStep4RowMatch = "ID"
+        End If
+        Exit Function
+    End If
+    If anyIdentity Then
+        ResolveStep4RowMatch = "DIFFICULT"
         Exit Function
     End If
 
