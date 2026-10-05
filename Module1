@@ -4070,6 +4070,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
                     End If
                 Else
                     AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
+                    ' 目録CSV由来の新規行は、管理システム上に存在することを確認済みとして記録する。
+                    wsDst.Cells(appendRow, syncCol).Value = "同期済"
                     AutoFillColorForRow wsDst, appendRow
                     If key <> "" Then existingRowMap.Add key, appendRow
                     If key <> "" Then
