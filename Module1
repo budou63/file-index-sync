@@ -2453,7 +2453,7 @@ Public Sub 手順5_差分インポートCSVを外部出力する()
         absCol = usedRng.Column + srcCol - 1
         headerName = Trim$(CStr(wsOut.Cells(1, absCol).Value))
 
-        If headerName <> "通し番号" Then
+        If headerName <> "通し番号" And headerName <> "状態" Then
             wsExport.Cells(1, dstCol).Resize(lastRow, 1).Value = _
                 wsOut.Cells(usedRng.Row, absCol).Resize(lastRow, 1).Value
             dstCol = dstCol + 1
@@ -3053,20 +3053,18 @@ ContinueNextEditRow:
     End If
 
     If targetRows.Count > 0 Then
-        ValidateStep4GuideCodeStates wsEdit, newRegistrationRowList
+        ValidateStep4GuideCodeStates wsEdit, targetRows
 
         For Each targetRow In targetRows
-            If newRegistrationRows.Exists(CStr(CLng(targetRow))) Then
-                guideSeatCheckReason = GetStep4GuideSeatCheckReason( _
-                    wsEdit, _
-                    CLng(targetRow), _
-                    keyCategory2Edit, _
-                    class3ColEdit, _
-                    firstGuideCodeMap, _
-                    secondGuideCodeMap)
-                If Len(guideSeatCheckReason) > 0 Then
-                    guideSeatCheckReasons(CStr(CLng(targetRow))) = guideSeatCheckReason
-                End If
+            guideSeatCheckReason = GetStep4GuideSeatCheckReason( _
+                wsEdit, _
+                CLng(targetRow), _
+                keyCategory2Edit, _
+                class3ColEdit, _
+                firstGuideCodeMap, _
+                secondGuideCodeMap)
+            If Len(guideSeatCheckReason) > 0 Then
+                guideSeatCheckReasons(CStr(CLng(targetRow))) = guideSeatCheckReason
             End If
         Next targetRow
 
@@ -3082,18 +3080,23 @@ ContinueNextEditRow:
     End If
 
     wsOut.Cells.Clear
-    ' 1行目に固定見出しを厳密順で出力
+    ' 状態は差分シートだけの補助列とし、システム取込用 fixedHeaders はそのまま維持する。
+    wsOut.Cells(1, 1).Value = "状態"
+    ' 1行目の2列目以降に固定見出しを厳密順で出力
     For i = LBound(fixedHeaders) To UBound(fixedHeaders)
-        wsOut.Cells(1, i - LBound(fixedHeaders) + 1).value = fixedHeaders(i)
+        wsOut.Cells(1, i - LBound(fixedHeaders) + 2).Value = fixedHeaders(i)
     Next i
     outRow = 2
 
     If targetRows.Count > 0 Then
         For Each targetRow In targetRows
             新ファイル基準表_分類コード再補完 wsEdit, CLng(targetRow), CLng(targetRow)
-            WriteRowByFixedLayout wsEdit, wsOut, CLng(targetRow), outRow, fixedHeaders, editHeaderMap, outputSourceMap
+            WriteRowByFixedLayout wsEdit, wsOut, CLng(targetRow), outRow, fixedHeaders, editHeaderMap, outputSourceMap, 2
+            wsOut.Cells(outRow, 1).Value = GetStep4OutputStatus( _
+                newRegistrationRows.Exists(CStr(CLng(targetRow))), _
+                guideSeatCheckReasons.Exists(CStr(CLng(targetRow))))
             If guideSeatCheckReasons.Exists(CStr(CLng(targetRow))) Then
-                outputLastCol = UBound(fixedHeaders) - LBound(fixedHeaders) + 1
+                outputLastCol = UBound(fixedHeaders) - LBound(fixedHeaders) + 2
                 wsOut.Range(wsOut.Cells(outRow, 1), wsOut.Cells(outRow, outputLastCol)).Interior.Color = RGB(255, 255, 0)
                 SetCellCommentText wsOut.Cells(outRow, 1), "座作成要確認：" & CStr(guideSeatCheckReasons(CStr(CLng(targetRow))))
                 guideSeatCheckCount = guideSeatCheckCount + 1
@@ -3104,12 +3107,12 @@ ContinueNextEditRow:
 
     Debug.Print BuildStep4SummaryText(processedRowCount, excludedMacroInsertCount, idMatchCount, nameMatchCount, noDifferenceCount, existingUpdateCount, newRegistrationCount, ambiguousCount, inconsistentCount, guideSeatCheckCount)
 
-    With wsOut.Range(wsOut.Cells(1, 1), wsOut.Cells(1, UBound(fixedHeaders) - LBound(fixedHeaders) + 1))
+    With wsOut.Range(wsOut.Cells(1, 1), wsOut.Cells(1, UBound(fixedHeaders) - LBound(fixedHeaders) + 2))
         .Font.Bold = True
         .Interior.Color = RGB(242, 242, 242)
         .AutoFilter
     End With
-    wsOut.Columns(1).Resize(, UBound(fixedHeaders) - LBound(fixedHeaders) + 1).EntireColumn.AutoFit
+    wsOut.Columns(1).Resize(, UBound(fixedHeaders) - LBound(fixedHeaders) + 2).EntireColumn.AutoFit
 
     WriteProcessLog "差分インポート抽出", SHEET_DIFF_IMPORT, "", outRow - 2, "成功", _
         "差分インポートCSVを出力（差分" & CStr(outRow - 2) & "件、マクロ差込除外" & CStr(excludedMacroInsertCount) & _
@@ -6968,6 +6971,24 @@ Private Function BuildFileKey(ByVal fileId As String, ByVal fileNo As String, By
 
 End Function
 
+Private Function GetStep4OutputStatus(ByVal isNewRegistration As Boolean, ByVal requiresGuideSeat As Boolean) As String
+
+    If isNewRegistration Then
+        If requiresGuideSeat Then
+            GetStep4OutputStatus = "新規登録／座作成要"
+        Else
+            GetStep4OutputStatus = "新規登録"
+        End If
+    Else
+        If requiresGuideSeat Then
+            GetStep4OutputStatus = "既存更新／座作成要"
+        Else
+            GetStep4OutputStatus = "既存更新"
+        End If
+    End If
+
+End Function
+
 Private Sub WriteRowByFixedLayout( _
     ByVal wsEdit As Worksheet, _
     ByVal wsOut As Worksheet, _
@@ -6975,7 +6996,8 @@ Private Sub WriteRowByFixedLayout( _
     ByVal outRow As Long, _
     ByVal fixedHeaders As Variant, _
     ByVal editHeaderMap As Object, _
-    ByVal outputSourceMap As Object)
+    ByVal outputSourceMap As Object, _
+    ByVal outputStartCol As Long)
 
     Dim i As Long
     Dim headerName As String
@@ -6987,7 +7009,7 @@ Private Sub WriteRowByFixedLayout( _
 
         ' 年度暦年区分は固定で「年度」を出力（新ファイル基準表の列有無に依存させない）
         If headerName = "年度暦年区分" Then
-            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = "年度"
+            wsOut.Cells(outRow, i - LBound(fixedHeaders) + outputStartCol).value = "年度"
         Else
             sourceHeaderName = headerName
 
@@ -7000,11 +7022,11 @@ Private Sub WriteRowByFixedLayout( _
             ElseIf editHeaderMap.Exists(CanonicalHeaderName(sourceHeaderName)) Then
                 editCol = CLng(editHeaderMap(CanonicalHeaderName(sourceHeaderName)))
             Else
-                wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = ""
+                wsOut.Cells(outRow, i - LBound(fixedHeaders) + outputStartCol).value = ""
                 GoTo ContinueFixedHeader
             End If
 
-            wsOut.Cells(outRow, i - LBound(fixedHeaders) + 1).value = wsEdit.Cells(srcRow, editCol).value
+            wsOut.Cells(outRow, i - LBound(fixedHeaders) + outputStartCol).value = wsEdit.Cells(srcRow, editCol).value
 ContinueFixedHeader:
         End If
     Next i

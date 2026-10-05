@@ -127,10 +127,14 @@ class Step4IdentityResolutionTests(unittest.TestCase):
         self.assertIn("newRegistrationRows", step4)
         self.assertIn("ambiguousCount", step4)
 
-    def test_yellow_is_limited_to_confirmed_new_registrations(self) -> None:
+    def test_guide_seat_check_applies_to_every_emitted_target(self) -> None:
         step4 = procedure("手順4_差分インポートCSVを作成する")
-        self.assertIn("If newRegistrationRows.Exists", step4)
-        self.assertIn("GetStep4GuideSeatCheckReason", step4)
+        check_start = step4.index("ValidateStep4GuideCodeStates")
+        check_start = step4.index("GetStep4GuideSeatCheckReason", check_start)
+        loop_start = step4.rfind("For Each targetRow In targetRows", 0, check_start)
+        self.assertGreaterEqual(loop_start, 0)
+        self.assertNotIn("If newRegistrationRows.Exists", step4[loop_start:check_start])
+        self.assertIn("GetStep4OutputStatus", step4)
 
 def guide_warning(first_guide: str, second_guide: str, first_codes: set[str], second_codes: set[str]) -> str:
     if first_guide not in first_codes:
@@ -165,10 +169,13 @@ class Step4GuideSeatRuleTests(unittest.TestCase):
         step4 = procedure("手順4_差分インポートCSVを作成する")
         self.assertLess(step4.index("BuildCodeMasterNameCodeMap"), step4.index("新ファイル基準表_登録予定分類コード採番"))
 
-    def test_only_new_registration_rows_receive_guide_warning(self) -> None:
+    def test_guide_seat_check_targets_all_diff_rows_not_only_new_registrations(self) -> None:
         step4 = procedure("手順4_差分インポートCSVを作成する")
-        self.assertIn("If newRegistrationRows.Exists", step4)
-        self.assertIn("GetStep4GuideSeatCheckReason", step4)
+        start = step4.index("GetStep4GuideSeatCheckReason")
+        loop_start = step4.rfind("For Each targetRow In targetRows", 0, start)
+        self.assertGreaterEqual(loop_start, 0)
+        self.assertNotIn("newRegistrationRows.Exists", step4[loop_start:start])
+        self.assertIn("guideSeatCheckReasons.Exists", step4[step4.index("wsOut.Cells(outRow, 1).Value = GetStep4OutputStatus"):])
 
     def test_yellow_counter_and_completion_use_same_warning_map(self) -> None:
         step4 = procedure("手順4_差分インポートCSVを作成する")

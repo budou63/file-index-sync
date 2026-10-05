@@ -207,10 +207,10 @@ class CodeMasterStateBehaviorTests(unittest.TestCase):
         self.assertLess(step4.index("ValidateStep4GuideCodeStates"), step4.index("ConfirmAndMarkStep4NewRegistrationCandidates"))
         self.assertLess(step4.index("ValidateStep4GuideCodeStates"), step4.index("新ファイル基準表_登録予定分類コード採番"))
 
-    def test_step4_status_validator_checks_only_new_registration_rows(self) -> None:
+    def test_step4_validates_conflicts_for_every_emitted_target_row(self) -> None:
         step4 = procedure("手順4_差分インポートCSVを作成する")
-        self.assertIn("ValidateStep4GuideCodeStates wsEdit, newRegistrationRowList", step4)
-        self.assertNotIn("ValidateStep4GuideCodeStates wsEdit, targetRows", step4)
+        self.assertIn("ValidateStep4GuideCodeStates wsEdit, targetRows", step4)
+        self.assertNotIn("ValidateStep4GuideCodeStates wsEdit, newRegistrationRowList", step4)
 
     def test_step3_reconcile_has_exact_zero_one_and_multiple_candidate_paths(self) -> None:
         restore = procedure("RestorePendingGuideCodeRows")
