@@ -2781,8 +2781,11 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim compareSrcCols() As Long
     Dim compareEditCols() As Long
     Dim i As Long
-    Dim srcDict As Object
+    Dim srcIdMap As Object
+    Dim srcNameMap As Object
+    Dim editNameMap As Object
     Dim usedSrcRows As Object
+    Dim srcHeaderMap As Object
     Dim editHeaderMap As Object
     Dim outputSourceMap As Object
     Dim key As String
@@ -2805,6 +2808,23 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim serialColEdit As Long
     Dim class1ColSrc As Long
     Dim class1ColEdit As Long
+    Dim class3ColSrc As Long
+    Dim class3ColEdit As Long
+    Dim srcIdRowCount As Long
+    Dim editIdRowCount As Long
+    Dim idMatchCount As Long
+    Dim nameMatchCount As Long
+    Dim noDifferenceCount As Long
+    Dim existingUpdateCount As Long
+    Dim newRegistrationCount As Long
+    Dim ambiguousCount As Long
+    Dim inconsistentCount As Long
+    Dim processedRowCount As Long
+    Dim matchKind As String
+    Dim fileKey As String
+    Dim nameKey As String
+    Dim newRegistrationRows As Object
+    Dim newRegistrationRowList As Collection
     Dim existingGuide1Dict As Object
     Dim existingGuide2Dict As Object
     Dim guideSeatCheckReasons As Object
@@ -2824,9 +2844,14 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
     Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     Set wsOut = ThisWorkbook.Worksheets(SHEET_DIFF_IMPORT)
-    Set srcDict = CreateObject("Scripting.Dictionary")
+    Set srcIdMap = CreateObject("Scripting.Dictionary")
+    Set srcNameMap = CreateObject("Scripting.Dictionary")
+    Set editNameMap = CreateObject("Scripting.Dictionary")
     Set usedSrcRows = CreateObject("Scripting.Dictionary")
+    Set srcHeaderMap = CreateObject("Scripting.Dictionary")
     Set editHeaderMap = CreateObject("Scripting.Dictionary")
+    Set newRegistrationRows = CreateObject("Scripting.Dictionary")
+    Set newRegistrationRowList = New Collection
     Set outputSourceMap = CreateObject("Scripting.Dictionary")
     Set targetRows = New Collection
     Set existingGuide1Dict = CreateObject("Scripting.Dictionary")
@@ -2864,6 +2889,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     serialColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("通し番号"))
     class1ColSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名１"))
     class1ColEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名１"))
+    class3ColSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名３"))
+    class3ColEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名３"))
 
     If (keyYearSrc = 0 And keyYearSrcWestern = 0) Or keyTitleSrc = 0 Or keyCategory2Src = 0 Or keyMediaSrc = 0 Or keyPeriodSrc = 0 Then
         missingSrcKeyHeaders = BuildDiffKeyMissingHeaders(keyYearSrc, keyYearSrcWestern, keyTitleSrc, keyCategory2Src, keyMediaSrc, keyPeriodSrc)
@@ -2878,7 +2905,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
             BuildHeaderSearchDiagnostics(wsEdit, editUsedLastCol, editLastCol)
     End If
 
-    compareDefs = Array("分類名１", "分類名３", "保存期間", "媒体種別")
+    compareDefs = Array("年度", "タイトル", "分類名１", "分類名２", "分類名３", "保存期間", "媒体種別")
     ReDim compareSrcCols(LBound(compareDefs) To UBound(compareDefs))
     ReDim compareEditCols(LBound(compareDefs) To UBound(compareDefs))
 
@@ -2919,32 +2946,29 @@ Public Sub 手順4_差分インポートCSVを作成する()
     ' 固定見出し「毎年度利用区分」は新ファイル基準表の正式見出しから取得する
     outputSourceMap.Add "毎年度利用区分", "毎年度利用区分1:毎年作成 2:単年のみ"
 
-    ' ① 目録CSVをキー（正規化年度+タイトル+分類名２+媒体種別+保存期間）で辞書化
-    '    年度またぎ比較を防ぐため、年度は西暦数値へ正規化して必ずキーに含める。
-    '    年度空欄・変換不能行は比較対象外とする。
+    ' ① 目録CSVをID・名称キーで辞書化し、座作成確認用の既存分類階層も収集する。
+    BuildHeaderMap wsSrc, srcLastCol, srcHeaderMap
     For r = 2 To srcLastRow
-        yearVal = CStr(GetNormalizedYearFromRow(wsSrc, r, keyYearSrc, keyYearSrcWestern))
-        titleVal = GetTrimmedCell(wsSrc, r, keyTitleSrc)
-        category2Val = GetTrimmedCell(wsSrc, r, keyCategory2Src)
-        mediaVal = GetTrimmedCell(wsSrc, r, keyMediaSrc)
-        periodVal = GetTrimmedCell(wsSrc, r, keyPeriodSrc)
         guide1Val = GetTrimmedCell(wsSrc, r, class1ColSrc)
-        guide2Val = category2Val
-
-        If Len(NormalizeForDiffCompare(guide1Val)) > 0 Then
-            existingGuide1Dict(NormalizeForDiffCompare(guide1Val)) = True
-        End If
+        guide2Val = GetTrimmedCell(wsSrc, r, keyCategory2Src)
+        If Len(NormalizeForDiffCompare(guide1Val)) > 0 Then existingGuide1Dict(NormalizeForDiffCompare(guide1Val)) = True
         If Len(NormalizeForDiffCompare(guide1Val)) > 0 And Len(NormalizeForDiffCompare(guide2Val)) > 0 Then
             existingGuide2Dict(BuildNormalizedGuidePairKey(guide1Val, guide2Val)) = True
         End If
 
-        ' キー一意性を高めるため媒体種別・保存期間も含める
-        key = BuildHeaderBasedKey(yearVal, titleVal, category2Val, mediaVal, periodVal)
-
-        isKeyBlank = ((yearVal = "" Or yearVal = "0") And titleVal = "" And category2Val = "")
-        If Not isKeyBlank And yearVal <> "" And yearVal <> "0" And titleVal <> "" Then
-            AddRowToKeyBucket srcDict, key, r
+        fileKey = BuildFileKeyFromSheetRow(wsSrc, r, srcHeaderMap)
+        If Len(fileKey) > 0 Then
+            srcIdRowCount = srcIdRowCount + 1
+            AddRowToKeyBucket srcIdMap, fileKey, r
         End If
+        nameKey = BuildFolderNameSyncKeyFromSheetRow(wsSrc, r, srcLastCol)
+        If Len(nameKey) > 0 Then AddRowToKeyBucket srcNameMap, nameKey, r
+    Next r
+
+    ' 名称フォールバックの一意性は、新ファイル基準表側にも同名候補が1件だけである場合に限る。
+    For r = 2 To editLastRow
+        nameKey = BuildFolderNameSyncKeyFromSheetRow(wsEdit, r, editLastCol)
+        If Len(nameKey) > 0 Then AddRowToKeyBucket editNameMap, nameKey, r
     Next r
 
     ' ② 新ファイル基準表を1行ずつ処理し、まず差分インポートCSVの出力候補行だけを集める
@@ -2979,78 +3003,70 @@ Public Sub 手順4_差分インポートCSVを作成する()
             End If
         End If
 
-        yearVal = CStr(GetNormalizedYearFromRow(wsEdit, r, keyYearEdit, keyYearEditWestern))
-        titleVal = GetTrimmedCell(wsEdit, r, keyTitleEdit)
-        category2Val = GetTrimmedCell(wsEdit, r, keyCategory2Edit)
-        mediaVal = GetTrimmedCell(wsEdit, r, keyMediaEdit)
-        periodVal = GetTrimmedCell(wsEdit, r, keyPeriodEdit)
-        ' キー一意性を高めるため媒体種別・保存期間も含める
-        key = BuildHeaderBasedKey(yearVal, titleVal, category2Val, mediaVal, periodVal)
-        isKeyBlank = ((yearVal = "" Or yearVal = "0") And titleVal = "" And category2Val = "")
+        processedRowCount = processedRowCount + 1
+        fileKey = BuildFileKeyFromSheetRow(wsEdit, r, editHeaderMap)
+        If Len(fileKey) > 0 Then editIdRowCount = editIdRowCount + 1
+        nameKey = BuildFolderNameSyncKeyFromSheetRow(wsEdit, r, editLastCol)
+        srcRow = 0
+        matchKind = ResolveStep4RowMatch(fileKey, nameKey, srcIdMap, srcNameMap, editNameMap, usedSrcRows, srcRow)
 
-        ' A. キー3項目がすべて空白 / 年度空欄・変換不能 / タイトル空欄 -> 無視
-        '    同一年度内比較を徹底するため、年度を正規化できない行は比較対象外にする。
-        If isKeyBlank Or yearVal = "" Or yearVal = "0" Or titleVal = "" Then
-            ' 何もしない
-
-        ' B. キー一致する行が存在 -> 比較列に差異があれば更新行として出力
-        ElseIf srcDict.Exists(key) Then
-            ' 同一キーの複数行に対応するため、1キー1行ではなく候補行一覧を保持する
-            ' 誤突合を防ぐため、候補の中から比較列の一致数が最大の行を採用する
-            srcRow = GetBestMatchedSourceRow( _
-                wsSrc, _
-                wsEdit, _
-                srcDict(key), _
-                usedSrcRows, _
-                compareSrcCols, _
-                compareEditCols, _
-                r)
-
-            If srcRow > 0 Then
-                ' 採用済み候補行は再利用しない
+        Select Case matchKind
+            Case "ID", "NAME"
+                If matchKind = "ID" Then
+                    idMatchCount = idMatchCount + 1
+                Else
+                    nameMatchCount = nameMatchCount + 1
+                End If
                 MarkSourceRowAsUsed usedSrcRows, srcRow
+                isDifferent = HasStep4ComparableDifference(wsSrc, wsEdit, srcRow, r, compareSrcCols, compareEditCols)
+                If isDifferent Then
+                    targetRows.Add r
+                    existingUpdateCount = existingUpdateCount + 1
+                Else
+                    noDifferenceCount = noDifferenceCount + 1
+                End If
 
-                isDifferent = False
-                For i = LBound(compareDefs) To UBound(compareDefs)
-                    If compareSrcCols(i) > 0 And compareEditCols(i) > 0 Then
-                        If NormalizeForDiffCompare(wsSrc.Cells(srcRow, compareSrcCols(i)).Value) <> _
-                           NormalizeForDiffCompare(wsEdit.Cells(r, compareEditCols(i)).Value) Then
-                            isDifferent = True
-                            Exit For
-                        End If
-                    End If
-                Next i
-            Else
-                isDifferent = True
-            End If
+            Case "NEW"
+                If rowSyncStatus = "同期済" Then
+                    inconsistentCount = inconsistentCount + 1
+                    DebugPrintStep4RowDiagnostic wsEdit, r, "同期済だがID・名称一致なし（自動登録予定にしない）", fileIdColEdit, fileNoColEdit, barcodeColEdit, serialColEdit, keyYearEdit, keyYearEditWestern, keyTitleEdit, class1ColEdit, keyCategory2Edit, class3ColEdit, keyPeriodEdit, keyMediaEdit
+                Else
+                    targetRows.Add r
+                    newRegistrationRows(CStr(r)) = True
+                    newRegistrationRowList.Add r
+                    newRegistrationCount = newRegistrationCount + 1
+                End If
 
-            If isDifferent Then
-                targetRows.Add r
-            End If
-
-        ' C. キー一致なし -> 新規行として出力
-        Else
-            targetRows.Add r
-        End If
+            Case Else
+                ambiguousCount = ambiguousCount + 1
+                DebugPrintStep4RowDiagnostic wsEdit, r, "IDまたは名称キーが一意に確定できないため出力しない", fileIdColEdit, fileNoColEdit, barcodeColEdit, serialColEdit, keyYearEdit, keyYearEditWestern, keyTitleEdit, class1ColEdit, keyCategory2Edit, class3ColEdit, keyPeriodEdit, keyMediaEdit
+        End Select
 
 ContinueNextEditRow:
     Next r
 
+    If srcIdRowCount > 0 And editIdRowCount > 0 And idMatchCount = 0 Then
+        Err.Raise vbObjectError + 2303, , "目録CSVと新ファイル基準表の両方にIDあり行がありますが、ID一致が0件です。" & vbCrLf & _
+            BuildStep4SummaryText(processedRowCount, excludedMacroInsertCount, idMatchCount, nameMatchCount, noDifferenceCount, existingUpdateCount, newRegistrationCount, ambiguousCount, inconsistentCount, guideSeatCheckCount)
+    End If
+
     If targetRows.Count > 0 Then
         For Each targetRow In targetRows
-            guideSeatCheckReason = GetStep4GuideSeatCheckReason( _
-                wsEdit, _
-                CLng(targetRow), _
-                class1ColEdit, _
-                keyCategory2Edit, _
-                existingGuide1Dict, _
-                existingGuide2Dict)
-            If Len(guideSeatCheckReason) > 0 Then
-                guideSeatCheckReasons(CStr(CLng(targetRow))) = guideSeatCheckReason
+            If newRegistrationRows.Exists(CStr(CLng(targetRow))) Then
+                guideSeatCheckReason = GetStep4GuideSeatCheckReason( _
+                    wsEdit, _
+                    CLng(targetRow), _
+                    class1ColEdit, _
+                    keyCategory2Edit, _
+                    existingGuide1Dict, _
+                    existingGuide2Dict)
+                If Len(guideSeatCheckReason) > 0 Then
+                    guideSeatCheckReasons(CStr(CLng(targetRow))) = guideSeatCheckReason
+                End If
             End If
         Next targetRow
 
-        syncStatusChangedCount = ConfirmAndMarkStep4NewRegistrationCandidates(wsEdit, targetRows)
+        syncStatusChangedCount = ConfirmAndMarkStep4NewRegistrationCandidates(wsEdit, newRegistrationRows)
         If syncStatusChangedCount < 0 Then GoTo SafeExit
 
         For Each targetRow In targetRows
@@ -3058,8 +3074,10 @@ ContinueNextEditRow:
             新ファイル基準表_分類コード再補完 wsEdit, CLng(targetRow), CLng(targetRow)
         Next targetRow
 
-        新ファイル基準表_登録予定分類コード採番 wsEdit, 2, editLastRow, targetRows
+        新ファイル基準表_登録予定分類コード採番 wsEdit, 2, editLastRow, newRegistrationRowList
     End If
+
+    Debug.Print BuildStep4SummaryText(processedRowCount, excludedMacroInsertCount, idMatchCount, nameMatchCount, noDifferenceCount, existingUpdateCount, newRegistrationCount, ambiguousCount, inconsistentCount, guideSeatCheckCount)
 
     wsOut.Cells.Clear
     ' 1行目に固定見出しを厳密順で出力
@@ -3124,7 +3142,7 @@ End Function
 
 Private Function ConfirmAndMarkStep4NewRegistrationCandidates( _
     ByVal wsEdit As Worksheet, _
-    ByVal targetRows As Collection) As Long
+    ByVal targetRows As Object) As Long
 
     Dim lastCol As Long
     Dim lastRow As Long
@@ -11058,6 +11076,120 @@ End Function
 
 Private Function BuildGroupKey_ColorRule(ByVal guide1Key As String, ByVal guide2Key As String) As String
     BuildGroupKey_ColorRule = guide1Key & ChrW(&H1F) & guide2Key
+End Function
+
+Private Function ResolveStep4RowMatch( _
+    ByVal fileKey As String, _
+    ByVal nameKey As String, _
+    ByVal srcIdMap As Object, _
+    ByVal srcNameMap As Object, _
+    ByVal editNameMap As Object, _
+    ByVal usedSrcRows As Object, _
+    ByRef srcRow As Long) As String
+
+    Dim candidates As Collection
+    Dim candidateRow As Variant
+
+    If Len(fileKey) > 0 Then
+        If Not srcIdMap.Exists(fileKey) Then
+            ResolveStep4RowMatch = "DIFFICULT"
+            Exit Function
+        End If
+        Set candidates = srcIdMap(fileKey)
+        If candidates.Count <> 1 Then
+            ResolveStep4RowMatch = "DIFFICULT"
+            Exit Function
+        End If
+        candidateRow = candidates(1)
+        If usedSrcRows.Exists(CStr(candidateRow)) Then
+            ResolveStep4RowMatch = "DIFFICULT"
+            Exit Function
+        End If
+        srcRow = CLng(candidateRow)
+        ResolveStep4RowMatch = "ID"
+        Exit Function
+    End If
+
+    If Len(nameKey) = 0 Then
+        ResolveStep4RowMatch = "DIFFICULT"
+    ElseIf Not srcNameMap.Exists(nameKey) Then
+        ResolveStep4RowMatch = "NEW"
+    ElseIf editNameMap.Exists(nameKey) And editNameMap(nameKey).Count = 1 And srcNameMap(nameKey).Count = 1 Then
+        candidateRow = srcNameMap(nameKey)(1)
+        If usedSrcRows.Exists(CStr(candidateRow)) Then
+            ResolveStep4RowMatch = "DIFFICULT"
+        Else
+            srcRow = CLng(candidateRow)
+            ResolveStep4RowMatch = "NAME"
+        End If
+    Else
+        ResolveStep4RowMatch = "DIFFICULT"
+    End If
+
+End Function
+
+Private Function HasStep4ComparableDifference( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsEdit As Worksheet, _
+    ByVal srcRow As Long, _
+    ByVal editRow As Long, _
+    ByRef compareSrcCols() As Long, _
+    ByRef compareEditCols() As Long) As Boolean
+
+    Dim i As Long
+
+    For i = LBound(compareSrcCols) To UBound(compareSrcCols)
+        If compareSrcCols(i) > 0 And compareEditCols(i) > 0 Then
+            If NormalizeForDiffCompare(wsSrc.Cells(srcRow, compareSrcCols(i)).Value) <> _
+               NormalizeForDiffCompare(wsEdit.Cells(editRow, compareEditCols(i)).Value) Then
+                HasStep4ComparableDifference = True
+                Exit Function
+            End If
+        End If
+    Next i
+
+End Function
+
+Private Sub DebugPrintStep4RowDiagnostic( _
+    ByVal ws As Worksheet, ByVal rowNo As Long, ByVal route As String, _
+    ByVal fileIdCol As Long, ByVal fileNoCol As Long, ByVal barcodeCol As Long, ByVal serialCol As Long, _
+    ByVal warekiCol As Long, ByVal yearCol As Long, ByVal titleCol As Long, ByVal class1Col As Long, _
+    ByVal class2Col As Long, ByVal class3Col As Long, ByVal periodCol As Long, ByVal mediaCol As Long)
+
+    Debug.Print "Step4診断 行=" & rowNo & " 経路=" & route & _
+        " 通し番号=" & GetTrimmedCell(ws, rowNo, serialCol) & _
+        " 同期状態=" & GetTrimmedCell(ws, rowNo, FindHeaderColumn(ws, GetLastHeaderCol(ws), Array("同期状態"))) & _
+        " ファイルID=" & GetTrimmedCell(ws, rowNo, fileIdCol) & _
+        " ファイル番号=" & GetTrimmedCell(ws, rowNo, fileNoCol) & _
+        " バーコード番号=" & GetTrimmedCell(ws, rowNo, barcodeCol) & _
+        " 年度=" & CStr(GetNormalizedYearFromRow(ws, rowNo, warekiCol, yearCol)) & _
+        " タイトル=" & GetTrimmedCell(ws, rowNo, titleCol) & _
+        " 分類名1=" & GetTrimmedCell(ws, rowNo, class1Col) & _
+        " 分類名2=" & GetTrimmedCell(ws, rowNo, class2Col) & _
+        " 分類名3=" & GetTrimmedCell(ws, rowNo, class3Col) & _
+        " 保存期間=" & GetTrimmedCell(ws, rowNo, periodCol) & _
+        " 媒体種別=" & GetTrimmedCell(ws, rowNo, mediaCol)
+
+End Sub
+
+Private Function BuildStep4SummaryText( _
+    ByVal processedRowCount As Long, ByVal macroExcludedCount As Long, _
+    ByVal idMatchCount As Long, ByVal nameMatchCount As Long, _
+    ByVal noDifferenceCount As Long, ByVal existingUpdateCount As Long, _
+    ByVal newRegistrationCount As Long, ByVal ambiguousCount As Long, _
+    ByVal inconsistentCount As Long, ByVal guideSeatCheckCount As Long) As String
+
+    BuildStep4SummaryText = "Step4内訳: 対象行数=" & processedRowCount & _
+        " / マクロ差込除外=" & macroExcludedCount & _
+        " / ID一致=" & idMatchCount & _
+        " / 名称一致=" & nameMatchCount & _
+        " / 差分なし=" & noDifferenceCount & _
+        " / 既存更新差分=" & existingUpdateCount & _
+        " / 新規登録=" & newRegistrationCount & _
+        " / 判定困難=" & ambiguousCount & _
+        " / データ不整合=" & inconsistentCount & _
+        " / 座作成要確認=" & guideSeatCheckCount
+
 End Function
 
 Private Function ContainsMacroInserted_ColorRule(ByVal remarksText As String) As Boolean
