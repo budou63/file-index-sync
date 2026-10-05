@@ -2768,8 +2768,10 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim wsOut As Worksheet
     Dim srcLastRow As Long
     Dim srcLastCol As Long
+    Dim srcUsedLastCol As Long
     Dim editLastRow As Long
     Dim editLastCol As Long
+    Dim editUsedLastCol As Long
     Dim r As Long
     Dim outRow As Long
     Dim keyYearSrc As Long, keyYearSrcWestern As Long, keyTitleSrc As Long, keyCategory2Src As Long, keyMediaSrc As Long, keyPeriodSrc As Long
@@ -2814,6 +2816,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim rowSyncStatus As String
     Dim errNumber As Long
     Dim errDescription As String
+    Dim missingSrcKeyHeaders As String
+    Dim missingEditKeyHeaders As String
 
     On Error GoTo ErrorHandler
 
@@ -2833,9 +2837,11 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Application.EnableEvents = False
 
     srcLastRow = GetLastUsedRow(wsSrc)
-    srcLastCol = GetLastUsedCol(wsSrc)
+    srcUsedLastCol = GetLastUsedCol(wsSrc)
+    srcLastCol = GetLastHeaderCol(wsSrc)
     editLastRow = GetLastUsedRow(wsEdit)
-    editLastCol = GetLastUsedCol(wsEdit)
+    editUsedLastCol = GetLastUsedCol(wsEdit)
+    editLastCol = GetLastHeaderCol(wsEdit)
 
     keyYearSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("年度（和暦）"))
     keyYearSrcWestern = FindHeaderColumn(wsSrc, srcLastCol, Array("年度"))
@@ -2860,10 +2866,16 @@ Public Sub 手順4_差分インポートCSVを作成する()
     class1ColEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名１"))
 
     If (keyYearSrc = 0 And keyYearSrcWestern = 0) Or keyTitleSrc = 0 Or keyCategory2Src = 0 Or keyMediaSrc = 0 Or keyPeriodSrc = 0 Then
-        Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列（年度（和暦）または年度/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
+        missingSrcKeyHeaders = BuildDiffKeyMissingHeaders(keyYearSrc, keyYearSrcWestern, keyTitleSrc, keyCategory2Src, keyMediaSrc, keyPeriodSrc)
+        Err.Raise vbObjectError + 2301, , "目録CSV の差分キー列が見つかりません。" & vbCrLf & _
+            "不足列: " & missingSrcKeyHeaders & vbCrLf & _
+            BuildHeaderSearchDiagnostics(wsSrc, srcUsedLastCol, srcLastCol)
     End If
     If (keyYearEdit = 0 And keyYearEditWestern = 0) Or keyTitleEdit = 0 Or keyCategory2Edit = 0 Or keyMediaEdit = 0 Or keyPeriodEdit = 0 Then
-        Err.Raise vbObjectError + 2302, , "新ファイル基準表 の差分キー列（年度（和暦）または年度/タイトル/分類名２/媒体種別/保存期間）が見つかりません。"
+        missingEditKeyHeaders = BuildDiffKeyMissingHeaders(keyYearEdit, keyYearEditWestern, keyTitleEdit, keyCategory2Edit, keyMediaEdit, keyPeriodEdit)
+        Err.Raise vbObjectError + 2302, , "新ファイル基準表 の差分キー列が見つかりません。" & vbCrLf & _
+            "不足列: " & missingEditKeyHeaders & vbCrLf & _
+            BuildHeaderSearchDiagnostics(wsEdit, editUsedLastCol, editLastCol)
     End If
 
     compareDefs = Array("分類名１", "分類名３", "保存期間", "媒体種別")
@@ -3139,7 +3151,7 @@ Private Function ConfirmAndMarkStep4NewRegistrationCandidates( _
     If targetRows Is Nothing Then Exit Function
     If targetRows.Count = 0 Then Exit Function
 
-    lastCol = GetLastUsedCol(wsEdit)
+    lastCol = GetLastHeaderCol(wsEdit)
     lastRow = GetLastUsedRow(wsEdit)
     If lastCol <= 0 Or lastRow < 2 Then Exit Function
 
@@ -6867,7 +6879,7 @@ Public Sub 手順3_コード管理CSVを作成する()
     Application.ScreenUpdating = False
     Application.EnableEvents = False
 
-    srcLastCol = GetLastUsedCol(wsSrc)
+    srcLastCol = GetLastHeaderCol(wsSrc)
     srcLastRow = GetLastUsedRow(wsSrc)
 
     pairDefs = Array( _
@@ -8571,6 +8583,35 @@ Private Function BuildHeaderSearchDiagnostics( _
         "D1: " & GetHeaderDiagnosticCellValue(ws, 4) & vbCrLf & _
         "E1: " & GetHeaderDiagnosticCellValue(ws, 5) & vbCrLf & _
         "認識した見出し: " & headerList
+
+End Function
+
+Private Function BuildDiffKeyMissingHeaders( _
+    ByVal warekiCol As Long, _
+    ByVal westernYearCol As Long, _
+    ByVal titleCol As Long, _
+    ByVal category2Col As Long, _
+    ByVal mediaCol As Long, _
+    ByVal periodCol As Long) As String
+
+    Dim missingHeaders As String
+
+    If warekiCol = 0 And westernYearCol = 0 Then
+        missingHeaders = "年度（和暦）または年度"
+    End If
+    If titleCol = 0 Then missingHeaders = AppendMissingHeaderName(missingHeaders, "タイトル")
+    If category2Col = 0 Then missingHeaders = AppendMissingHeaderName(missingHeaders, "分類名２")
+    If mediaCol = 0 Then missingHeaders = AppendMissingHeaderName(missingHeaders, "媒体種別")
+    If periodCol = 0 Then missingHeaders = AppendMissingHeaderName(missingHeaders, "保存期間")
+
+    BuildDiffKeyMissingHeaders = missingHeaders
+
+End Function
+
+Private Function AppendMissingHeaderName(ByVal missingHeaders As String, ByVal headerName As String) As String
+
+    If Len(missingHeaders) > 0 Then missingHeaders = missingHeaders & ", "
+    AppendMissingHeaderName = missingHeaders & headerName
 
 End Function
 

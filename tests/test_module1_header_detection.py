@@ -113,5 +113,30 @@ class SerialAssignmentRegressionTests(unittest.TestCase):
         self.assertEqual(assign_missing([None], [True], [True]), [1])
 
 
+class DiffImportHeaderRegressionTests(unittest.TestCase):
+    def test_step4_uses_header_row_bounds_for_both_key_sheets(self) -> None:
+        step4 = procedure("手順4_差分インポートCSVを作成する")
+        self.assertIn("srcLastCol = GetLastHeaderCol(wsSrc)", step4)
+        self.assertIn("editLastCol = GetLastHeaderCol(wsEdit)", step4)
+        self.assertNotIn("srcLastCol = GetLastUsedCol(wsSrc)", step4)
+        self.assertNotIn("editLastCol = GetLastUsedCol(wsEdit)", step4)
+        confirm_candidates = procedure("ConfirmAndMarkStep4NewRegistrationCandidates")
+        self.assertIn("lastCol = GetLastHeaderCol(wsEdit)", confirm_candidates)
+        self.assertNotIn("lastCol = GetLastUsedCol(wsEdit)", confirm_candidates)
+
+    def test_step3_uses_header_row_bound_for_code_management_csv(self) -> None:
+        step3 = procedure("手順3_コード管理CSVを作成する")
+        self.assertIn("srcLastCol = GetLastHeaderCol(wsSrc)", step3)
+        self.assertNotIn("srcLastCol = GetLastUsedCol(wsSrc)", step3)
+
+    def test_step4_missing_key_error_identifies_columns_and_header_context(self) -> None:
+        step4 = procedure("手順4_差分インポートCSVを作成する")
+        self.assertIn("BuildDiffKeyMissingHeaders", step4)
+        self.assertIn("BuildHeaderSearchDiagnostics", step4)
+        helper = procedure("BuildDiffKeyMissingHeaders")
+        for expected in ("年度（和暦）または年度", "タイトル", "分類名２", "媒体種別", "保存期間"):
+            self.assertIn(expected, helper)
+
+
 if __name__ == "__main__":
     unittest.main()
