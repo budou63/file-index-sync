@@ -132,6 +132,50 @@ class Step4IdentityResolutionTests(unittest.TestCase):
         self.assertIn("If newRegistrationRows.Exists", step4)
         self.assertIn("GetStep4GuideSeatCheckReason", step4)
 
+def guide_warning(first_guide: str, second_guide: str, first_codes: set[str], second_codes: set[str]) -> str:
+    if first_guide not in first_codes:
+        return "第1ガイドから座作成が必要"
+    if second_guide and second_guide not in second_codes:
+        return "第2ガイドから座作成が必要"
+    return ""
+
+
+class Step4GuideSeatRuleTests(unittest.TestCase):
+    def test_existing_both_guides_need_no_seat(self) -> None:
+        self.assertEqual(guide_warning("A", "B", {"A"}, {"B"}), "")
+
+    def test_missing_first_guide_requires_first_even_when_second_exists(self) -> None:
+        self.assertEqual(guide_warning("A", "B", set(), {"B"}), "第1ガイドから座作成が必要")
+
+    def test_missing_both_guides_requires_first(self) -> None:
+        self.assertEqual(guide_warning("A", "B", set(), set()), "第1ガイドから座作成が必要")
+
+    def test_existing_first_missing_second_requires_second(self) -> None:
+        self.assertEqual(guide_warning("A", "B", {"A"}, set()), "第2ガイドから座作成が必要")
+
+    def test_blank_second_guide_depends_only_on_first(self) -> None:
+        self.assertEqual(guide_warning("A", "", {"A"}, set()), "")
+        self.assertEqual(guide_warning("A", "", set(), set()), "第1ガイドから座作成が必要")
+
+    def test_existing_name_with_normalized_spelling_is_existing(self) -> None:
+        self.assertIn("NormalizeClassificationGuideKey", procedure("GetCodeFromCodeMasterInRows"))
+        self.assertIn("NormalizeClassificationGuideKey", procedure("GetStep4GuideSeatCheckReason"))
+
+    def test_code_snapshot_is_taken_before_registration_code_assignment(self) -> None:
+        step4 = procedure("手順4_差分インポートCSVを作成する")
+        self.assertLess(step4.index("BuildCodeMasterNameCodeMap"), step4.index("新ファイル基準表_登録予定分類コード採番"))
+
+    def test_only_new_registration_rows_receive_guide_warning(self) -> None:
+        step4 = procedure("手順4_差分インポートCSVを作成する")
+        self.assertIn("If newRegistrationRows.Exists", step4)
+        self.assertIn("GetStep4GuideSeatCheckReason", step4)
+
+    def test_yellow_counter_and_completion_use_same_warning_map(self) -> None:
+        step4 = procedure("手順4_差分インポートCSVを作成する")
+        self.assertIn('If guideSeatCheckReasons.Exists(CStr(CLng(targetRow))) Then', step4)
+        self.assertIn('guideSeatCheckCount = guideSeatCheckCount + 1', step4)
+        self.assertGreater(step4.index("Debug.Print BuildStep4SummaryText"), step4.index("guideSeatCheckCount = guideSeatCheckCount + 1"))
+
 
 if __name__ == "__main__":
     unittest.main()

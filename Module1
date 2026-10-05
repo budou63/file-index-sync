@@ -2794,7 +2794,6 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim isDifferent As Boolean
     Dim srcRow As Long
     Dim yearVal As String, titleVal As String, category2Val As String, mediaVal As String, periodVal As String
-    Dim isKeyBlank As Boolean
     Dim bikoColEdit As Long
     Dim bikoVal As String
     Dim excludedMacroInsertCount As Long
@@ -2808,9 +2807,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim targetRow As Variant
     Dim syncStatusChangedCount As Long
     Dim serialColEdit As Long
-    Dim class1ColSrc As Long
     Dim class1ColEdit As Long
-    Dim class3ColSrc As Long
     Dim class3ColEdit As Long
     Dim srcIdRowCount As Long
     Dim editIdRowCount As Long
@@ -2823,21 +2820,20 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim inconsistentCount As Long
     Dim processedRowCount As Long
     Dim matchKind As String
-    Dim fileKey As String
     Dim fileIdValue As String
     Dim fileNoValue As String
     Dim barcodeValue As String
     Dim nameKey As String
     Dim newRegistrationRows As Object
     Dim newRegistrationRowList As Collection
-    Dim existingGuide1Dict As Object
-    Dim existingGuide2Dict As Object
+    Dim firstGuideCodeMap As Object
+    Dim secondGuideCodeMap As Object
+    Dim firstGuideUsedCodes As Object
+    Dim secondGuideUsedCodes As Object
     Dim guideSeatCheckReasons As Object
     Dim guideSeatCheckReason As String
     Dim guideSeatCheckCount As Long
     Dim outputLastCol As Long
-    Dim guide1Val As String
-    Dim guide2Val As String
     Dim rowSyncStatus As String
     Dim errNumber As Long
     Dim errDescription As String
@@ -2861,12 +2857,14 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Set newRegistrationRowList = New Collection
     Set outputSourceMap = CreateObject("Scripting.Dictionary")
     Set targetRows = New Collection
-    Set existingGuide1Dict = CreateObject("Scripting.Dictionary")
-    Set existingGuide2Dict = CreateObject("Scripting.Dictionary")
     Set guideSeatCheckReasons = CreateObject("Scripting.Dictionary")
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
+
+    ' Step4開始時点の既存コードをスナップショットし、この実行中の採番結果を判定へ混入させない。
+    Set firstGuideCodeMap = BuildCodeMasterNameCodeMap("分類名２", firstGuideUsedCodes)
+    Set secondGuideCodeMap = BuildCodeMasterNameCodeMap("分類名３", secondGuideUsedCodes)
 
     srcLastRow = GetLastUsedRow(wsSrc)
     srcUsedLastCol = GetLastUsedCol(wsSrc)
@@ -2894,9 +2892,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
     fileNoColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイル番号"))
     barcodeColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("バーコード番号"))
     serialColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("通し番号"))
-    class1ColSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名１"))
     class1ColEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名１"))
-    class3ColSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名３"))
     class3ColEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名３"))
 
     If (keyYearSrc = 0 And keyYearSrcWestern = 0) Or keyTitleSrc = 0 Or keyCategory2Src = 0 Or keyMediaSrc = 0 Or keyPeriodSrc = 0 Then
@@ -2953,16 +2949,9 @@ Public Sub 手順4_差分インポートCSVを作成する()
     ' 固定見出し「毎年度利用区分」は新ファイル基準表の正式見出しから取得する
     outputSourceMap.Add "毎年度利用区分", "毎年度利用区分1:毎年作成 2:単年のみ"
 
-    ' ① 目録CSVをID・名称キーで辞書化し、座作成確認用の既存分類階層も収集する。
+    ' ① 目録CSVをID・名称キーで辞書化する。座判定用のコードマップはStep4開始時に別途スナップショット済み。
     BuildHeaderMap wsSrc, srcLastCol, srcHeaderMap
     For r = 2 To srcLastRow
-        guide1Val = GetTrimmedCell(wsSrc, r, class1ColSrc)
-        guide2Val = GetTrimmedCell(wsSrc, r, keyCategory2Src)
-        If Len(NormalizeForDiffCompare(guide1Val)) > 0 Then existingGuide1Dict(NormalizeForDiffCompare(guide1Val)) = True
-        If Len(NormalizeForDiffCompare(guide1Val)) > 0 And Len(NormalizeForDiffCompare(guide2Val)) > 0 Then
-            existingGuide2Dict(BuildNormalizedGuidePairKey(guide1Val, guide2Val)) = True
-        End If
-
         fileIdValue = GetHeaderMapCellValue(wsSrc, r, srcHeaderMap, "ファイルID")
         fileNoValue = GetHeaderMapCellValue(wsSrc, r, srcHeaderMap, "ファイル番号")
         barcodeValue = GetHeaderMapCellValue(wsSrc, r, srcHeaderMap, "バーコード番号")
@@ -3069,10 +3058,10 @@ ContinueNextEditRow:
                 guideSeatCheckReason = GetStep4GuideSeatCheckReason( _
                     wsEdit, _
                     CLng(targetRow), _
-                    class1ColEdit, _
                     keyCategory2Edit, _
-                    existingGuide1Dict, _
-                    existingGuide2Dict)
+                    class3ColEdit, _
+                    firstGuideCodeMap, _
+                    secondGuideCodeMap)
                 If Len(guideSeatCheckReason) > 0 Then
                     guideSeatCheckReasons(CStr(CLng(targetRow))) = guideSeatCheckReason
                 End If
@@ -3253,36 +3242,40 @@ End Function
 Private Function GetStep4GuideSeatCheckReason( _
     ByVal wsEdit As Worksheet, _
     ByVal rowNo As Long, _
-    ByVal guide1Col As Long, _
-    ByVal guide2Col As Long, _
-    ByVal existingGuide1Dict As Object, _
-    ByVal existingGuide2Dict As Object) As String
+    ByVal firstGuideCol As Long, _
+    ByVal secondGuideCol As Long, _
+    ByVal firstGuideCodeMap As Object, _
+    ByVal secondGuideCodeMap As Object) As String
 
-    Dim guide1Name As String
-    Dim guide2Name As String
-    Dim isNewGuide1 As Boolean
-    Dim isNewGuide2 As Boolean
+    Dim firstGuideName As String
+    Dim secondGuideName As String
+    Dim guideKey As String
+    Dim firstGuideCode As String
+    Dim secondGuideCode As String
 
     If wsEdit Is Nothing Then Exit Function
     If rowNo < 2 Then Exit Function
 
-    If guide1Col > 0 Then guide1Name = Trim$(CStr(wsEdit.Cells(rowNo, guide1Col).Value))
-    If guide2Col > 0 Then guide2Name = Trim$(CStr(wsEdit.Cells(rowNo, guide2Col).Value))
+    If firstGuideCol > 0 Then firstGuideName = Trim$(CStr(wsEdit.Cells(rowNo, firstGuideCol).Value))
+    If secondGuideCol > 0 Then secondGuideName = Trim$(CStr(wsEdit.Cells(rowNo, secondGuideCol).Value))
+    If Len(firstGuideName) = 0 Then Exit Function
 
-    If Len(NormalizeForDiffCompare(guide1Name)) > 0 Then
-        isNewGuide1 = Not existingGuide1Dict.Exists(NormalizeForDiffCompare(guide1Name))
+    guideKey = NormalizeClassificationGuideKey(firstGuideName)
+    If Not firstGuideCodeMap Is Nothing Then
+        If firstGuideCodeMap.Exists(guideKey) Then firstGuideCode = Trim$(CStr(firstGuideCodeMap(guideKey)))
+    End If
+    If Len(firstGuideCode) = 0 Then
+        GetStep4GuideSeatCheckReason = "第1ガイドから座作成が必要"
+        Exit Function
     End If
 
-    If Len(NormalizeForDiffCompare(guide1Name)) > 0 And Len(NormalizeForDiffCompare(guide2Name)) > 0 Then
-        isNewGuide2 = Not existingGuide2Dict.Exists(BuildNormalizedGuidePairKey(guide1Name, guide2Name))
+    If Len(secondGuideName) = 0 Then Exit Function
+    guideKey = NormalizeClassificationGuideKey(secondGuideName)
+    If Not secondGuideCodeMap Is Nothing Then
+        If secondGuideCodeMap.Exists(guideKey) Then secondGuideCode = Trim$(CStr(secondGuideCodeMap(guideKey)))
     End If
-
-    If isNewGuide1 And isNewGuide2 Then
-        GetStep4GuideSeatCheckReason = "第1ガイド・第2ガイド完全新規"
-    ElseIf isNewGuide1 Then
-        GetStep4GuideSeatCheckReason = "第1ガイド完全新規"
-    ElseIf isNewGuide2 Then
-        GetStep4GuideSeatCheckReason = "第2ガイド完全新規"
+    If Len(secondGuideCode) = 0 Then
+        GetStep4GuideSeatCheckReason = "第2ガイドから座作成が必要"
     End If
 
 End Function
