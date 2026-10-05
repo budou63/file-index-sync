@@ -65,5 +65,53 @@ class HeaderDetectionRegressionTests(unittest.TestCase):
             self.assertIn(expected, diagnostics)
 
 
+class SerialAssignmentRegressionTests(unittest.TestCase):
+    def test_automatic_reindex_uses_append_only_core(self) -> None:
+        automatic = procedure("ReindexSerial_NewFileStandard")
+        self.assertIn("AssignMissingSerial_NewFileStandardCore(targetWs)", automatic)
+        self.assertNotIn("ReindexSerial_NewFileStandardCore(targetWs)", automatic)
+
+    def test_automatic_core_preserves_existing_values_and_uses_maximum_plus_one(self) -> None:
+        automatic_core = procedure("AssignMissingSerial_NewFileStandardCore")
+        self.assertNotIn("ClearContents", automatic_core)
+        self.assertIn("GetMaximumSerial_NewFileStandard", automatic_core)
+        self.assertIn("IsSerialCellBlank", automatic_core)
+        self.assertIn("ShouldAssignSerialByRow", automatic_core)
+        self.assertIn("nextSerial = nextSerial + 1", automatic_core)
+        self.assertIn("Dim nextSerial As Double", automatic_core)
+        self.assertIn("nextSerial >= 999999999999999#", automatic_core)
+        self.assertIn("ByRef serialValue As Double", procedure("TryGetPositiveSerialValue"))
+        self.assertNotIn("2147483647", procedure("TryGetPositiveSerialValue"))
+        self.assertLess(
+            automatic_core.index("prevCalculation = Application.Calculation"),
+            automatic_core.index("If targetWs Is Nothing Then"),
+        )
+
+    def test_manual_reindex_keeps_full_renumbering_core(self) -> None:
+        manual = procedure("新ファイル基準表_通し番号_手動再採番")
+        full_reindex = procedure("ReindexSerial_NewFileStandardCore")
+        self.assertIn("ReindexSerial_NewFileStandardCore(targetWs)", manual)
+        self.assertIn("ClearContents", full_reindex)
+
+    def test_append_only_serial_model_covers_requested_cases(self) -> None:
+        def assign_missing(serials: list[object], eligible: list[bool], visible: list[bool]) -> list[object]:
+            del visible  # Hidden rows still participate in the maximum.
+            maximum = max((value for value in serials if isinstance(value, int) and value > 0), default=0)
+            result = list(serials)
+            for index, should_assign in enumerate(eligible):
+                if should_assign and result[index] in (None, ""):
+                    maximum += 1
+                    result[index] = maximum
+            return result
+
+        self.assertEqual(assign_missing([872, 873, 874, 875, None], [False, False, False, False, True], [True] * 5), [872, 873, 874, 875, 876])
+        self.assertEqual(assign_missing([952, None, None, None], [False, True, True, True], [True] * 4), [952, 953, 954, 955])
+        self.assertEqual(assign_missing([1, 2, 5, 10, None], [False, False, False, False, True], [True] * 5), [1, 2, 5, 10, 11])
+        self.assertEqual(assign_missing([952, None], [False, True], [False, True]), [952, 953])
+        self.assertEqual(assign_missing([874], [True], [True]), [874])
+        self.assertEqual(assign_missing([953], [True], [True]), [953])
+        self.assertEqual(assign_missing([None], [True], [True]), [1])
+
+
 if __name__ == "__main__":
     unittest.main()

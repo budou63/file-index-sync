@@ -4917,7 +4917,7 @@ Public Sub ReindexSerial_NewFileStandard(Optional ByVal ws As Worksheet)
         Set targetWs = ws
     End If
 
-    dummy = ReindexSerial_NewFileStandardCore(targetWs)
+    dummy = AssignMissingSerial_NewFileStandardCore(targetWs)
 
 SafeExit:
 
@@ -4948,6 +4948,140 @@ ErrorHandler:
 
 End Sub
 
+Private Function AssignMissingSerial_NewFileStandardCore(ByVal targetWs As Worksheet) As Long
+
+    Dim lastCol As Long
+    Dim lastRow As Long
+    Dim serialCol As Long
+    Dim titleCol As Long
+    Dim category2Col As Long
+    Dim category3Col As Long
+    Dim warekiCol As Long
+    Dim nextSerial As Double
+    Dim rowNo As Long
+    Dim prevEnableEvents As Boolean
+    Dim prevScreenUpdating As Boolean
+    Dim prevCalculation As XlCalculation
+    Dim errNo As Long
+    Dim errDesc As String
+    Const HEADER_ROW As Long = 1
+    Const DATA_START_ROW As Long = 2
+
+    prevCalculation = Application.Calculation
+    prevEnableEvents = Application.EnableEvents
+    prevScreenUpdating = Application.ScreenUpdating
+
+    On Error GoTo ErrorHandler
+
+    If targetWs Is Nothing Then
+        Set targetWs = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    End If
+
+    Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+
+    lastCol = GetLastHeaderCol(targetWs, HEADER_ROW)
+    If lastCol <= 0 Then GoTo SafeExit
+
+    serialCol = FindHeaderColumnByCandidatesAtRow(targetWs, HEADER_ROW, lastCol, Array("通し番号"))
+    titleCol = FindHeaderColumnByCandidatesAtRow(targetWs, HEADER_ROW, lastCol, Array("タイトル"))
+    category2Col = FindHeaderColumnByCandidatesAtRow(targetWs, HEADER_ROW, lastCol, Array("分類名２", "分類名2"))
+    category3Col = FindHeaderColumnByCandidatesAtRow(targetWs, HEADER_ROW, lastCol, Array("分類名３", "分類名3"))
+    warekiCol = FindHeaderColumnByCandidatesAtRow(targetWs, HEADER_ROW, lastCol, Array("年度（和暦）", "年度(和暦)"))
+
+    If serialCol = 0 Then Err.Raise vbObjectError + 2101, , "通し番号 列が見つかりません。"
+
+    lastRow = GetLastUsedRow(targetWs)
+    If lastRow < DATA_START_ROW Then GoTo SafeExit
+
+    ' 自動採番は既存値を一切変更せず、シート全体の有効な最大番号の後ろへ追番する。
+    ' 非表示行・フィルターで隠れた行も GetMaximumSerial_NewFileStandard の走査対象に含む。
+    nextSerial = GetMaximumSerial_NewFileStandard(targetWs, serialCol, DATA_START_ROW, lastRow)
+
+    For rowNo = DATA_START_ROW To lastRow
+        If IsSerialCellBlank(targetWs.Cells(rowNo, serialCol).Value) Then
+            If ShouldAssignSerialByRow(targetWs, rowNo, titleCol, category2Col, category3Col, warekiCol) Then
+                ' Excelのセルは有効数字15桁までのため、16桁へ進む前に停止して重複を防ぐ。
+                If nextSerial >= 999999999999999# Then
+                    Err.Raise vbObjectError + 2102, , "通し番号がExcelで連番を保持できる範囲を超えています。"
+                End If
+                If nextSerial + 1# = nextSerial Then
+                    Err.Raise vbObjectError + 2102, , "通し番号がExcelで連番を保持できる範囲を超えています。"
+                End If
+                nextSerial = nextSerial + 1
+                targetWs.Cells(rowNo, serialCol).Value = nextSerial
+                AssignMissingSerial_NewFileStandardCore = AssignMissingSerial_NewFileStandardCore + 1
+            End If
+        End If
+    Next rowNo
+
+SafeExit:
+    Application.Calculation = prevCalculation
+    Application.EnableEvents = prevEnableEvents
+    Application.ScreenUpdating = prevScreenUpdating
+    Exit Function
+
+ErrorHandler:
+    errNo = Err.Number
+    errDesc = Err.Description
+    RestoreAppState prevCalculation, prevEnableEvents, prevScreenUpdating
+    Err.Raise errNo, "AssignMissingSerial_NewFileStandardCore", errDesc
+
+End Function
+
+Private Function GetMaximumSerial_NewFileStandard( _
+    ByVal ws As Worksheet, _
+    ByVal serialCol As Long, _
+    ByVal firstDataRow As Long, _
+    ByVal lastRow As Long) As Double
+
+    Dim rowNo As Long
+    Dim serialValue As Double
+
+    If ws Is Nothing Then Exit Function
+    If serialCol <= 0 Then Exit Function
+    If lastRow < firstDataRow Then Exit Function
+
+    For rowNo = firstDataRow To lastRow
+        If TryGetPositiveSerialValue(ws.Cells(rowNo, serialCol).Value, serialValue) Then
+            If serialValue > GetMaximumSerial_NewFileStandard Then
+                GetMaximumSerial_NewFileStandard = serialValue
+            End If
+        End If
+    Next rowNo
+
+End Function
+
+Private Function TryGetPositiveSerialValue(ByVal rawValue As Variant, ByRef serialValue As Double) As Boolean
+
+    Dim numericValue As Double
+
+    On Error GoTo NotPositiveInteger
+
+    If IsError(rawValue) Then Exit Function
+    If Not IsNumeric(rawValue) Then Exit Function
+
+    numericValue = CDbl(rawValue)
+    If numericValue <= 0 Then Exit Function
+    If numericValue <> Fix(numericValue) Then Exit Function
+
+    serialValue = numericValue
+    TryGetPositiveSerialValue = True
+    Exit Function
+
+NotPositiveInteger:
+    Err.Clear
+
+End Function
+
+Private Function IsSerialCellBlank(ByVal rawValue As Variant) As Boolean
+
+    If IsError(rawValue) Then Exit Function
+    IsSerialCellBlank = (Len(Trim$(CStr(rawValue))) = 0)
+
+End Function
+
 Private Function ReindexSerial_NewFileStandardCore(ByVal targetWs As Worksheet) As Long
 
     Dim lastCol As Long
@@ -4968,21 +5102,22 @@ Private Function ReindexSerial_NewFileStandardCore(ByVal targetWs As Worksheet) 
     Const HEADER_ROW As Long = 1
     Const DATA_START_ROW As Long = 2
 
+    prevCalculation = Application.Calculation
+    prevEnableEvents = Application.EnableEvents
+    prevScreenUpdating = Application.ScreenUpdating
+
     On Error GoTo ErrorHandler
 
     If targetWs Is Nothing Then
         Set targetWs = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     End If
 
-    prevCalculation = Application.Calculation
-    prevEnableEvents = Application.EnableEvents
-    prevScreenUpdating = Application.ScreenUpdating
     Application.Calculation = xlCalculationManual
     Application.EnableEvents = False
     Application.ScreenUpdating = False
 
     lastCol = targetWs.Cells(HEADER_ROW, targetWs.Columns.Count).End(xlToLeft).Column
-    If lastCol <= 0 Then Exit Function
+    If lastCol <= 0 Then GoTo SafeExit
 
     serialCol = FindHeaderColumnByCandidatesAtRow(targetWs, HEADER_ROW, lastCol, Array("通し番号"))
     titleCol = FindHeaderColumnByCandidatesAtRow(targetWs, HEADER_ROW, lastCol, Array("タイトル"))
@@ -4993,7 +5128,7 @@ Private Function ReindexSerial_NewFileStandardCore(ByVal targetWs As Worksheet) 
     If serialCol = 0 Then Err.Raise vbObjectError + 2101, , "通し番号 列が見つかりません。"
 
     lastRow = GetLastUsedRow(targetWs)
-    If lastRow < DATA_START_ROW Then Exit Function
+    If lastRow < DATA_START_ROW Then GoTo SafeExit
 
     ' 既存の通し番号を一旦クリアしてから再採番
     targetWs.Range(targetWs.Cells(DATA_START_ROW, serialCol), targetWs.Cells(lastRow, serialCol)).ClearContents
