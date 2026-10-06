@@ -35,6 +35,32 @@ def reconcile(provisional: dict, system_rows: list[dict]) -> tuple[list[dict], s
     return [{**provisional, "status": "要確認（同名複数）"}], "要確認"
 
 
+def reconcile_final_state(row: dict, system_rows: list[dict]) -> dict:
+    same_name = [
+        system
+        for system in system_rows
+        if system["item"] == row["item"] and guide_key(system["name"]) == guide_key(row["name"])
+    ]
+    if any(system["code"].strip() == row["code"].strip() for system in same_name):
+        state = "システム"
+    elif not same_name:
+        state = "仮採番"
+    elif len({system["code"].strip() for system in same_name}) == 1:
+        state = f"競合（システム={same_name[0]['code'].strip()}）"
+    else:
+        state = "要確認（同名複数）"
+    return {**row, "status": state}
+
+
+def reconcile_final_rows(rows: list[dict], system_rows: list[dict]) -> list[dict]:
+    reconciled = [reconcile_final_state(row, system_rows) for row in rows]
+    unique: dict[tuple[str, str, str], dict] = {}
+    for row in reconciled:
+        key = (row["item"], row["code"].strip(), guide_key(row["name"]))
+        unique.setdefault(key, row)
+    return list(unique.values())
+
+
 def resolve_code(item: str, display: str, rows: list[dict]) -> str:
     matches = [r for r in rows if r["item"] == item and guide_key(r["name"]) == guide_key(display)]
     for status in ("システム", "仮採番"):
@@ -155,6 +181,101 @@ class CodeMasterStateBehaviorTests(unittest.TestCase):
         self.assertNotIn("Cells(r, 1).Interior", color)
         self.assertNotIn("Cells(r, 2).Interior", color)
         self.assertNotIn("Cells(r, 3).Interior", color)
+
+
+class FinalGuideStateReconciliationTests(unittest.TestCase):
+    def test_final_reconciliation_promotes_exact_classification2_source_match(self) -> None:
+        row = {"item": "分類名２", "code": "490", "name": "河川改修工事", "status": "仮採番"}
+        source = [{"item": "分類名２", "code": "490", "name": "河川改修工事"}]
+        result = reconcile_final_state(row, source)
+        self.assertEqual(result["status"], "システム")
+
+    def test_final_reconciliation_promotes_exact_classification3_source_match(self) -> None:
+        row = {"item": "分類名３", "code": "490", "name": "河川改修工事", "status": "仮採番"}
+        source = [{"item": "分類名３", "code": "490", "name": "河川改修工事"}]
+        self.assertEqual(reconcile_final_state(row, source)["status"], "システム")
+
+    def test_final_reconciliation_keeps_unknown_code_provisional(self) -> None:
+        row = {"item": "分類名２", "code": "999", "name": "新規座", "status": "競合（旧）"}
+        self.assertEqual(reconcile_final_state(row, [])["status"], "仮採番")
+
+    def test_final_reconciliation_marks_single_different_system_code_as_conflict(self) -> None:
+        row = {"item": "分類名２", "code": "999", "name": "河川改修工事", "status": "仮採番"}
+        source = [{"item": "分類名２", "code": "490", "name": "河川改修工事"}]
+        self.assertEqual(reconcile_final_state(row, source)["status"], "競合（システム=490）")
+
+    def test_final_reconciliation_requires_review_for_multiple_system_codes(self) -> None:
+        row = {"item": "分類名２", "code": "999", "name": "河川改修工事", "status": "仮採番"}
+        source = [
+            {"item": "分類名２", "code": "490", "name": "河川改修工事"},
+            {"item": "分類名２", "code": "491", "name": "河川改修工事"},
+        ]
+        self.assertEqual(reconcile_final_state(row, source)["status"], "要確認（同名複数）")
+
+    def test_exact_system_code_wins_among_multiple_same_name_candidates(self) -> None:
+        row = {"item": "分類名２", "code": "490", "name": "河川改修工事", "status": "仮採番"}
+        source = [
+            {"item": "分類名２", "code": "490", "name": "河川改修工事"},
+            {"item": "分類名２", "code": "491", "name": "河川改修工事"},
+        ]
+        self.assertEqual(reconcile_final_state(row, source)["status"], "システム")
+
+    def test_final_reconciliation_collapses_only_identical_code_name_rows(self) -> None:
+        rows = [
+            {"item": "分類名２", "code": "490", "name": "河川改修工事", "status": "システム"},
+            {"item": "分類名２", "code": "490", "name": "河川改修工事", "status": "仮採番"},
+            {"item": "分類名２", "code": "998", "name": "河川改修工事", "status": "仮採番"},
+            {"item": "分類名２", "code": "999", "name": "河川改修工事", "status": "仮採番"},
+        ]
+        source = [{"item": "分類名２", "code": "490", "name": "河川改修工事"}]
+        result = reconcile_final_rows(rows, source)
+        self.assertEqual([(r["code"], r["status"]) for r in result], [
+            ("490", "システム"),
+            ("998", "競合（システム=490）"),
+            ("999", "競合（システム=490）"),
+        ])
+
+    def test_final_reconciliation_does_not_merge_distinct_unregistered_codes(self) -> None:
+        rows = [
+            {"item": "分類名２", "code": "998", "name": "未登録座", "status": "仮採番"},
+            {"item": "分類名２", "code": "999", "name": "未登録座", "status": "仮採番"},
+        ]
+        result = reconcile_final_rows(rows, [])
+        self.assertEqual([(r["code"], r["status"]) for r in result], [
+            ("998", "仮採番"),
+            ("999", "仮採番"),
+        ])
+
+    def test_step3_final_reconciliation_validates_required_headers_before_clearing(self) -> None:
+        step3 = procedure("手順3_コード管理CSVを作成する")
+        self.assertIn("ReconcileGuideCodeStatesFromMokuroku", step3)
+        self.assertLess(step3.index("ValidateGuideCodeSourceHeaders"), step3.index("wsDst.Cells.Clear"))
+
+    def test_final_reconciliation_handles_all_required_source_pairs_and_state_paths(self) -> None:
+        reconciler = procedure("ReconcileGuideCodeStatesFromMokuroku")
+        for expected in (
+            'exactMap.Exists',
+            'candidateCodes.Count',
+            'stateValue = "システム"',
+            'stateValue = "仮採番"',
+            '競合（システム=',
+            '要確認（同名複数）',
+            'NormalizeClassificationGuideKey',
+        ):
+            self.assertIn(expected, reconciler)
+
+    def test_required_source_header_validation_rejects_each_missing_pair(self) -> None:
+        validate = procedure("ValidateGuideCodeSourceHeaders")
+        for expected in (
+            'Array("分類コード２")',
+            'Array("分類名２")',
+            'Array("分類コード３")',
+            'Array("分類名３")',
+            'Err.Raise vbObjectError + 2604',
+            'Err.Raise vbObjectError + 2605',
+            '状態を確定できません。',
+        ):
+            self.assertIn(expected, validate)
     def test_status_matching_distinguishes_classification_name_2_and_3(self) -> None:
         for item in ("分類名２", "分類名３"):
             rows = [{"item": item, "code": "70", "name": "分類", "status": "仮採番"}]

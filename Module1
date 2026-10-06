@@ -7050,6 +7050,10 @@ Public Sub 手順3_コード管理CSVを作成する()
     Dim uniqueKey As String
     Dim dict As Object
     Dim pendingGuideRows As Collection
+    Dim class2CodeCol As Long
+    Dim class2NameCol As Long
+    Dim class3CodeCol As Long
+    Dim class3NameCol As Long
 
     On Error GoTo ErrorHandler
 
@@ -7062,6 +7066,8 @@ Public Sub 手順3_コード管理CSVを作成する()
 
     srcLastCol = GetLastHeaderCol(wsSrc)
     srcLastRow = GetLastUsedRow(wsSrc)
+    ValidateGuideCodeSourceHeaders wsSrc, srcLastCol, _
+        class2CodeCol, class2NameCol, class3CodeCol, class3NameCol
     EnsureCodeMasterRangeHasNoErrors wsDst, GetLastUsedRow(wsDst)
     ' 既存の仮採番・競合・要確認行を消去前にメモリへ退避する。
     Set pendingGuideRows = CapturePendingGuideCodeRows(wsDst)
@@ -7108,6 +7114,8 @@ ContinuePairLoop:
     Next i
 
     RestorePendingGuideCodeRows wsDst, pendingGuideRows, dict, outRow
+    ReconcileGuideCodeStatesFromMokuroku wsSrc, wsDst, srcLastRow, _
+        class2CodeCol, class2NameCol, class3CodeCol, class3NameCol, outRow
 
     ' ② 固定選択肢マスタを追加（重複キーで除外）
     AddCodeMasterRecord wsDst, dict, outRow, "毎年度利用区分", "1", "毎年作成"
@@ -7155,6 +7163,154 @@ SafeExit:
 ErrorHandler:
     MsgBox "コード管理CSV の作成中にエラーが発生しました: " & Err.Description, vbCritical
     Resume SafeExit
+
+End Sub
+
+Private Sub ValidateGuideCodeSourceHeaders( _
+    ByVal wsSrc As Worksheet, _
+    ByVal lastCol As Long, _
+    ByRef class2CodeCol As Long, _
+    ByRef class2NameCol As Long, _
+    ByRef class3CodeCol As Long, _
+    ByRef class3NameCol As Long)
+
+    class2CodeCol = FindHeaderColumn(wsSrc, lastCol, Array("分類コード２"))
+    class2NameCol = FindHeaderColumn(wsSrc, lastCol, Array("分類名２"))
+    class3CodeCol = FindHeaderColumn(wsSrc, lastCol, Array("分類コード３"))
+    class3NameCol = FindHeaderColumn(wsSrc, lastCol, Array("分類名３"))
+
+    If class2CodeCol = 0 Or class2NameCol = 0 Then
+        Err.Raise vbObjectError + 2604, , _
+            "目録CSVの分類コード２／分類名２を認識できないため、コード管理CSVの状態を確定できません。"
+    End If
+    If class3CodeCol = 0 Or class3NameCol = 0 Then
+        Err.Raise vbObjectError + 2605, , _
+            "目録CSVの分類コード３／分類名３を認識できないため、コード管理CSVの状態を確定できません。"
+    End If
+
+End Sub
+
+Private Sub ReconcileGuideCodeStatesFromMokuroku( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsMaster As Worksheet, _
+    ByVal sourceLastRow As Long, _
+    ByVal class2CodeCol As Long, _
+    ByVal class2NameCol As Long, _
+    ByVal class3CodeCol As Long, _
+    ByVal class3NameCol As Long, _
+    ByRef outRow As Long)
+
+    Dim exactMap As Object
+    Dim systemCodesByName As Object
+    Dim candidateCodes As Object
+    Dim seenRows As Object
+    Dim duplicateRows As Collection
+    Dim pairDefs As Variant
+    Dim pairIndex As Long
+    Dim sourceRow As Long
+    Dim masterRow As Long
+    Dim lastMasterRow As Long
+    Dim i As Long
+    Dim itemName As String
+    Dim codeValue As String
+    Dim displayName As String
+    Dim displayKey As String
+    Dim exactKey As String
+    Dim nameKey As String
+    Dim stateValue As String
+    Dim systemCode As String
+    Dim candidateCode As Variant
+
+    Set exactMap = CreateObject("Scripting.Dictionary")
+    exactMap.CompareMode = vbTextCompare
+    Set systemCodesByName = CreateObject("Scripting.Dictionary")
+    systemCodesByName.CompareMode = vbTextCompare
+
+    pairDefs = Array( _
+        Array("分類名２", class2CodeCol, class2NameCol), _
+        Array("分類名３", class3CodeCol, class3NameCol))
+
+    For pairIndex = LBound(pairDefs) To UBound(pairDefs)
+        itemName = CStr(pairDefs(pairIndex)(0))
+        For sourceRow = 2 To sourceLastRow
+            codeValue = Trim$(CStr(wsSrc.Cells(sourceRow, CLng(pairDefs(pairIndex)(1))).Value))
+            displayName = Trim$(CStr(wsSrc.Cells(sourceRow, CLng(pairDefs(pairIndex)(2))).Value))
+            displayKey = NormalizeClassificationGuideKey(displayName)
+            If Len(codeValue) > 0 And Len(displayKey) > 0 Then
+                exactKey = itemName & "|" & codeValue & "|" & displayKey
+                If Not exactMap.Exists(exactKey) Then exactMap.Add exactKey, True
+
+                nameKey = itemName & "|" & displayKey
+                If systemCodesByName.Exists(nameKey) Then
+                    Set candidateCodes = systemCodesByName(nameKey)
+                Else
+                    Set candidateCodes = CreateObject("Scripting.Dictionary")
+                    candidateCodes.CompareMode = vbTextCompare
+                    systemCodesByName.Add nameKey, candidateCodes
+                End If
+                If Not candidateCodes.Exists(codeValue) Then candidateCodes.Add codeValue, True
+            End If
+        Next sourceRow
+    Next pairIndex
+
+    lastMasterRow = GetLastUsedRow(wsMaster)
+    For masterRow = 2 To lastMasterRow
+        itemName = Trim$(CStr(wsMaster.Cells(masterRow, 1).Value))
+        If itemName = "分類名２" Or itemName = "分類名３" Then
+            codeValue = Trim$(CStr(wsMaster.Cells(masterRow, 2).Value))
+            displayName = Trim$(CStr(wsMaster.Cells(masterRow, 3).Value))
+            displayKey = NormalizeClassificationGuideKey(displayName)
+            If Len(codeValue) > 0 And Len(displayKey) > 0 Then
+                exactKey = itemName & "|" & codeValue & "|" & displayKey
+                nameKey = itemName & "|" & displayKey
+
+                If exactMap.Exists(exactKey) Then
+                    stateValue = "システム"
+                ElseIf Not systemCodesByName.Exists(nameKey) Then
+                    stateValue = "仮採番"
+                Else
+                    Set candidateCodes = systemCodesByName(nameKey)
+                    Select Case candidateCodes.Count
+                        Case 1
+                            For Each candidateCode In candidateCodes.Keys
+                                systemCode = CStr(candidateCode)
+                                Exit For
+                            Next candidateCode
+                            stateValue = "競合（システム=" & systemCode & "）"
+                        Case Else
+                            stateValue = "要確認（同名複数）"
+                    End Select
+                End If
+                wsMaster.Cells(masterRow, 4).Value = stateValue
+            End If
+        End If
+    Next masterRow
+
+    ' 完全一致した同一キーは1行に集約。異なるコードは別キーなので保持する。
+    Set seenRows = CreateObject("Scripting.Dictionary")
+    seenRows.CompareMode = vbTextCompare
+    Set duplicateRows = New Collection
+    For masterRow = 2 To lastMasterRow
+        itemName = Trim$(CStr(wsMaster.Cells(masterRow, 1).Value))
+        If itemName = "分類名２" Or itemName = "分類名３" Then
+            codeValue = Trim$(CStr(wsMaster.Cells(masterRow, 2).Value))
+            displayName = Trim$(CStr(wsMaster.Cells(masterRow, 3).Value))
+            displayKey = NormalizeClassificationGuideKey(displayName)
+            If Len(codeValue) > 0 And Len(displayKey) > 0 Then
+                exactKey = itemName & "|" & codeValue & "|" & displayKey
+                If seenRows.Exists(exactKey) Then
+                    duplicateRows.Add masterRow
+                Else
+                    seenRows.Add exactKey, True
+                End If
+            End If
+        End If
+    Next masterRow
+
+    For i = duplicateRows.Count To 1 Step -1
+        wsMaster.Rows(CLng(duplicateRows(i))).Delete
+    Next i
+    outRow = GetLastUsedRow(wsMaster) + 1
 
 End Sub
 
