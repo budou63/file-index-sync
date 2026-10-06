@@ -61,6 +61,31 @@ def reconcile_final_rows(rows: list[dict], system_rows: list[dict]) -> list[dict
     return list(unique.values())
 
 
+def source_first_rebuild(old_rows: list[dict], source_rows: list[dict]) -> list[dict]:
+    """Pure-Python contract model; VBA wiring is checked separately below."""
+    exact: dict[tuple[str, str, str], dict] = {}
+    for row in source_rows:
+        item = row["item"].replace("分類名2", "分類名２").replace("分類名3", "分類名３")
+        key = item, row["code"].strip(), guide_key(row["name"])
+        exact.setdefault(key, {**row, "item": item, "status": "システム"})
+    output = list(exact.values())
+    for row in old_rows:
+        item = row["item"].replace("分類名2", "分類名２").replace("分類名3", "分類名３")
+        key = item, row["code"].strip(), guide_key(row["name"])
+        if key not in exact:
+            output.append(reconcile_final_state({**row, "item": item}, output[:len(exact)]))
+    return output
+
+
+def validate_source_keys(source_rows: list[dict], output: list[dict]) -> None:
+    for source in source_rows:
+        item = source["item"].replace("分類名2", "分類名２").replace("分類名3", "分類名３")
+        matches = [row for row in output if row["item"] == item and row["code"].strip() == source["code"].strip()
+                   and guide_key(row["name"]) == guide_key(source["name"])]
+        if len(matches) != 1 or matches[0]["status"] != "システム":
+            raise ValueError((item, source["code"], source["name"]))
+
+
 def resolve_code(item: str, display: str, rows: list[dict]) -> str:
     matches = [r for r in rows if r["item"] == item and guide_key(r["name"]) == guide_key(display)]
     for status in ("システム", "仮採番"):
@@ -137,7 +162,7 @@ class CodeMasterStateBehaviorTests(unittest.TestCase):
         codebook = procedure("手順3_コード管理CSVを作成する")
         allocator = procedure("新ファイル基準表_登録予定分類コード採番")
         step4 = procedure("手順4_差分インポートCSVを作成する")
-        self.assertIn('Cells(outRow, 4).Value = "システム"', codebook)
+        self.assertIn('Cells(outRow, 4).Value = "システム"', procedure("BuildSystemGuideCodeMasterFromMokuroku"))
         self.assertIn('Set firstGuideCodeMap = BuildCodeMasterNameCodeMap("分類名２", firstGuideUsedCodes, False)', step4)
         self.assertIn('Set secondGuideCodeMap = BuildCodeMasterNameCodeMap("分類名３", secondGuideUsedCodes, False)', step4)
         self.assertIn('AppendCodeMasterRecord "分類名２", codeValue, guideName, "仮採番"', allocator)
@@ -184,6 +209,74 @@ class CodeMasterStateBehaviorTests(unittest.TestCase):
 
 
 class FinalGuideStateReconciliationTests(unittest.TestCase):
+    def test_wholesale_provisional_workplace_rows_become_system_first(self) -> None:
+        names = [("0", "全庁共通"), ("10", "計画"), ("20", "人事・議会・監査")]
+        source = [{"item": "分類名２", "code": code, "name": name} for code, name in names]
+        old = [{**row, "item": "分類名2", "status": "仮採番"} for row in source]
+        result = source_first_rebuild(old, source)
+        self.assertEqual([(row["code"], row["status"]) for row in result],
+                         [(code, "システム") for code, _ in names])
+        validate_source_keys(source, result)
+
+    def test_wholesale_provisional_classification3_and_pending_cases(self) -> None:
+        source = [{"item": "分類名３", "code": "7", "name": "全般"},
+                  {"item": "分類名３", "code": "8", "name": "共通"}]
+        old = [{**row, "status": "仮採番"} for row in source]
+        old += [{"item": "分類名３", "code": "999", "name": "新規座", "status": "仮採番"},
+                {"item": "分類名３", "code": "998", "name": "全般", "status": "仮採番"}]
+        result = source_first_rebuild(old, source)
+        self.assertEqual([row["status"] for row in result],
+                         ["システム", "システム", "仮採番", "競合（システム=7）"])
+        validate_source_keys(source, result)
+
+    def test_postcondition_catches_formal_key_provisional_and_duplicate(self) -> None:
+        source = [{"item": "分類名２", "code": "10", "name": "計画"}]
+        with self.assertRaises(ValueError):
+            validate_source_keys(source, [{**source[0], "status": "仮採番"}])
+        with self.assertRaises(ValueError):
+            validate_source_keys(source, [{**source[0], "status": "システム"}] * 2)
+
+    def test_step3_builds_authoritative_guides_before_merging_pending_and_checks_postcondition(self) -> None:
+        step3 = procedure("手順3_コード管理CSVを作成する")
+        self.assertLess(step3.index("BuildSystemGuideCodeMasterFromMokuroku"), step3.index("RestorePendingGuideCodeRows"))
+        self.assertLess(step3.index("RestorePendingGuideCodeRows"), step3.index("ValidateGuideCodeMasterPostcondition"))
+        self.assertLess(step3.index("ValidateGuideCodeMasterPostcondition"), step3.index('MsgBox "コード管理CSV の作成が完了しました。"'))
+
+    def test_step3_builds_offsheet_validates_committed_sheet_and_restores_on_failure(self) -> None:
+        step3 = procedure("手順3_コード管理CSVを作成する")
+        self.assertIn("Set buildBook = Workbooks.Add(xlWBATWorksheet)", step3)
+        self.assertIn("Set wsBuild = buildBook.Worksheets(1)", step3)
+        self.assertIn("BuildSystemGuideCodeMasterFromMokuroku wsSrc, wsBuild", step3)
+        self.assertIn("RestorePendingGuideCodeRows wsBuild", step3)
+        self.assertLess(step3.index("ValidateGuideCodeMasterPostcondition wsBuild"), step3.index("wsDst.Cells.Clear"))
+        self.assertIn("ValidateGuideCodeMasterPostcondition wsDst", step3)
+        self.assertIn("RestoreCodeMasterFromBackup wsDst, wsBackup", step3)
+        restore = procedure("RestoreCodeMasterFromBackup")
+        self.assertIn("wsBackup.UsedRange.Copy Destination:=wsDst.Range", restore)
+        self.assertIn("wsDst.Columns(col).ColumnWidth", restore)
+        self.assertIn("wsBackup.AutoFilter.Filters(filterIndex)", restore)
+        self.assertIn("hasCriteria2 = (Err.Number = 0)", restore)
+        self.assertIn("If hasCriteria2 Then", restore)
+        self.assertIn("keepBackupOpen = True", step3)
+        self.assertIn("Not keepBackupOpen Then buildBook.Close", step3)
+        self.assertIn("On Error Resume Next", step3)
+        self.assertLess(step3.index("wsDst.Copy After:=wsBuild"), step3.index("commitStarted = True"))
+        self.assertLess(step3.index("commitStarted = True"), step3.index("wsDst.Cells.Clear"))
+
+    def test_source_first_merge_uses_normalized_identity_and_preserves_distinct_codes(self) -> None:
+        build = procedure("BuildSystemGuideCodeMasterFromMokuroku")
+        restore = procedure("RestorePendingGuideCodeRows")
+        for text in ("NormalizeClassificationGuideKey", 'Cells(outRow, 4).Value = "システム"', 'exactMap.Add'):
+            self.assertIn(text, build)
+        self.assertIn("If exactMap.Exists(exactKey) Then GoTo ContinuePendingRow", restore)
+        self.assertIn('stateValue = "競合（システム="', restore)
+        self.assertIn('stateValue = "要確認（同名複数）"', restore)
+
+    def test_postcondition_checks_keys_status_and_duplicates_and_fails_closed(self) -> None:
+        check = procedure("ValidateGuideCodeMasterPostcondition")
+        for text in ('If stateValue = "システム"', 'If count <> 1', 'Not systemCounts.Exists', 'Err.Raise', '分類名２', '分類名３'):
+            self.assertIn(text, check)
+
     def test_final_reconciliation_promotes_exact_classification2_source_match(self) -> None:
         row = {"item": "分類名２", "code": "490", "name": "河川改修工事", "status": "仮採番"}
         source = [{"item": "分類名２", "code": "490", "name": "河川改修工事"}]
@@ -248,15 +341,15 @@ class FinalGuideStateReconciliationTests(unittest.TestCase):
 
     def test_step3_final_reconciliation_validates_required_headers_before_clearing(self) -> None:
         step3 = procedure("手順3_コード管理CSVを作成する")
-        self.assertIn("ReconcileGuideCodeStatesFromMokuroku", step3)
+        self.assertIn("BuildSystemGuideCodeMasterFromMokuroku", step3)
         self.assertLess(step3.index("ValidateGuideCodeSourceHeaders"), step3.index("wsDst.Cells.Clear"))
 
     def test_final_reconciliation_handles_all_required_source_pairs_and_state_paths(self) -> None:
-        reconciler = procedure("ReconcileGuideCodeStatesFromMokuroku")
+        reconciler = procedure("RestorePendingGuideCodeRows") + procedure("BuildSystemGuideCodeMasterFromMokuroku")
         for expected in (
             'exactMap.Exists',
             'candidateCodes.Count',
-            'stateValue = "システム"',
+            'Cells(outRow, 4).Value = "システム"',
             'stateValue = "仮採番"',
             '競合（システム=',
             '要確認（同名複数）',
@@ -312,7 +405,7 @@ class FinalGuideStateReconciliationTests(unittest.TestCase):
     def test_rebuild_keeps_each_system_duplicate(self) -> None:
         codebook = procedure("手順3_コード管理CSVを作成する")
         self.assertIn('uniqueKey = pairDefs(i)(0) & "|" & codeValue & "|" & nameValue', codebook)
-        self.assertIn('wsDst.Cells(outRow, 4).Value = "システム"', codebook)
+        self.assertIn('wsMaster.Cells(outRow, 4).Value = "システム"', procedure("BuildSystemGuideCodeMasterFromMokuroku"))
 
     def test_step4_warning_displays_role_name_and_both_codes(self) -> None:
         validator = procedure("GetStep4GuideCodeStateIssue")
@@ -335,9 +428,8 @@ class FinalGuideStateReconciliationTests(unittest.TestCase):
 
     def test_step3_reconcile_has_exact_zero_one_and_multiple_candidate_paths(self) -> None:
         restore = procedure("RestorePendingGuideCodeRows")
-        self.assertIn('And CStr(wsMaster.Cells(r, 4).Value) = "システム"', restore)
-        self.assertIn('And NormalizeClassificationGuideKey(CStr(wsMaster.Cells(r, 3).Value)) = displayKey', restore)
-        self.assertIn('If systemCode = codeValue Then exactFound = True', restore)
+        self.assertIn('If exactMap.Exists(exactKey) Then GoTo ContinuePendingRow', restore)
+        self.assertIn('If systemCodesByName.Exists(nameKey)', restore)
         self.assertIn('Case 0', restore)
         self.assertIn('stateValue = "仮採番"', restore)
         self.assertIn('Case 1', restore)

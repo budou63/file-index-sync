@@ -7037,6 +7037,12 @@ Public Sub 手順3_コード管理CSVを作成する()
 
     Dim wsSrc As Worksheet
     Dim wsDst As Worksheet
+    Dim wsBuild As Worksheet
+    Dim wsBackup As Worksheet
+    Dim buildBook As Workbook
+    Dim commitStarted As Boolean
+    Dim keepBackupOpen As Boolean
+    Dim failureMessage As String
     Dim srcLastRow As Long
     Dim srcLastCol As Long
     Dim pairDefs As Variant
@@ -7054,6 +7060,8 @@ Public Sub 手順3_コード管理CSVを作成する()
     Dim class2NameCol As Long
     Dim class3CodeCol As Long
     Dim class3NameCol As Long
+    Dim guideExactMap As Object
+    Dim guideNameCodes As Object
 
     On Error GoTo ErrorHandler
 
@@ -7068,25 +7076,30 @@ Public Sub 手順3_コード管理CSVを作成する()
     srcLastRow = GetLastUsedRow(wsSrc)
     ValidateGuideCodeSourceHeaders wsSrc, srcLastCol, _
         class2CodeCol, class2NameCol, class3CodeCol, class3NameCol
+    If srcLastRow < 2 Then
+        Err.Raise vbObjectError + 2607, , "目録CSVにデータ行がありません。コード管理CSVを更新できません。"
+    End If
     EnsureCodeMasterRangeHasNoErrors wsDst, GetLastUsedRow(wsDst)
     ' 既存の仮採番・競合・要確認行を消去前にメモリへ退避する。
     Set pendingGuideRows = CapturePendingGuideCodeRows(wsDst)
+
+    ' 検証完了まで既存のコード管理CSVを変更しない。
+    Set buildBook = Workbooks.Add(xlWBATWorksheet)
+    Set wsBuild = buildBook.Worksheets(1)
 
     pairDefs = Array( _
         Array("原課", Array("原課ID"), Array("原課")), _
         Array("保存期間", Array("保存期間ID"), Array("保存期間")), _
         Array("分類名１", Array("分類コード１"), Array("分類名１")), _
-        Array("分類名２", Array("分類コード２"), Array("分類名２")), _
-        Array("分類名３", Array("分類コード３"), Array("分類名３")), _
         Array("色", Array("色ID"), Array("色名")), _
         Array("媒体種別", Array("媒体種別ID"), Array("媒体種別")) _
     )
 
-    wsDst.Cells.Clear
-    wsDst.Range("A1:D1").Value = Array("項目名", "コード", "表示名", "状態")
+    wsBuild.Cells.Clear
+    wsBuild.Range("A1:D1").Value = Array("項目名", "コード", "表示名", "状態")
     outRow = 2
 
-    ' ① 実データからコード⇔表示名を抽出（見出し未存在はスキップ）
+    ' ① 分類名２・３以外の既存コード抽出。座は後段で最新目録CSVから先に構築する。
     For i = LBound(pairDefs) To UBound(pairDefs)
         codeCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(1))
         nameCol = FindHeaderColumn(wsSrc, srcLastCol, pairDefs(i)(2))
@@ -7100,12 +7113,9 @@ Public Sub 手順3_コード管理CSVを作成する()
                 uniqueKey = pairDefs(i)(0) & "|" & codeValue & "|" & nameValue
                 If Not dict.Exists(uniqueKey) Then
                     dict.Add uniqueKey, True
-                    wsDst.Cells(outRow, 1).value = pairDefs(i)(0)
-                    wsDst.Cells(outRow, 2).value = codeValue
-                    wsDst.Cells(outRow, 3).Value = nameValue
-                    If pairDefs(i)(0) = "分類名２" Or pairDefs(i)(0) = "分類名３" Then
-                        wsDst.Cells(outRow, 4).Value = "システム"
-                    End If
+                    wsBuild.Cells(outRow, 1).value = pairDefs(i)(0)
+                    wsBuild.Cells(outRow, 2).value = codeValue
+                    wsBuild.Cells(outRow, 3).Value = nameValue
                     outRow = outRow + 1
                 End If
             End If
@@ -7113,57 +7123,137 @@ Public Sub 手順3_コード管理CSVを作成する()
 ContinuePairLoop:
     Next i
 
-    RestorePendingGuideCodeRows wsDst, pendingGuideRows, dict, outRow
-    ReconcileGuideCodeStatesFromMokuroku wsSrc, wsDst, srcLastRow, _
-        class2CodeCol, class2NameCol, class3CodeCol, class3NameCol, outRow
+    BuildSystemGuideCodeMasterFromMokuroku wsSrc, wsBuild, srcLastRow, _
+        class2CodeCol, class2NameCol, class3CodeCol, class3NameCol, _
+        dict, outRow, guideExactMap, guideNameCodes
+    RestorePendingGuideCodeRows wsBuild, pendingGuideRows, dict, outRow, guideExactMap, guideNameCodes
 
     ' ② 固定選択肢マスタを追加（重複キーで除外）
-    AddCodeMasterRecord wsDst, dict, outRow, "毎年度利用区分", "1", "毎年作成"
-    AddCodeMasterRecord wsDst, dict, outRow, "毎年度利用区分", "2", "単年のみ"
+    AddCodeMasterRecord wsBuild, dict, outRow, "毎年度利用区分", "1", "毎年作成"
+    AddCodeMasterRecord wsBuild, dict, outRow, "毎年度利用区分", "2", "単年のみ"
 
-    AddCodeMasterRecord wsDst, dict, outRow, "年度暦年区分", "1", "年度"
-    AddCodeMasterRecord wsDst, dict, outRow, "年度暦年区分", "2", "暦年"
+    AddCodeMasterRecord wsBuild, dict, outRow, "年度暦年区分", "1", "年度"
+    AddCodeMasterRecord wsBuild, dict, outRow, "年度暦年区分", "2", "暦年"
 
 
-    AddCodeMasterRecord wsDst, dict, outRow, "完結区分", "-1", "未完結"
-    AddCodeMasterRecord wsDst, dict, outRow, "完結区分", "1", "完結"
+    AddCodeMasterRecord wsBuild, dict, outRow, "完結区分", "-1", "未完結"
+    AddCodeMasterRecord wsBuild, dict, outRow, "完結区分", "1", "完結"
 
-    AddCodeMasterRecord wsDst, dict, outRow, "公開区分", "-1", "非公開"
-    AddCodeMasterRecord wsDst, dict, outRow, "公開区分", "1", "公開"
+    AddCodeMasterRecord wsBuild, dict, outRow, "公開区分", "-1", "非公開"
+    AddCodeMasterRecord wsBuild, dict, outRow, "公開区分", "1", "公開"
 
-    AddCodeMasterRecord wsDst, dict, outRow, "歴史資料区分", "-1", "非該当"
-    AddCodeMasterRecord wsDst, dict, outRow, "歴史資料区分", "1", "該当"
+    AddCodeMasterRecord wsBuild, dict, outRow, "歴史資料区分", "-1", "非該当"
+    AddCodeMasterRecord wsBuild, dict, outRow, "歴史資料区分", "1", "該当"
 
-    AddCodeMasterRecord wsDst, dict, outRow, "廃棄区分", "1", "未廃棄"
-    AddCodeMasterRecord wsDst, dict, outRow, "廃棄区分", "2", "廃棄済"
-    AddCodeMasterRecord wsDst, dict, outRow, "廃棄区分", "3", "不明"
+    AddCodeMasterRecord wsBuild, dict, outRow, "廃棄区分", "1", "未廃棄"
+    AddCodeMasterRecord wsBuild, dict, outRow, "廃棄区分", "2", "廃棄済"
+    AddCodeMasterRecord wsBuild, dict, outRow, "廃棄区分", "3", "不明"
 
-    AddCodeMasterRecord wsDst, dict, outRow, "履歴ファイル区分", "-1", "非該当"
-    AddCodeMasterRecord wsDst, dict, outRow, "履歴ファイル区分", "1", "該当"
+    AddCodeMasterRecord wsBuild, dict, outRow, "履歴ファイル区分", "-1", "非該当"
+    AddCodeMasterRecord wsBuild, dict, outRow, "履歴ファイル区分", "1", "該当"
 
-    AddCodeMasterRecord wsDst, dict, outRow, "機密ファイル区分", "-1", "機密ファイル"
+    AddCodeMasterRecord wsBuild, dict, outRow, "機密ファイル区分", "-1", "機密ファイル"
 
-    With wsDst.Range("A1:D1")
+    ValidateGuideCodeMasterPostcondition wsBuild, guideExactMap, outRow - 1
+
+    With wsBuild.Range("A1:D1")
         .Font.Bold = True
         .Interior.Color = RGB(242, 242, 242)
     End With
 
-    ApplyCodeMasterStatusFormatting wsDst, outRow - 1
+    ApplyCodeMasterStatusFormatting wsBuild, outRow - 1
+    wsBuild.Range(wsBuild.Cells(1, 1), wsBuild.Cells(outRow - 1, 4)).AutoFilter
+    wsBuild.Columns("A:D").AutoFit
+
+    wsDst.Copy After:=wsBuild
+    Set wsBackup = buildBook.Worksheets(wsBuild.Index + 1)
+    commitStarted = True
+    If wsDst.AutoFilterMode Then wsDst.AutoFilterMode = False
+    wsDst.Cells.Clear
+    wsBuild.Range(wsBuild.Cells(1, 1), wsBuild.Cells(outRow - 1, 4)).Copy Destination:=wsDst.Range("A1")
     wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(outRow - 1, 4)).AutoFilter
     wsDst.Columns("A:D").AutoFit
+    ValidateGuideCodeMasterPostcondition wsDst, guideExactMap, outRow - 1
+    commitStarted = False
 
     MsgBox "コード管理CSV の作成が完了しました。" & vbCrLf & _
            "出力件数: " & outRow - 2 & " 件", vbInformation
 
 SafeExit:
+    On Error Resume Next
+    If Not buildBook Is Nothing And Not keepBackupOpen Then buildBook.Close SaveChanges:=False
+    If Err.Number <> 0 Then MsgBox "一時ブックを閉じられませんでした。保存せず手動で閉じてください: " & Err.Description, vbExclamation
+    Err.Clear
     Application.ScreenUpdating = True
     Application.EnableEvents = True
+    On Error GoTo 0
     Exit Sub
 
 ErrorHandler:
-    MsgBox "コード管理CSV の作成中にエラーが発生しました: " & Err.Description, vbCritical
+    failureMessage = Err.Description
+    If commitStarted Then
+        On Error Resume Next
+        RestoreCodeMasterFromBackup wsDst, wsBackup
+        If Err.Number <> 0 Then
+            keepBackupOpen = True
+            failureMessage = failureMessage & vbCrLf & _
+                "元の表への復旧にも失敗しました。一時バックアップのブックを閉じずに残します。" & _
+                "元のブックは保存せず、バックアップから復旧してください: " & Err.Description
+        End If
+        On Error GoTo 0
+    End If
+    MsgBox "コード管理CSV の作成中にエラーが発生しました: " & failureMessage, vbCritical
     Resume SafeExit
 
+End Sub
+
+Private Sub RestoreCodeMasterFromBackup(ByVal wsDst As Worksheet, ByVal wsBackup As Worksheet)
+    Dim col As Long
+    Dim lastCol As Long
+    Dim filterIndex As Long
+    Dim filterOperator As Long
+    Dim criteria1 As Variant
+    Dim criteria2 As Variant
+    Dim hasCriteria2 As Boolean
+
+    If wsDst.AutoFilterMode Then wsDst.AutoFilterMode = False
+    wsDst.Cells.Clear
+    wsBackup.UsedRange.Copy Destination:=wsDst.Range(wsBackup.UsedRange.Address)
+
+    lastCol = wsBackup.UsedRange.Column + wsBackup.UsedRange.Columns.Count - 1
+    For col = 1 To lastCol
+        wsDst.Columns(col).ColumnWidth = wsBackup.Columns(col).ColumnWidth
+        wsDst.Columns(col).Hidden = wsBackup.Columns(col).Hidden
+    Next col
+
+    If wsBackup.AutoFilterMode Then
+        wsDst.Range(wsBackup.AutoFilter.Range.Address).AutoFilter
+        For filterIndex = 1 To wsBackup.AutoFilter.Filters.Count
+            If wsBackup.AutoFilter.Filters(filterIndex).On Then
+                filterOperator = wsBackup.AutoFilter.Filters(filterIndex).Operator
+                criteria1 = wsBackup.AutoFilter.Filters(filterIndex).Criteria1
+                If filterOperator <> 0 Then
+                    hasCriteria2 = False
+                    Err.Clear
+                    On Error Resume Next
+                    criteria2 = wsBackup.AutoFilter.Filters(filterIndex).Criteria2
+                    hasCriteria2 = (Err.Number = 0)
+                    Err.Clear
+                    On Error GoTo 0
+                    If hasCriteria2 Then
+                        wsDst.Range(wsBackup.AutoFilter.Range.Address).AutoFilter _
+                            Field:=filterIndex, Criteria1:=criteria1, Operator:=filterOperator, Criteria2:=criteria2
+                    Else
+                        wsDst.Range(wsBackup.AutoFilter.Range.Address).AutoFilter _
+                            Field:=filterIndex, Criteria1:=criteria1, Operator:=filterOperator
+                    End If
+                Else
+                    wsDst.Range(wsBackup.AutoFilter.Range.Address).AutoFilter _
+                        Field:=filterIndex, Criteria1:=criteria1
+                End If
+            End If
+        Next filterIndex
+    End If
 End Sub
 
 Private Sub ValidateGuideCodeSourceHeaders( _
@@ -7190,7 +7280,7 @@ Private Sub ValidateGuideCodeSourceHeaders( _
 
 End Sub
 
-Private Sub ReconcileGuideCodeStatesFromMokuroku( _
+Private Sub BuildSystemGuideCodeMasterFromMokuroku( _
     ByVal wsSrc As Worksheet, _
     ByVal wsMaster As Worksheet, _
     ByVal sourceLastRow As Long, _
@@ -7198,28 +7288,23 @@ Private Sub ReconcileGuideCodeStatesFromMokuroku( _
     ByVal class2NameCol As Long, _
     ByVal class3CodeCol As Long, _
     ByVal class3NameCol As Long, _
-    ByRef outRow As Long)
+    ByVal dict As Object, _
+    ByRef outRow As Long, _
+    ByRef exactMap As Object, _
+    ByRef systemCodesByName As Object)
 
-    Dim exactMap As Object
-    Dim systemCodesByName As Object
     Dim candidateCodes As Object
-    Dim seenRows As Object
-    Dim duplicateRows As Collection
     Dim pairDefs As Variant
     Dim pairIndex As Long
     Dim sourceRow As Long
-    Dim masterRow As Long
-    Dim lastMasterRow As Long
-    Dim i As Long
+
     Dim itemName As String
     Dim codeValue As String
     Dim displayName As String
     Dim displayKey As String
     Dim exactKey As String
     Dim nameKey As String
-    Dim stateValue As String
-    Dim systemCode As String
-    Dim candidateCode As Variant
+
 
     Set exactMap = CreateObject("Scripting.Dictionary")
     exactMap.CompareMode = vbTextCompare
@@ -7238,7 +7323,15 @@ Private Sub ReconcileGuideCodeStatesFromMokuroku( _
             displayKey = NormalizeClassificationGuideKey(displayName)
             If Len(codeValue) > 0 And Len(displayKey) > 0 Then
                 exactKey = itemName & "|" & codeValue & "|" & displayKey
-                If Not exactMap.Exists(exactKey) Then exactMap.Add exactKey, True
+                If Not exactMap.Exists(exactKey) Then
+                    exactMap.Add exactKey, displayName
+                    wsMaster.Cells(outRow, 1).Value = itemName
+                    wsMaster.Cells(outRow, 2).Value = codeValue
+                    wsMaster.Cells(outRow, 3).Value = displayName
+                    wsMaster.Cells(outRow, 4).Value = "システム"
+                    dict(itemName & "|" & codeValue & "|" & displayName) = True
+                    outRow = outRow + 1
+                End If
 
                 nameKey = itemName & "|" & displayKey
                 If systemCodesByName.Exists(nameKey) Then
@@ -7253,64 +7346,78 @@ Private Sub ReconcileGuideCodeStatesFromMokuroku( _
         Next sourceRow
     Next pairIndex
 
-    lastMasterRow = GetLastUsedRow(wsMaster)
-    For masterRow = 2 To lastMasterRow
-        itemName = Trim$(CStr(wsMaster.Cells(masterRow, 1).Value))
-        If itemName = "分類名２" Or itemName = "分類名３" Then
-            codeValue = Trim$(CStr(wsMaster.Cells(masterRow, 2).Value))
-            displayName = Trim$(CStr(wsMaster.Cells(masterRow, 3).Value))
-            displayKey = NormalizeClassificationGuideKey(displayName)
-            If Len(codeValue) > 0 And Len(displayKey) > 0 Then
-                exactKey = itemName & "|" & codeValue & "|" & displayKey
-                nameKey = itemName & "|" & displayKey
+End Sub
 
-                If exactMap.Exists(exactKey) Then
-                    stateValue = "システム"
-                ElseIf Not systemCodesByName.Exists(nameKey) Then
-                    stateValue = "仮採番"
-                Else
-                    Set candidateCodes = systemCodesByName(nameKey)
-                    Select Case candidateCodes.Count
-                        Case 1
-                            For Each candidateCode In candidateCodes.Keys
-                                systemCode = CStr(candidateCode)
-                                Exit For
-                            Next candidateCode
-                            stateValue = "競合（システム=" & systemCode & "）"
-                        Case Else
-                            stateValue = "要確認（同名複数）"
-                    End Select
-                End If
-                wsMaster.Cells(masterRow, 4).Value = stateValue
-            End If
-        End If
-    Next masterRow
+Private Sub ValidateGuideCodeMasterPostcondition( _
+    ByVal wsMaster As Worksheet, ByVal exactMap As Object, ByVal lastRow As Long)
 
-    ' 完全一致した同一キーは1行に集約。異なるコードは別キーなので保持する。
-    Set seenRows = CreateObject("Scripting.Dictionary")
-    seenRows.CompareMode = vbTextCompare
-    Set duplicateRows = New Collection
-    For masterRow = 2 To lastMasterRow
-        itemName = Trim$(CStr(wsMaster.Cells(masterRow, 1).Value))
+    Dim counts As Object
+    Dim systemCounts As Object
+    Dim r As Long
+    Dim itemName As String
+    Dim codeValue As String
+    Dim displayName As String
+    Dim stateValue As String
+    Dim exactKey As String
+    Dim key As Variant
+    Dim count As Long
+    Dim failures As String
+    Dim failureCount As Long
+    Dim source2Count As Long
+    Dim source3Count As Long
+    Dim output2Count As Long
+    Dim output3Count As Long
+
+    Set counts = CreateObject("Scripting.Dictionary")
+    counts.CompareMode = vbTextCompare
+    Set systemCounts = CreateObject("Scripting.Dictionary")
+    systemCounts.CompareMode = vbTextCompare
+
+    For r = 2 To lastRow
+        itemName = CanonicalHeaderName(Trim$(CStr(wsMaster.Cells(r, 1).Value)))
         If itemName = "分類名２" Or itemName = "分類名３" Then
-            codeValue = Trim$(CStr(wsMaster.Cells(masterRow, 2).Value))
-            displayName = Trim$(CStr(wsMaster.Cells(masterRow, 3).Value))
-            displayKey = NormalizeClassificationGuideKey(displayName)
-            If Len(codeValue) > 0 And Len(displayKey) > 0 Then
-                exactKey = itemName & "|" & codeValue & "|" & displayKey
-                If seenRows.Exists(exactKey) Then
-                    duplicateRows.Add masterRow
-                Else
-                    seenRows.Add exactKey, True
+            codeValue = Trim$(CStr(wsMaster.Cells(r, 2).Value))
+            displayName = Trim$(CStr(wsMaster.Cells(r, 3).Value))
+            stateValue = Trim$(CStr(wsMaster.Cells(r, 4).Value))
+            exactKey = itemName & "|" & codeValue & "|" & NormalizeClassificationGuideKey(displayName)
+            counts(exactKey) = CLng(counts(exactKey)) + 1
+            If stateValue = "システム" Then
+                systemCounts(exactKey) = CLng(systemCounts(exactKey)) + 1
+                If itemName = "分類名２" Then output2Count = output2Count + 1
+                If itemName = "分類名３" Then output3Count = output3Count + 1
+                If Not exactMap.Exists(exactKey) Then
+                    failureCount = failureCount + 1
+                    If failureCount <= 10 Then failures = failures & vbCrLf & itemName & " / コード=" & codeValue & " / " & displayName
                 End If
             End If
         End If
-    Next masterRow
+    Next r
 
-    For i = duplicateRows.Count To 1 Step -1
-        wsMaster.Rows(CLng(duplicateRows(i))).Delete
-    Next i
-    outRow = GetLastUsedRow(wsMaster) + 1
+    For Each key In exactMap.Keys
+        itemName = Left$(CStr(key), InStr(1, CStr(key), "|", vbBinaryCompare) - 1)
+        If itemName = "分類名２" Then source2Count = source2Count + 1
+        If itemName = "分類名３" Then source3Count = source3Count + 1
+        count = 0
+        If counts.Exists(CStr(key)) Then count = CLng(counts(CStr(key)))
+        If count <> 1 Or Not systemCounts.Exists(CStr(key)) Then
+            failureCount = failureCount + 1
+            If failureCount <= 10 Then failures = failures & vbCrLf & itemName & " / コード・表示名=" & Mid$(CStr(key), Len(itemName) + 2)
+        ElseIf CLng(systemCounts(CStr(key))) <> 1 Then
+            failureCount = failureCount + 1
+            If failureCount <= 10 Then failures = failures & vbCrLf & itemName & " / コード・表示名=" & Mid$(CStr(key), Len(itemName) + 2)
+        End If
+    Next key
+
+    If source2Count = 0 Then
+        Err.Raise vbObjectError + 2608, , "目録CSVに分類名２の正式コードがありません。データを確認してください。"
+    End If
+    If source2Count <> output2Count Or source3Count <> output3Count Then failureCount = failureCount + 1
+    If failureCount > 0 Then
+        Err.Raise vbObjectError + 2606, , _
+            "コード管理CSVの整合性検証に失敗しました。目録CSVの正式分類コードをシステムとして登録できていません。" & _
+            vbCrLf & "分類名２=" & CStr(output2Count) & "/" & CStr(source2Count) & _
+            "、分類名３=" & CStr(output3Count) & "/" & CStr(source3Count) & failures
+    End If
 
 End Sub
 
@@ -7349,7 +7456,7 @@ Private Function CapturePendingGuideCodeRows(ByVal wsMaster As Worksheet) As Col
     lastRow = GetLastUsedRow(wsMaster)
     EnsureCodeMasterRangeHasNoErrors wsMaster, lastRow
     For r = 2 To lastRow
-        itemName = Trim$(CStr(wsMaster.Cells(r, 1).Value))
+        itemName = CanonicalHeaderName(Trim$(CStr(wsMaster.Cells(r, 1).Value)))
         stateValue = Trim$(CStr(wsMaster.Cells(r, 4).Value))
         If itemName = "分類名２" Or itemName = "分類名３" Then
             If Len(stateValue) = 0 Then stateValue = "仮採番" ' 旧版でD列未設定のコードも最新CSV照合までは保持する。
@@ -7370,44 +7477,35 @@ Private Sub RestorePendingGuideCodeRows( _
     ByVal wsMaster As Worksheet, _
     ByVal pendingRows As Collection, _
     ByVal dict As Object, _
-    ByRef outRow As Long)
+    ByRef outRow As Long, _
+    ByVal exactMap As Object, _
+    ByVal systemCodesByName As Object)
 
     Dim pending As Variant
-    Dim lastSystemRow As Long
-    Dim r As Long
     Dim itemName As String
     Dim codeValue As String
     Dim displayName As String
     Dim displayKey As String
+    Dim exactKey As String
+    Dim nameKey As String
     Dim systemCode As String
     Dim stateValue As String
-    Dim exactFound As Boolean
     Dim candidateCodes As Object
     Dim candidateCodeKey As Variant
 
     If wsMaster Is Nothing Then Exit Sub
     If pendingRows Is Nothing Then Exit Sub
-    lastSystemRow = outRow - 1
 
     For Each pending In pendingRows
-        itemName = CStr(pending(0))
-        codeValue = CStr(pending(1))
+        itemName = CanonicalHeaderName(CStr(pending(0)))
+        codeValue = Trim$(CStr(pending(1)))
         displayName = CStr(pending(2))
         displayKey = NormalizeClassificationGuideKey(displayName)
-        exactFound = False
+        exactKey = itemName & "|" & codeValue & "|" & displayKey
+        nameKey = itemName & "|" & displayKey
+        If exactMap.Exists(exactKey) Then GoTo ContinuePendingRow
         Set candidateCodes = CreateObject("Scripting.Dictionary")
-
-        For r = 2 To lastSystemRow
-            If CStr(wsMaster.Cells(r, 1).Value) = itemName _
-               And CStr(wsMaster.Cells(r, 4).Value) = "システム" _
-               And NormalizeClassificationGuideKey(CStr(wsMaster.Cells(r, 3).Value)) = displayKey Then
-                systemCode = Trim$(CStr(wsMaster.Cells(r, 2).Value))
-                If Not candidateCodes.Exists(systemCode) Then candidateCodes.Add systemCode, True
-                If systemCode = codeValue Then exactFound = True
-            End If
-        Next r
-
-        If exactFound Then GoTo ContinuePendingRow
+        If systemCodesByName.Exists(nameKey) Then Set candidateCodes = systemCodesByName(nameKey)
         Select Case candidateCodes.Count
             Case 0
                 stateValue = "仮採番"
