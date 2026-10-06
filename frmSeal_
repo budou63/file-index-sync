@@ -36,6 +36,12 @@ Private Sub CommandButton4_Click()
 
 End Sub
 
+Private Sub CommandButton10_Click()
+
+    新ファイル基準表生成
+
+End Sub
+
 Private Sub CommandButton5_Click()
 
     キャビネットガイド作成_実行
