@@ -2886,7 +2886,9 @@ Public Sub 手順4_差分インポートCSVを作成する()
     keyCategory2Edit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("分類名２"))
     keyMediaEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("媒体種別"))
     keyPeriodEdit = FindHeaderColumn(wsEdit, editLastCol, GetStep2HeaderCandidates("保存期間"))
-    bikoColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("備考"))
+    bikoColEdit = GetUniqueRemarkColumnOrRaise(wsEdit, editLastCol)
+    If bikoColEdit <= 0 Then Err.Raise vbObjectError + 2610, , _
+        "新ファイル基準表の備考列を認識できないため、差分抽出と分類コードの新規採番を中断します。"
     syncStatusColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("同期状態"))
     fileIdColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイルID"))
     fileNoColEdit = FindHeaderColumn(wsEdit, editLastCol, Array("ファイル番号"))
@@ -3140,6 +3142,26 @@ ErrorHandler:
     Resume SafeExit
 
 End Sub
+
+Private Function GetUniqueRemarkColumnOrRaise(ByVal ws As Worksheet, ByVal lastCol As Long) As Long
+
+    Dim colNo As Long
+    Dim foundCount As Long
+    Dim foundCol As Long
+    Dim headerValue As String
+
+    For colNo = 1 To lastCol
+        headerValue = Trim$(CStr(ws.Cells(1, colNo).Value))
+        If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName("備考"), vbTextCompare) = 0 Then
+            foundCount = foundCount + 1
+            foundCol = colNo
+        End If
+    Next colNo
+    If foundCount > 1 Then Err.Raise vbObjectError + 2611, , _
+        "新ファイル基準表の備考列が重複しています。差分抽出と分類コードの新規採番を中断します。"
+    GetUniqueRemarkColumnOrRaise = foundCol
+
+End Function
 
 Private Function ContainsMacroInsertRemark(ByVal remarkValue As Variant) As Boolean
 
@@ -7928,6 +7950,7 @@ Public Sub 新ファイル基準表_登録予定分類コード採番( _
     Dim guide3Col As Long
     Dim code3Col As Long
     Dim syncCol As Long
+    Dim bikoCol As Long
     Dim r As Long
     Dim guideName As String
     Dim guideKey As String
@@ -7960,7 +7983,7 @@ Public Sub 新ファイル基準表_登録予定分類コード採番( _
     If wsEdit Is Nothing Then Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     If wsEdit Is Nothing Then GoTo SafeExit
 
-    lastCol = GetLastUsedCol(wsEdit)
+    lastCol = GetLastHeaderCol(wsEdit)
     lastRow = GetLastUsedRow(wsEdit)
     If lastCol <= 0 Or lastRow < 2 Then GoTo SafeExit
 
@@ -7973,8 +7996,11 @@ Public Sub 新ファイル基準表_登録予定分類コード採番( _
     guide3Col = FindHeaderColumn(wsEdit, lastCol, GetStep2HeaderCandidates("分類名３"))
     code3Col = FindHeaderColumn(wsEdit, lastCol, Array("分類コード３"))
     syncCol = FindHeaderColumn(wsEdit, lastCol, Array("同期状態"))
+    bikoCol = GetUniqueRemarkColumnOrRaise(wsEdit, lastCol)
 
     If guide2Col <= 0 Or code2Col <= 0 Or syncCol <= 0 Then GoTo SafeExit
+    If bikoCol <= 0 Then Err.Raise vbObjectError + 2610, , _
+        "新ファイル基準表の備考列を認識できないため、分類コードの新規採番を中断します。"
 
     Set code2ByName = BuildCodeMasterNameCodeMap("分類名２", usedCode2, True)
     Set code3ByName = BuildCodeMasterNameCodeMap("分類名３", usedCode3, True)
@@ -7988,6 +8014,7 @@ Public Sub 新ファイル基準表_登録予定分類コード採番( _
     ' 分類コード２は第1ガイド名単位で処理する。同名の登録予定行には同じコードを反映する。
     For Each targetRow In rowsToProcess
         r = CLng(targetRow)
+        If ContainsMacroInsertRemark(wsEdit.Cells(r, bikoCol).Value) Then GoTo ContinueCollectGuide2
         If IsIgnoredBySyncStatus(CStr(wsEdit.Cells(r, syncCol).Value)) Then GoTo ContinueCollectGuide2
         If NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) <> NormalizeCellValue("登録予定") Then GoTo ContinueCollectGuide2
 
@@ -8048,6 +8075,7 @@ ContinueCollectGuide2:
 
     For Each targetRow In rowsToProcess
         r = CLng(targetRow)
+        If ContainsMacroInsertRemark(wsEdit.Cells(r, bikoCol).Value) Then GoTo ContinueNextRow
         If IsIgnoredBySyncStatus(CStr(wsEdit.Cells(r, syncCol).Value)) Then GoTo ContinueNextRow
         If NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) <> NormalizeCellValue("登録予定") Then GoTo ContinueNextRow
 
