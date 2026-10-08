@@ -141,7 +141,7 @@ class CodeMasterStateBehaviorTests(unittest.TestCase):
 
     def test_step3_rebuild_preserves_pending_rows_and_writes_four_headers(self) -> None:
         codebook = procedure("手順3_コード管理CSVを作成する")
-        self.assertIn('Array("項目名", "コード", "表示名", "状態")', codebook)
+        self.assertIn('Array("項目名", "コード", "表示名", "状態", "親分類コード")', codebook)
         self.assertIn("退避", codebook)
         self.assertIn("CapturePendingGuideCodeRows", codebook)
         self.assertIn("仮採番", procedure("CapturePendingGuideCodeRows"))
@@ -150,7 +150,7 @@ class CodeMasterStateBehaviorTests(unittest.TestCase):
         self.assertLess(codebook.index("CapturePendingGuideCodeRows"), codebook.index("wsDst.Cells.Clear"))
         self.assertIn("RestorePendingGuideCodeRows", codebook)
         self.assertIn("AutoFilter", codebook)
-        self.assertIn('Columns("A:D").AutoFit', codebook)
+        self.assertIn('Columns("A:E").AutoFit', codebook)
 
     def test_legacy_unlabeled_codes_are_captured_for_step3_reconciliation(self) -> None:
         capture = procedure("CapturePendingGuideCodeRows")
@@ -164,11 +164,11 @@ class CodeMasterStateBehaviorTests(unittest.TestCase):
         step4 = procedure("手順4_差分インポートCSVを作成する")
         self.assertIn('Cells(outRow, 4).Value = "システム"', procedure("BuildSystemGuideCodeMasterFromMokuroku"))
         self.assertIn('Set firstGuideCodeMap = BuildCodeMasterNameCodeMap("分類名２", firstGuideUsedCodes, False)', step4)
-        self.assertIn('Set secondGuideCodeMap = BuildCodeMasterNameCodeMap("分類名３", secondGuideUsedCodes, False)', step4)
+        self.assertIn('Set secondGuideCodeMap = BuildCodeMasterNameCodeMap("分類名３", secondGuideUsedCodes, False, True)', step4)
         self.assertIn('AppendCodeMasterRecord "分類名２", codeValue, guideName, "仮採番"', allocator)
         self.assertIn('AppendCodeMasterRecord "分類名３", codeValue, guideName, "仮採番"', allocator)
         self.assertIn('BuildCodeMasterNameCodeMap("分類名２", usedCode2, True)', allocator)
-        self.assertIn('BuildCodeMasterNameCodeMap("分類名３", usedCode3, True)', allocator)
+        self.assertIn('BuildCodeMasterNameCodeMap("分類名３", usedCode3, True, True)', allocator)
 
     def test_append_helper_writes_status_to_column_d(self) -> None:
         append = procedure("AppendCodeMasterRecord")
@@ -187,7 +187,7 @@ class CodeMasterStateBehaviorTests(unittest.TestCase):
         reason = procedure("GetStep4GuideSeatCheckReason")
         step4 = procedure("手順4_差分インポートCSVを作成する")
         self.assertIn('BuildCodeMasterNameCodeMap("分類名２", firstGuideUsedCodes, False)', step4)
-        self.assertIn('BuildCodeMasterNameCodeMap("分類名３", secondGuideUsedCodes, False)', step4)
+        self.assertIn('BuildCodeMasterNameCodeMap("分類名３", secondGuideUsedCodes, False, True)', step4)
         self.assertIn("firstGuideCodeMap", reason)
         self.assertIn("secondGuideCodeMap", reason)
 
@@ -442,7 +442,7 @@ class FinalGuideStateReconciliationTests(unittest.TestCase):
 
     def test_state_paths_guard_excel_error_values(self) -> None:
         validator = procedure("ValidateStep4GuideCodeStates")
-        self.assertIn('GetStep4GuideCodeStateIssue(CStr(guideKinds(i)), CStr(guideItems(i)), guideName)', validator)
+        self.assertIn('GetStep4GuideCodeStateIssue("第2ガイド", "分類名３", secondGuideName, parentCodeValue)', validator)
         self.assertNotIn('guideName, "")', validator)
         self.assertIn("EnsureCodeMasterRangeHasNoErrors", procedure("CapturePendingGuideCodeRows"))
         self.assertIn("EnsureCodeMasterRangeHasNoErrors", procedure("BuildCodeMasterNameCodeMap"))
