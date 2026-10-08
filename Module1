@@ -7044,6 +7044,8 @@ Public Sub 手順3_コード管理CSVを作成する()
     Dim keepBackupOpen As Boolean
     Dim failureMessage As String
     Dim srcLastRow As Long
+    Dim findLastRow As Long
+    Dim rowDiagnostic As String
     Dim srcLastCol As Long
     Dim pairDefs As Variant
     Dim i As Long
@@ -7073,11 +7075,21 @@ Public Sub 手順3_コード管理CSVを作成する()
     Application.EnableEvents = False
 
     srcLastCol = GetLastHeaderCol(wsSrc)
-    srcLastRow = GetLastUsedRow(wsSrc)
     ValidateGuideCodeSourceHeaders wsSrc, srcLastCol, _
         class2CodeCol, class2NameCol, class3CodeCol, class3NameCol
+    srcLastRow = GetLastMokurokuDataRow(wsSrc, class2CodeCol, class2NameCol, class3CodeCol, class3NameCol)
+    findLastRow = GetLastUsedRow(wsSrc)
+    If findLastRow <> srcLastRow Then
+        rowDiagnostic = vbCrLf & "行数診断: A:H/分類列=" & CStr(srcLastRow) & _
+            "、従来Find=" & CStr(findLastRow)
+        Debug.Print "コード管理CSV " & wsSrc.Name & rowDiagnostic
+    End If
     If srcLastRow < 2 Then
-        Err.Raise vbObjectError + 2607, , "目録CSVにデータ行がありません。コード管理CSVを更新できません。"
+        Err.Raise vbObjectError + 2607, , _
+            "目録CSVのデータ行を認識できません。コード管理CSVを更新できません。" & vbCrLf & _
+            "マクロのブック: " & ThisWorkbook.FullName & vbCrLf & _
+            "参照シート: " & wsSrc.Name & "、A:H/分類列の最終行: " & CStr(srcLastRow) & _
+            "、従来のFindによる最終行: " & CStr(findLastRow)
     End If
     EnsureCodeMasterRangeHasNoErrors wsDst, GetLastUsedRow(wsDst)
     ' 既存の仮採番・競合・要確認行を消去前にメモリへ退避する。
@@ -7177,7 +7189,7 @@ ContinuePairLoop:
     commitStarted = False
 
     MsgBox "コード管理CSV の作成が完了しました。" & vbCrLf & _
-           "出力件数: " & outRow - 2 & " 件", vbInformation
+           "出力件数: " & outRow - 2 & " 件" & rowDiagnostic, vbInformation
 
 SafeExit:
     On Error Resume Next
@@ -7206,6 +7218,29 @@ ErrorHandler:
     Resume SafeExit
 
 End Sub
+
+Private Function GetLastMokurokuDataRow( _
+    ByVal wsSrc As Worksheet, ByVal class2CodeCol As Long, ByVal class2NameCol As Long, _
+    ByVal class3CodeCol As Long, ByVal class3NameCol As Long) As Long
+
+    Dim col As Long
+    Dim candidate As Long
+    Dim guideColumns As Variant
+    Dim i As Long
+
+    ' 職場目録CSVの先頭A:H（ファイルID～タイトル）と必要な分類列を直接調べる。
+    ' ExcelのFindダイアログに残る検索条件には依存しない。
+    GetLastMokurokuDataRow = 1
+    For col = 1 To 8
+        candidate = wsSrc.Cells(wsSrc.Rows.Count, col).End(xlUp).Row
+        If candidate > GetLastMokurokuDataRow Then GetLastMokurokuDataRow = candidate
+    Next col
+    guideColumns = Array(class2CodeCol, class2NameCol, class3CodeCol, class3NameCol)
+    For i = LBound(guideColumns) To UBound(guideColumns)
+        candidate = wsSrc.Cells(wsSrc.Rows.Count, CLng(guideColumns(i))).End(xlUp).Row
+        If candidate > GetLastMokurokuDataRow Then GetLastMokurokuDataRow = candidate
+    Next i
+End Function
 
 Private Sub RestoreCodeMasterFromBackup(ByVal wsDst As Worksheet, ByVal wsBackup As Worksheet)
     Dim col As Long
