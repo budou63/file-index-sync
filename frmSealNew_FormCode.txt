@@ -112,6 +112,11 @@ EH:
 End Sub
 
 Private Sub UserForm_Initialize()
+    EnsureFrmSealNewInitialized
+End Sub
+
+Public Sub EnsureFrmSealNewInitialized()
+    If Not mSinks Is Nothing Then Exit Sub
     Set mSinks = New Collection
     BuildFrmSealNew Me, mSinks
     On Error Resume Next

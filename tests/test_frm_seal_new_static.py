@@ -31,6 +31,22 @@ class FrmSealNewStaticTests(unittest.TestCase):
         self.assertIn("sinks.Add sink", LAYOUT)
         self.assertIn("Private WithEvents mButton As MSForms.CommandButton", EVENT_CLASS)
         self.assertIn("Private WithEvents mToggle As MSForms.ToggleButton", EVENT_CLASS)
+    def test_button_caption_arrays_are_initialized_before_use(self):
+        self.assertIn("Dim labels As Variant, names As Variant", LAYOUT)
+        self.assertEqual(LAYOUT.count("labels = Array("), 3)
+        self.assertEqual(LAYOUT.count("CStr(labels(i))"), 3)
+        for name in ("CSVを取り込む", "重複確認", "移動開始"):
+            self.assertIn(name, LAYOUT)
+    def test_initialization_is_idempotent_and_display_initializes_first(self):
+        self.assertIn("Public Sub EnsureFrmSealNewInitialized()", FORM)
+        self.assertIn("If Not mSinks Is Nothing Then Exit Sub", FORM)
+        self.assertIn("EnsureFrmSealNewInitialized", FORM.split("Private Sub UserForm_Initialize()", 1)[1])
+        self.assertRegex(LAYOUT, r"Public Sub ShowFrmSealNew\(\)\s+frmSealNew\.EnsureFrmSealNewInitialized\s+frmSealNew\.Show")
+    def test_production_sources_do_not_contain_transient_probes(self):
+        for source in (FORM, LAYOUT, EVENT_CLASS):
+            self.assertNotRegex(source, r"(?i)Hermes[A-Za-z]*Probe|HermesAudit|__probe|HERMES_EVENT_CONNECTED")
+        self.assertIn("Set sink = New clsFrmSealNewEvent", LAYOUT)
+        self.assertIn("sink.Connect c, frm", LAYOUT)
     def test_single_slots_and_bulk_fields_keep_existing_names(self):
         for name in ("tbID", "TextBox1", "TextBox2"):
             self.assertIn(name, LAYOUT)

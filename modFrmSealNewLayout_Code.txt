@@ -2,7 +2,7 @@ Option Explicit
 
 Public Sub BuildFrmSealNew(ByVal target As Object, ByVal sinks As Collection)
     Dim i As Long, x As Double, y As Double
-    Dim names As Variant
+    Dim labels As Variant, names As Variant
     target.Caption = "新ファイル基準表・操作パネル"
     target.Width = 810: target.Height = 600
     target.BackColor = RGB(246, 248, 251)
@@ -10,6 +10,7 @@ Public Sub BuildFrmSealNew(ByVal target As Object, ByVal sinks As Collection)
 
     AddHeading target, "CSV管理・基準表", 14
     names = Array("CommandButton1", "CommandButton2", "CommandButton10", "CommandButton3", "CommandButton4")
+    labels = Array("CSVを取り込む", "基準表を作成", "基準表を生成", "差分CSVを作成", "差分CSVを出力")
     For i = 0 To UBound(names)
         x = 18 + (i Mod 3) * 252: y = 45 + (i \ 3) * 40
         AddAction target, sinks, CStr(names(i)), CStr(labels(i)), x, y, 240, False
@@ -17,6 +18,7 @@ Public Sub BuildFrmSealNew(ByVal target As Object, ByVal sinks As Collection)
 
     AddHeading target, "フォルダー・データ整理", 130
     names = Array("CommandButton5", "CommandButton6", "CommandButton7", "cmdColorCheck", "btnDuplicateCheck", "tglDuplicateCheckMode")
+    labels = Array("キャビネットガイド作成", "旧基準表の継続文書移行", "通し番号を再採番", "色ルールをチェック", "重複候補を確認", "重複確認")
     For i = 0 To UBound(names)
         x = 18 + (i Mod 3) * 252: y = 161 + (i \ 3) * 40
         AddAction target, sinks, CStr(names(i)), CStr(labels(i)), x, y, 240, (i = 5)
@@ -24,6 +26,7 @@ Public Sub BuildFrmSealNew(ByVal target As Object, ByVal sinks As Collection)
 
     AddHeading target, "行の移動", 246
     names = Array("tglMoveMode", "cmdMoveUp", "cmdMoveDown", "cmdMoveToRow", "cmdMoveByClick", "cmdMoveCancel", "cmdMoveUndo")
+    labels = Array("移動開始", "上へ移動", "下へ移動", "指定行へ移動", "移動先をクリック", "移動をキャンセル", "元に戻す")
     For i = 0 To UBound(names)
         x = 18 + (i Mod 4) * 189: y = 277 + (i \ 4) * 40
         AddAction target, sinks, CStr(names(i)), CStr(labels(i)), x, y, 178, (i = 0)
@@ -88,5 +91,6 @@ Private Sub AddAction(ByVal frm As Object, ByVal sinks As Collection, ByVal key 
 End Sub
 
 Public Sub ShowFrmSealNew()
+    frmSealNew.EnsureFrmSealNewInitialized
     frmSealNew.Show vbModeless
 End Sub
