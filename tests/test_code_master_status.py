@@ -418,7 +418,8 @@ class FinalGuideStateReconciliationTests(unittest.TestCase):
 
     def test_step4_validates_before_any_code_allocation(self) -> None:
         step4 = procedure("手順4_差分インポートCSVを作成する")
-        self.assertLess(step4.index("ValidateStep4GuideCodeStates"), step4.index("ConfirmAndMarkStep4NewRegistrationCandidates"))
+        self.assertLess(step4.index("PreflightStep4ConflictResolution"), step4.index("ConfirmAndMarkStep4NewRegistrationCandidates"))
+        self.assertLess(step4.index("ConfirmAndMarkStep4NewRegistrationCandidates"), step4.index("ApplyStep4ConflictResolution"))
         self.assertLess(step4.index("ValidateStep4GuideCodeStates"), step4.index("新ファイル基準表_登録予定分類コード採番"))
 
     def test_step4_validates_conflicts_for_every_emitted_target_row(self) -> None:

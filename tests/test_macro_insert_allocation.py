@@ -66,7 +66,8 @@ class MacroInsertAllocationTests(unittest.TestCase):
         step4 = procedure("手順4_差分インポートCSVを作成する")
         allocator = procedure("新ファイル基準表_登録予定分類コード採番")
         self.assertIn('bikoColEdit = GetUniqueRemarkColumnOrRaise(wsEdit, editLastCol)', step4)
-        self.assertLess(step4.index('GetUniqueRemarkColumnOrRaise'), step4.index('wsEdit.Cells(r, syncStatusColEdit).Value = "文書管理対象外"'))
+        self.assertLess(step4.index('GetUniqueRemarkColumnOrRaise'), step4.index('macroInsertRows.Add r'))
+        self.assertLess(step4.index('macroInsertRows.Add r'), step4.index('wsEdit.Cells(CLng(targetRow), syncStatusColEdit).Value = "文書管理対象外"'))
         self.assertIn('bikoCol = GetUniqueRemarkColumnOrRaise(wsEdit, lastCol)', allocator)
         self.assertLess(allocator.index('GetUniqueRemarkColumnOrRaise'), allocator.index('AppendCodeMasterRecord "分類名２"'))
 

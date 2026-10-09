@@ -2839,6 +2839,11 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim errDescription As String
     Dim missingSrcKeyHeaders As String
     Dim missingEditKeyHeaders As String
+    Dim conflictPlan As Object
+    Dim conflictDetails As String
+    Dim macroInsertRows As Collection
+    Dim pendingRegistrationMarks As Collection
+    Dim conflictCount As Long
 
     On Error GoTo ErrorHandler
 
@@ -2858,6 +2863,8 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Set outputSourceMap = CreateObject("Scripting.Dictionary")
     Set targetRows = New Collection
     Set guideSeatCheckReasons = CreateObject("Scripting.Dictionary")
+    Set macroInsertRows = New Collection
+    Set pendingRegistrationMarks = New Collection
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
@@ -2981,10 +2988,7 @@ Public Sub 手順4_差分インポートCSVを作成する()
             If ContainsMacroInsertRemark(bikoVal) Then
                 excludedMacroInsertCount = excludedMacroInsertCount + 1
                 If syncStatusColEdit > 0 Then
-                    If NormalizeCellValue(wsEdit.Cells(r, syncStatusColEdit).Value) <> NormalizeCellValue("文書管理対象外") Then
-                        wsEdit.Cells(r, syncStatusColEdit).Value = "文書管理対象外"
-                        macroInsertStatusChangedCount = macroInsertStatusChangedCount + 1
-                    End If
+                    If NormalizeCellValue(wsEdit.Cells(r, syncStatusColEdit).Value) <> NormalizeCellValue("文書管理対象外") Then macroInsertRows.Add r
                 End If
                 Debug.Print "行" & r & " は備考にマクロ差込を含むため差分抽出対象外"
                 GoTo ContinueNextEditRow
@@ -3055,7 +3059,28 @@ ContinueNextEditRow:
     End If
 
     If targetRows.Count > 0 Then
+        Set conflictPlan = PreflightStep4ConflictResolution(wsEdit, targetRows, conflictDetails)
+        If conflictPlan.Count > 0 Then
+            conflictCount = 0
+            For Each targetRow In conflictPlan.Keys
+                If CStr(conflictPlan(targetRow)(0)) <> "親参照" Then conflictCount = conflictCount + 1
+            Next targetRow
+            If MsgBox("座コード競合 " & CStr(conflictCount) & "件を解消しますか？" & vbCrLf & _
+                conflictDetails & vbCrLf & "いいえ: 変更せず中止します。", vbYesNo + vbExclamation, "Step4 座コード競合") <> vbYes Then GoTo SafeExit
+        End If
+        ' Both user decisions are read-only; do not change codes if registration confirmation is cancelled.
+        syncStatusChangedCount = ConfirmAndMarkStep4NewRegistrationCandidates(wsEdit, newRegistrationRows, pendingRegistrationMarks)
+        If syncStatusChangedCount < 0 Then GoTo SafeExit
+        If conflictPlan.Count > 0 Then ApplyStep4ConflictResolution wsEdit, conflictPlan
         ValidateStep4GuideCodeStates wsEdit, targetRows
+        If conflictPlan.Count > 0 Then
+            ' Refresh after resolution but before this run can allocate any provisional codes.
+            Set firstGuideCodeMap = BuildCodeMasterNameCodeMap("分類名２", firstGuideUsedCodes, False)
+            Set secondGuideCodeMap = BuildCodeMasterNameCodeMap("分類名３", secondGuideUsedCodes, False, True)
+        End If
+        For Each targetRow In pendingRegistrationMarks
+            wsEdit.Cells(CLng(targetRow), syncStatusColEdit).Value = "登録予定"
+        Next targetRow
 
         For Each targetRow In targetRows
             guideSeatCheckReason = GetStep4GuideSeatCheckReason( _
@@ -3070,9 +3095,6 @@ ContinueNextEditRow:
             End If
         Next targetRow
 
-        syncStatusChangedCount = ConfirmAndMarkStep4NewRegistrationCandidates(wsEdit, newRegistrationRows)
-        If syncStatusChangedCount < 0 Then GoTo SafeExit
-
         For Each targetRow In targetRows
             新ファイル基準表_年度と原課ID再補完 wsEdit, CLng(targetRow), CLng(targetRow), True
             新ファイル基準表_分類コード再補完 wsEdit, CLng(targetRow), CLng(targetRow)
@@ -3080,6 +3102,11 @@ ContinueNextEditRow:
 
         新ファイル基準表_登録予定分類コード採番 wsEdit, 2, editLastRow, newRegistrationRowList
     End If
+
+    For Each targetRow In macroInsertRows
+        wsEdit.Cells(CLng(targetRow), syncStatusColEdit).Value = "文書管理対象外"
+        macroInsertStatusChangedCount = macroInsertStatusChangedCount + 1
+    Next targetRow
 
     wsOut.Cells.Clear
     ' 状態は差分シートだけの補助列とし、システム取込用 fixedHeaders はそのまま維持する。
@@ -3121,6 +3148,11 @@ ContinueNextEditRow:
         "件、マクロ差込を文書管理対象外へ変更" & CStr(macroInsertStatusChangedCount) & _
         "件、同期状態=不明除外" & CStr(ignoredUnknownStatusCount) & _
         "件、座作成要確認" & CStr(guideSeatCheckCount) & "件）"
+    If Not conflictPlan Is Nothing Then
+        For Each targetRow In conflictPlan.Keys
+            WriteStep4ConflictSuccessLog conflictPlan(targetRow)
+        Next targetRow
+    End If
 
     MsgBox "差分抽出が完了しました。" & vbCrLf & _
            "差分" & outRow - 2 & "件、マクロ差込除外" & excludedMacroInsertCount & _
@@ -3138,9 +3170,453 @@ ErrorHandler:
     errDescription = Err.Description
     WriteProcessLog "差分インポート抽出", SHEET_DIFF_IMPORT, "", IIf(outRow >= 2, outRow - 2, 0), "失敗", _
         "Err " & CStr(errNumber) & ": " & errDescription
-    MsgBox "差分インポートCSV の作成中にエラーが発生しました: " & errDescription, vbExclamation
+    MsgBox "差分インポートCSV の作成中にエラーが発生しました: " & errDescription & vbCrLf & _
+        "変更が一部反映された可能性があります。保存せずExcelを終了してください。", vbExclamation
     Resume SafeExit
 
+End Sub
+
+Private Function Step4ConflictIdentity(ByVal itemName As String, ByVal displayName As String, ByVal parentCode As String) As String
+    Step4ConflictIdentity = itemName & "|" & NormalizeClassificationGuideKey(displayName) & "|" & parentCode
+End Function
+
+Private Function Step4OriginalParentCode( _
+    ByVal wsEdit As Worksheet, ByVal rowNo As Long, ByVal nameCol As Long, _
+    ByVal codeCol As Long, ByVal parentChanges As Object) As String
+    Dim identity As String
+    identity = Step4ConflictIdentity("分類名２", CStr(wsEdit.Cells(rowNo, nameCol).Value), "")
+    If Len(Trim$(CStr(wsEdit.Cells(rowNo, codeCol).Value))) = 0 Then
+        If parentChanges.Exists(identity) Then
+            Step4OriginalParentCode = CStr(parentChanges(identity)(0))
+            Exit Function
+        End If
+    End If
+    Step4OriginalParentCode = GetParentGuideCodeForRow(wsEdit, rowNo, nameCol, codeCol)
+End Function
+
+Private Function Step4HasScopedProvisional( _
+    ByVal wsMaster As Worksheet, ByVal lastRow As Long, ByVal displayName As String, _
+    ByVal parentCode As String, ByVal codeValue As String) As Boolean
+    Dim r As Long, count As Long
+    For r = 2 To lastRow
+        If Step4ConflictIdentity(CanonicalHeaderName(CStr(wsMaster.Cells(r, 1).Value)), _
+            CStr(wsMaster.Cells(r, 3).Value), Trim$(CStr(wsMaster.Cells(r, 5).Value))) = _
+            Step4ConflictIdentity("分類名３", displayName, parentCode) _
+            And Trim$(CStr(wsMaster.Cells(r, 2).Value)) = Trim$(codeValue) _
+            And Trim$(CStr(wsMaster.Cells(r, 4).Value)) = "仮採番" Then count = count + 1
+    Next r
+    Step4HasScopedProvisional = (count = 1)
+End Function
+
+Private Function PreflightStep4ConflictResolution( _
+    ByVal wsEdit As Worksheet, ByVal targetRows As Collection, ByRef details As String) As Object
+
+    Dim wsMaster As Worksheet, wsSrc As Worksheet
+    Dim plan As Object, scopes As Object, parentChanges As Object, sourceCodes As Object
+    Dim srcCols(2 To 3, 1 To 2) As Long, editCols(2 To 3, 1 To 2) As Long
+    Dim lastMaster As Long, lastEdit As Long, lastSrc As Long, r As Long, level As Long
+    Dim rowValue As Variant, scope As Variant, entry As Variant
+    Dim itemName As String, displayName As String, oldParent As String, newParent As String
+    Dim identity As String, sourceIdentity As String, stateValue As String, oldCode As String, newCode As String
+    Dim masterCodes As Object, sourceMatches As Object, conflictRows As Collection
+    Dim masterRow As Variant, codeAtEdit As String, editName As String, editParent As String, codeKey As Variant
+    Dim authoritativeCount As Long
+    Dim expectedCode As String, coveredByPlan As Boolean
+    Dim previewCount As Long, affectedCount As Long, undisplayedCount As Long
+    Dim unresolvedIssue As String
+    Dim hasOtherState As Boolean
+
+    Set plan = CreateObject("Scripting.Dictionary")
+    Set scopes = CreateObject("Scripting.Dictionary")
+    Set parentChanges = CreateObject("Scripting.Dictionary")
+    Set sourceCodes = CreateObject("Scripting.Dictionary")
+    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    lastMaster = GetLastUsedRow(wsMaster)
+    lastSrc = GetLastUsedRow(wsSrc)
+    lastEdit = GetLastUsedRow(wsEdit)
+    EnsureCodeMasterRangeHasNoErrors wsMaster, lastMaster
+    For level = 2 To 3
+        srcCols(level, 1) = FindHeaderColumn(wsSrc, GetLastHeaderCol(wsSrc), Array("分類コード" & StrConv(CStr(level), vbWide)))
+        srcCols(level, 2) = FindHeaderColumn(wsSrc, GetLastHeaderCol(wsSrc), GetStep2HeaderCandidates("分類名" & StrConv(CStr(level), vbWide)))
+        editCols(level, 1) = FindHeaderColumn(wsEdit, GetLastHeaderCol(wsEdit), Array("分類コード" & StrConv(CStr(level), vbWide)))
+        editCols(level, 2) = FindHeaderColumn(wsEdit, GetLastHeaderCol(wsEdit), GetStep2HeaderCandidates("分類名" & StrConv(CStr(level), vbWide)))
+        If srcCols(level, 1) = 0 Or srcCols(level, 2) = 0 Or editCols(level, 1) = 0 Or editCols(level, 2) = 0 Then
+            Err.Raise vbObjectError + 2620, , "座コード照合に必要な列がありません。手順3と目録CSVを確認してください。"
+        End If
+    Next level
+
+    ' Guide 3 uses 親分類コード. Never infer authority from a same-named child under another parent.
+    For r = 2 To lastSrc
+        For level = 2 To 3
+            displayName = Trim$(CStr(wsSrc.Cells(r, srcCols(level, 2)).Value))
+            oldCode = Trim$(CStr(wsSrc.Cells(r, srcCols(level, 1)).Value))
+            oldParent = ""
+            If level = 3 Then oldParent = Trim$(CStr(wsSrc.Cells(r, srcCols(2, 1)).Value))
+            If Len(displayName) > 0 And Len(oldCode) > 0 And (level = 2 Or Len(oldParent) > 0) Then
+                itemName = "分類名" & StrConv(CStr(level), vbWide)
+                identity = Step4ConflictIdentity(itemName, displayName, oldParent)
+                If Not sourceCodes.Exists(identity) Then Set sourceCodes(identity) = CreateObject("Scripting.Dictionary")
+                sourceCodes(identity)(oldCode) = True
+            End If
+        Next level
+    Next r
+
+    For Each rowValue In targetRows
+        displayName = Trim$(CStr(wsEdit.Cells(CLng(rowValue), editCols(2, 2)).Value))
+        If Len(displayName) > 0 Then
+            identity = Step4ConflictIdentity("分類名２", displayName, "")
+            scopes(identity) = Array("分類名２", displayName, "", "")
+        End If
+    Next rowValue
+
+    ' Resolve parents first. A child is looked up under the projected authoritative parent.
+    For level = 2 To 3
+        If level = 3 Then
+            For Each rowValue In targetRows
+                displayName = Trim$(CStr(wsEdit.Cells(CLng(rowValue), editCols(3, 2)).Value))
+                If Len(displayName) > 0 Then
+                    oldParent = Step4OriginalParentCode(wsEdit, CLng(rowValue), editCols(2, 2), editCols(2, 1), parentChanges)
+                    If Len(oldParent) = 0 Then Err.Raise vbObjectError + 2621, , "第2ガイドの親コードが不明です。"
+                    newParent = oldParent
+                    identity = Step4ConflictIdentity("分類名２", CStr(wsEdit.Cells(CLng(rowValue), editCols(2, 2)).Value), "")
+                    If parentChanges.Exists(identity) Then newParent = CStr(parentChanges(identity)(1))
+                    identity = Step4ConflictIdentity("分類名３", displayName, oldParent)
+                    scopes(identity) = Array("分類名３", displayName, oldParent, newParent)
+                End If
+            Next rowValue
+            ' Include non-output rows sharing an approved parent, not only targetRows.
+            For r = 2 To lastEdit
+                displayName = Trim$(CStr(wsEdit.Cells(r, editCols(3, 2)).Value))
+                If Len(displayName) > 0 Then
+                    identity = Step4ConflictIdentity("分類名２", CStr(wsEdit.Cells(r, editCols(2, 2)).Value), "")
+                    If parentChanges.Exists(identity) Then
+                        entry = parentChanges(identity)
+                        oldParent = Step4OriginalParentCode(wsEdit, r, editCols(2, 2), editCols(2, 1), parentChanges)
+                        If oldParent = CStr(entry(0)) Then
+                            scopes(Step4ConflictIdentity("分類名３", displayName, oldParent)) = _
+                                Array("分類名３", displayName, oldParent, CStr(entry(1)))
+                        End If
+                    End If
+                End If
+            Next r
+        End If
+        For Each scope In scopes.Keys
+            entry = scopes(scope)
+            itemName = CStr(entry(0))
+            If itemName <> "分類名" & StrConv(CStr(level), vbWide) Then GoTo NextScope
+            displayName = CStr(entry(1))
+            oldParent = CStr(entry(2))
+            newParent = CStr(entry(3))
+            Set masterCodes = CreateObject("Scripting.Dictionary")
+            Set conflictRows = New Collection
+            authoritativeCount = 0
+            hasOtherState = False
+            For r = 2 To lastMaster
+                If Step4ConflictIdentity(CanonicalHeaderName(CStr(wsMaster.Cells(r, 1).Value)), CStr(wsMaster.Cells(r, 3).Value), Trim$(CStr(wsMaster.Cells(r, 5).Value))) = CStr(scope) Then
+                    stateValue = Trim$(CStr(wsMaster.Cells(r, 4).Value))
+                    If stateValue = "システム" Then
+                        masterCodes(Trim$(CStr(wsMaster.Cells(r, 2).Value))) = True
+                        authoritativeCount = authoritativeCount + 1
+                    End If
+                    If Left$(stateValue, 3) = "要確認" Then Err.Raise vbObjectError + 2633, , _
+                        "要確認の座コードは自動統一できません: " & itemName & " / " & displayName
+                    If Left$(stateValue, 2) = "競合" Then
+                        conflictRows.Add r
+                    ElseIf stateValue <> "システム" Then
+                        hasOtherState = True
+                    End If
+                End If
+            Next r
+            If conflictRows.Count > 0 And hasOtherState Then Err.Raise vbObjectError + 2637, , _
+                "競合する座に別の仮採番または不明な状態があり、自動統一できません: " & itemName & " / " & displayName
+            If conflictRows.Count > 1 Then Err.Raise vbObjectError + 2637, , _
+                "同じ座に複数の競合があり、自動統一できません: " & itemName & " / " & displayName
+            If conflictRows.Count = 0 And oldParent = newParent Then
+                ' The post-approval validator must not discover another blocking state only after writes.
+                unresolvedIssue = GetStep4GuideCodeStateIssue(itemName, itemName, displayName, oldParent)
+                If Len(unresolvedIssue) > 0 Then Err.Raise vbObjectError + 2636, , _
+                    "未解決の座コードがあります。変更前にStep4を中断しました: " & unresolvedIssue
+                GoTo NextScope
+            End If
+            sourceIdentity = Step4ConflictIdentity(itemName, displayName, newParent)
+            If conflictRows.Count = 0 And oldParent <> newParent Then
+                If sourceCodes.Exists(sourceIdentity) Or masterCodes.Count > 0 Then Err.Raise vbObjectError + 2629, , "親変更先の第2ガイドの旧コードを安全に確定できません: " & displayName
+                authoritativeCount = 0
+                For r = 2 To lastMaster
+                    If Step4ConflictIdentity(CanonicalHeaderName(CStr(wsMaster.Cells(r, 1).Value)), _
+                        CStr(wsMaster.Cells(r, 3).Value), Trim$(CStr(wsMaster.Cells(r, 5).Value))) = CStr(scope) _
+                        And Trim$(CStr(wsMaster.Cells(r, 4).Value)) = "仮採番" Then authoritativeCount = authoritativeCount + 1
+                Next r
+                If authoritativeCount <> 1 Then Err.Raise vbObjectError + 2629, , "親変更対象の仮採番第2ガイドが一意ではありません: " & displayName
+                For r = 2 To lastEdit
+                    If Step4OriginalParentCode(wsEdit, r, editCols(2, 2), editCols(2, 1), parentChanges) = oldParent _
+                       And NormalizeClassificationGuideKey(CStr(wsEdit.Cells(r, editCols(3, 2)).Value)) = NormalizeClassificationGuideKey(displayName) _
+                       And Len(Trim$(CStr(wsEdit.Cells(r, editCols(3, 1)).Value))) > 0 Then
+                        If Not Step4HasScopedProvisional(wsMaster, lastMaster, displayName, oldParent, CStr(wsEdit.Cells(r, editCols(3, 1)).Value)) Then _
+                            Err.Raise vbObjectError + 2629, , "関連する第2ガイドの旧コードを仮採番と確認できません: 行" & CStr(r)
+                    End If
+                Next r
+                GoTo NextScope
+            End If
+            Set sourceMatches = CreateObject("Scripting.Dictionary")
+            If sourceCodes.Exists(sourceIdentity) Then Set sourceMatches = sourceCodes(sourceIdentity)
+            If oldParent <> newParent Then
+                masterCodes.RemoveAll
+                authoritativeCount = 0
+                For r = 2 To lastMaster
+                    If Step4ConflictIdentity(CanonicalHeaderName(CStr(wsMaster.Cells(r, 1).Value)), CStr(wsMaster.Cells(r, 3).Value), Trim$(CStr(wsMaster.Cells(r, 5).Value))) = sourceIdentity Then
+                        If Trim$(CStr(wsMaster.Cells(r, 4).Value)) <> "システム" Then Err.Raise vbObjectError + 2638, , _
+                            "親変更先の第2ガイドに未解決の仮採番・競合があります: " & displayName
+                        masterCodes(Trim$(CStr(wsMaster.Cells(r, 2).Value))) = True
+                        authoritativeCount = authoritativeCount + 1
+                    End If
+                Next r
+            End If
+            If sourceMatches.Count <> 1 Or masterCodes.Count <> 1 Or authoritativeCount <> 1 Then Err.Raise vbObjectError + 2622, , "正式座コードが一意に検証できません: " & itemName & " / " & displayName
+            For Each codeKey In sourceMatches.Keys
+                newCode = CStr(codeKey)
+            Next codeKey
+            If Not masterCodes.Exists(newCode) Or Len(newCode) = 0 Then Err.Raise vbObjectError + 2623, , "目録CSVとコード管理CSVの正式コードが一致しません: " & displayName
+            If oldParent <> newParent And conflictRows.Count = 0 Then
+                Err.Raise vbObjectError + 2629, , "親変更に伴う第2ガイドの旧コードを安全に特定できません: " & displayName
+            End If
+            For Each masterRow In conflictRows
+                oldCode = Trim$(CStr(wsMaster.Cells(CLng(masterRow), 2).Value))
+                If Len(oldCode) = 0 Then Err.Raise vbObjectError + 2624, , "競合行の旧コードが空欄です。"
+                If Trim$(CStr(wsMaster.Cells(CLng(masterRow), 4).Value)) <> "競合（システム=" & newCode & "）" Then _
+                    Err.Raise vbObjectError + 2633, , "競合状態の正式コードが目録CSVと一致しません: " & displayName
+                For r = 2 To lastMaster
+                    If r <> CLng(masterRow) And CanonicalHeaderName(CStr(wsMaster.Cells(r, 1).Value)) = itemName _
+                       And Trim$(CStr(wsMaster.Cells(r, 2).Value)) = oldCode _
+                       And Trim$(CStr(wsMaster.Cells(r, 5).Value)) = oldParent _
+                       And NormalizeClassificationGuideKey(CStr(wsMaster.Cells(r, 3).Value)) <> NormalizeClassificationGuideKey(displayName) Then
+                        Err.Raise vbObjectError + 2625, , "旧コードが別の座にも使われています: " & itemName & " / " & oldCode
+                    End If
+                    If CanonicalHeaderName(CStr(wsMaster.Cells(r, 1).Value)) = itemName _
+                       And Trim$(CStr(wsMaster.Cells(r, 2).Value)) = newCode _
+                       And Trim$(CStr(wsMaster.Cells(r, 5).Value)) = newParent _
+                       And NormalizeClassificationGuideKey(CStr(wsMaster.Cells(r, 3).Value)) <> NormalizeClassificationGuideKey(displayName) Then
+                        Err.Raise vbObjectError + 2626, , "正式コードが別の座にも使われています: " & itemName & " / " & newCode
+                    End If
+                Next r
+                For r = 2 To lastSrc
+                    If Trim$(CStr(wsSrc.Cells(r, srcCols(level, 1)).Value)) = newCode _
+                       And (level = 2 Or Trim$(CStr(wsSrc.Cells(r, srcCols(2, 1)).Value)) = newParent) _
+                       And NormalizeClassificationGuideKey(CStr(wsSrc.Cells(r, srcCols(level, 2)).Value)) <> NormalizeClassificationGuideKey(displayName) Then
+                        Err.Raise vbObjectError + 2631, , "目録CSVで正式コードが別の座にも使われています: " & displayName
+                    End If
+                Next r
+                plan(CStr(masterRow)) = Array(itemName, displayName, oldParent, oldCode, newCode, newParent, 0)
+                If level = 2 Then
+                    If parentChanges.Exists(CStr(scope)) Then Err.Raise vbObjectError + 2630, , "同じ親座に複数の旧コードがあり、安全に解決できません。"
+                    ' Child master rows carry only a parent code, not the parent name.
+                    For r = 2 To lastMaster
+                        If CanonicalHeaderName(CStr(wsMaster.Cells(r, 1).Value)) = "分類名２" _
+                           And Trim$(CStr(wsMaster.Cells(r, 2).Value)) = oldCode _
+                           And NormalizeClassificationGuideKey(CStr(wsMaster.Cells(r, 3).Value)) <> NormalizeClassificationGuideKey(displayName) Then _
+                            Err.Raise vbObjectError + 2634, , "旧親コードが別の第1ガイドでも使用されています: " & oldCode
+                    Next r
+                    For r = 2 To lastEdit
+                        If Trim$(CStr(wsEdit.Cells(r, editCols(2, 1)).Value)) = oldCode _
+                           And NormalizeClassificationGuideKey(CStr(wsEdit.Cells(r, editCols(2, 2)).Value)) <> NormalizeClassificationGuideKey(displayName) Then _
+                            Err.Raise vbObjectError + 2634, , "旧親コードを別の第1ガイド行でも使用しています: 行" & CStr(r)
+                    Next r
+                    parentChanges(CStr(scope)) = Array(oldCode, newCode)
+                End If
+            Next masterRow
+NextScope:
+        Next scope
+    Next level
+
+    ' A parent change can only proceed if every affected child reference is accounted for.
+    For Each scope In parentChanges.Keys
+        entry = parentChanges(scope)
+        For r = 2 To lastMaster
+            If CanonicalHeaderName(CStr(wsMaster.Cells(r, 1).Value)) = "分類名３" _
+               And Trim$(CStr(wsMaster.Cells(r, 5).Value)) = CStr(entry(0)) _
+               And Not plan.Exists(CStr(r)) Then
+                stateValue = Trim$(CStr(wsMaster.Cells(r, 4).Value))
+                If stateValue = "仮採番" Then
+                    displayName = CStr(wsMaster.Cells(r, 3).Value)
+                    oldCode = Trim$(CStr(wsMaster.Cells(r, 2).Value))
+                    If Len(oldCode) = 0 Then Err.Raise vbObjectError + 2627, , "親変更対象の仮採番コードが空欄です。"
+                    If sourceCodes.Exists(Step4ConflictIdentity("分類名３", displayName, CStr(entry(1)))) Then _
+                        Err.Raise vbObjectError + 2627, , "親変更先に正式な第2ガイドがあり、仮採番を移せません: " & displayName
+                    For level = 2 To lastMaster
+                        If CanonicalHeaderName(CStr(wsMaster.Cells(level, 1).Value)) = "分類名３" _
+                           And (Trim$(CStr(wsMaster.Cells(level, 5).Value)) = CStr(entry(1)) _
+                           Or (level <> r And Trim$(CStr(wsMaster.Cells(level, 5).Value)) = CStr(entry(0)) _
+                           And Trim$(CStr(wsMaster.Cells(level, 4).Value)) = "仮採番")) Then
+                            If Trim$(CStr(wsMaster.Cells(level, 2).Value)) = oldCode _
+                               Or NormalizeClassificationGuideKey(CStr(wsMaster.Cells(level, 3).Value)) = NormalizeClassificationGuideKey(displayName) Then
+                                Err.Raise vbObjectError + 2627, , "親変更先の第2ガイドと仮採番が衝突します: " & displayName
+                            End If
+                        End If
+                    Next level
+                    plan(CStr(r)) = Array("親参照", displayName, CStr(entry(0)), oldCode, oldCode, CStr(entry(1)), 1)
+                Else
+                    Err.Raise vbObjectError + 2627, , "旧親コードの第2ガイドを安全に移せません（システムまたは未解決の参照）。"
+                End If
+            End If
+        Next r
+    Next scope
+    For Each scope In plan.Keys
+        entry = plan(scope)
+        If CStr(entry(0)) = "親参照" Then GoTo NextPlannedEdit
+        level = 2
+        If CStr(entry(0)) = "分類名３" Then level = 3
+        For r = 2 To lastEdit
+            editName = NormalizeClassificationGuideKey(CStr(wsEdit.Cells(r, editCols(level, 2)).Value))
+            If editName = NormalizeClassificationGuideKey(CStr(entry(1))) Then
+                editParent = ""
+                If level = 3 Then editParent = Step4OriginalParentCode(wsEdit, r, editCols(2, 2), editCols(2, 1), parentChanges)
+                If editParent = CStr(entry(2)) Then
+                    codeAtEdit = Trim$(CStr(wsEdit.Cells(r, editCols(level, 1)).Value))
+                    If Len(codeAtEdit) > 0 And codeAtEdit <> CStr(entry(3)) And codeAtEdit <> CStr(entry(4)) Then
+                        Err.Raise vbObjectError + 2628, , "関連行に異なるコードがあります: 行" & CStr(r)
+                    End If
+                End If
+            End If
+        Next r
+NextPlannedEdit:
+    Next scope
+    ' Output rows must not carry a stale, nonblank child code that recompletion would preserve.
+    For Each rowValue In targetRows
+        displayName = Trim$(CStr(wsEdit.Cells(CLng(rowValue), editCols(3, 2)).Value))
+        If Len(displayName) > 0 Then
+            oldParent = Step4OriginalParentCode(wsEdit, CLng(rowValue), editCols(2, 2), editCols(2, 1), parentChanges)
+            newParent = oldParent
+            identity = Step4ConflictIdentity("分類名２", CStr(wsEdit.Cells(CLng(rowValue), editCols(2, 2)).Value), "")
+            If parentChanges.Exists(identity) Then newParent = CStr(parentChanges(identity)(1))
+            sourceIdentity = Step4ConflictIdentity("分類名３", displayName, newParent)
+            If parentChanges.Exists(identity) And sourceCodes.Exists(sourceIdentity) Then
+                Set sourceMatches = sourceCodes(sourceIdentity)
+                If sourceMatches.Count <> 1 Then Err.Raise vbObjectError + 2632, , "出力行の第2ガイド正式コードが複数あります。"
+                For Each codeKey In sourceMatches.Keys
+                    expectedCode = CStr(codeKey)
+                Next codeKey
+                codeAtEdit = Trim$(CStr(wsEdit.Cells(CLng(rowValue), editCols(3, 1)).Value))
+                If Len(codeAtEdit) > 0 And codeAtEdit <> expectedCode Then
+                    coveredByPlan = False
+                    For Each scope In plan.Keys
+                        entry = plan(scope)
+                        If CStr(entry(0)) = "分類名３" And CStr(entry(2)) = oldParent _
+                           And CStr(entry(3)) = codeAtEdit And CStr(entry(4)) = expectedCode _
+                           And NormalizeClassificationGuideKey(CStr(entry(1))) = NormalizeClassificationGuideKey(displayName) Then coveredByPlan = True
+                    Next scope
+                    If Not coveredByPlan Then Err.Raise vbObjectError + 2632, , "出力行の第2ガイドコードが正式コードと一致せず、解決対象外です: 行" & CStr(rowValue)
+                End If
+            ElseIf parentChanges.Exists(identity) Then
+                ' A nonblank code from the old parent must not survive under the new parent.
+                codeAtEdit = Trim$(CStr(wsEdit.Cells(CLng(rowValue), editCols(3, 1)).Value))
+                If Len(codeAtEdit) > 0 Then
+                    coveredByPlan = Step4HasScopedProvisional(wsMaster, lastMaster, displayName, newParent, codeAtEdit)
+                    If Not coveredByPlan Then
+                        For Each scope In plan.Keys
+                            entry = plan(scope)
+                            If CStr(entry(0)) = "親参照" And CStr(entry(2)) = oldParent _
+                               And CStr(entry(3)) = codeAtEdit _
+                               And NormalizeClassificationGuideKey(CStr(entry(1))) = NormalizeClassificationGuideKey(displayName) Then coveredByPlan = True
+                        Next scope
+                    End If
+                    If Not coveredByPlan Then Err.Raise vbObjectError + 2632, , _
+                        "親変更後の第2ガイドコードを確認できません: 行" & CStr(rowValue)
+                End If
+            End If
+        End If
+    Next rowValue
+    ' Show one bounded approval list; the complete plan is still validated and applied.
+    details = ""
+    For Each scope In plan.Keys
+        entry = plan(scope)
+        If CStr(entry(0)) <> "親参照" Then
+            previewCount = previewCount + 1
+            If previewCount <= 8 Then
+                affectedCount = 0
+                level = 2
+                If CStr(entry(0)) = "分類名３" Then level = 3
+                For r = 2 To lastEdit
+                    If NormalizeClassificationGuideKey(CStr(wsEdit.Cells(r, editCols(level, 2)).Value)) = NormalizeClassificationGuideKey(CStr(entry(1))) Then
+                        editParent = ""
+                        If level = 3 Then editParent = Step4OriginalParentCode(wsEdit, r, editCols(2, 2), editCols(2, 1), parentChanges)
+                        If editParent = CStr(entry(2)) Then
+                            codeAtEdit = Trim$(CStr(wsEdit.Cells(r, editCols(level, 1)).Value))
+                            If codeAtEdit <> CStr(entry(4)) Then affectedCount = affectedCount + 1
+                        End If
+                    End If
+                Next r
+                details = details & vbCrLf & CStr(entry(0)) & "「" & Left$(CStr(entry(1)), 40) & "」" & _
+                    " / " & CStr(entry(3)) & " -> " & CStr(entry(4)) & " / 対象" & CStr(affectedCount) & "行"
+                If level = 3 Then details = details & " / 旧親=" & CStr(entry(2)) & " 新親=" & CStr(entry(5))
+            Else
+                undisplayedCount = undisplayedCount + 1
+            End If
+        End If
+    Next scope
+    If undisplayedCount > 0 Then details = details & vbCrLf & "ほか " & CStr(undisplayedCount) & "件（一覧は省略）"
+    Set PreflightStep4ConflictResolution = plan
+End Function
+
+Private Sub ApplyStep4ConflictResolution(ByVal wsEdit As Worksheet, ByVal plan As Object)
+    Dim wsMaster As Worksheet, rowValue As Variant, entry As Variant, parentChanges As Object
+    Dim r As Long, code2Col As Long, name2Col As Long, code3Col As Long, name3Col As Long
+    Dim parentCode As String, oldParent As String, oldCode As String, newCode As String
+    Dim changed As Long, i As Long
+    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    Set parentChanges = CreateObject("Scripting.Dictionary")
+    For Each rowValue In plan.Keys
+        entry = plan(rowValue)
+        If CStr(entry(0)) = "分類名２" Then parentChanges(Step4ConflictIdentity("分類名２", CStr(entry(1)), "")) = Array(CStr(entry(3)), CStr(entry(4)))
+    Next rowValue
+    code2Col = FindHeaderColumn(wsEdit, GetLastHeaderCol(wsEdit), Array("分類コード２"))
+    name2Col = FindHeaderColumn(wsEdit, GetLastHeaderCol(wsEdit), GetStep2HeaderCandidates("分類名２"))
+    code3Col = FindHeaderColumn(wsEdit, GetLastHeaderCol(wsEdit), Array("分類コード３"))
+    name3Col = FindHeaderColumn(wsEdit, GetLastHeaderCol(wsEdit), GetStep2HeaderCandidates("分類名３"))
+    ' Child first: the original parent scope is still available for matching.
+    For i = 3 To 2 Step -1
+        For Each rowValue In plan.Keys
+            entry = plan(rowValue)
+            If CStr(entry(0)) = "分類名" & StrConv(CStr(i), vbWide) Then
+                changed = 0
+                oldParent = CStr(entry(2)): oldCode = CStr(entry(3)): newCode = CStr(entry(4))
+                For r = 2 To GetLastUsedRow(wsEdit)
+                    If i = 3 Then
+                        parentCode = Step4OriginalParentCode(wsEdit, r, name2Col, code2Col, parentChanges)
+                        If parentCode = oldParent And NormalizeClassificationGuideKey(CStr(wsEdit.Cells(r, name3Col).Value)) = NormalizeClassificationGuideKey(CStr(entry(1))) _
+                           And Trim$(CStr(wsEdit.Cells(r, code3Col).Value)) <> newCode Then
+                            wsEdit.Cells(r, code3Col).Value = newCode
+                            changed = changed + 1
+                        End If
+                    ElseIf NormalizeClassificationGuideKey(CStr(wsEdit.Cells(r, name2Col).Value)) = NormalizeClassificationGuideKey(CStr(entry(1))) Then
+                        If oldCode <> newCode And (Trim$(CStr(wsEdit.Cells(r, code2Col).Value)) = oldCode Or Len(Trim$(CStr(wsEdit.Cells(r, code2Col).Value))) = 0) Then
+                            wsEdit.Cells(r, code2Col).Value = newCode
+                            changed = changed + 1
+                        End If
+                    End If
+                Next r
+                entry(6) = changed
+                plan(rowValue) = entry
+            End If
+        Next rowValue
+    Next i
+    ' Source-backed system rows remain authoritative. Delete only approved obsolete conflict rows.
+    For Each rowValue In plan.Keys
+        entry = plan(rowValue)
+        If CStr(entry(0)) = "親参照" Then wsMaster.Cells(CLng(rowValue), 5).Value = CStr(entry(5))
+    Next rowValue
+    For r = GetLastUsedRow(wsMaster) To 2 Step -1
+        If plan.Exists(CStr(r)) Then
+            entry = plan(CStr(r))
+            If CStr(entry(0)) <> "親参照" Then wsMaster.Rows(r).Delete
+        End If
+    Next r
+End Sub
+
+Private Sub WriteStep4ConflictSuccessLog(ByVal entry As Variant)
+    WriteProcessLog "Step4座コード競合解消", SHEET_CODE_MANAGEMENT, "", CLng(entry(6)), "成功", _
+        CStr(entry(0)) & " / " & CStr(entry(1)) & " / 親=" & CStr(entry(2)) & " / 新親=" & CStr(entry(5)) & _
+        " / 旧=" & CStr(entry(3)) & " / 新=" & CStr(entry(4)) & " / 変更行=" & CStr(entry(6))
 End Sub
 
 Private Function GetUniqueRemarkColumnOrRaise(ByVal ws As Worksheet, ByVal lastCol As Long) As Long
@@ -3171,7 +3647,8 @@ End Function
 
 Private Function ConfirmAndMarkStep4NewRegistrationCandidates( _
     ByVal wsEdit As Worksheet, _
-    ByVal targetRows As Object) As Long
+    ByVal targetRows As Object, _
+    ByVal pendingMarks As Collection) As Long
 
     Dim lastCol As Long
     Dim lastRow As Long
@@ -3195,6 +3672,7 @@ Private Function ConfirmAndMarkStep4NewRegistrationCandidates( _
 
     ConfirmAndMarkStep4NewRegistrationCandidates = 0
     If wsEdit Is Nothing Then Exit Function
+    If pendingMarks Is Nothing Then Err.Raise vbObjectError + 2635, , "新規登録候補の確認結果を保持できません。"
     If targetRows Is Nothing Then Exit Function
     If targetRows.Count = 0 Then Exit Function
 
@@ -3252,7 +3730,7 @@ ContinueConfirmTargetRow:
     End If
 
     For Each rowNo In targetRowsToMark
-        wsEdit.Cells(CLng(rowNo), syncCol).Value = "登録予定"
+        pendingMarks.Add CLng(rowNo)
         changedCount = changedCount + 1
     Next rowNo
 
