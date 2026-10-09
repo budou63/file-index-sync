@@ -1,0 +1,92 @@
+Option Explicit
+
+Public Sub BuildFrmSealNew(ByVal target As Object, ByVal sinks As Collection)
+    Dim i As Long, x As Double, y As Double
+    Dim names As Variant
+    target.Caption = "新ファイル基準表・操作パネル"
+    target.Width = 810: target.Height = 600
+    target.BackColor = RGB(246, 248, 251)
+    target.ScrollBars = 2: target.ScrollHeight = 690
+
+    AddHeading target, "CSV管理・基準表", 14
+    names = Array("CommandButton1", "CommandButton2", "CommandButton10", "CommandButton3", "CommandButton4")
+    For i = 0 To UBound(names)
+        x = 18 + (i Mod 3) * 252: y = 45 + (i \ 3) * 40
+        AddAction target, sinks, CStr(names(i)), CStr(labels(i)), x, y, 240, False
+    Next i
+
+    AddHeading target, "フォルダー・データ整理", 130
+    names = Array("CommandButton5", "CommandButton6", "CommandButton7", "cmdColorCheck", "btnDuplicateCheck", "tglDuplicateCheckMode")
+    For i = 0 To UBound(names)
+        x = 18 + (i Mod 3) * 252: y = 161 + (i \ 3) * 40
+        AddAction target, sinks, CStr(names(i)), CStr(labels(i)), x, y, 240, (i = 5)
+    Next i
+
+    AddHeading target, "行の移動", 246
+    names = Array("tglMoveMode", "cmdMoveUp", "cmdMoveDown", "cmdMoveToRow", "cmdMoveByClick", "cmdMoveCancel", "cmdMoveUndo")
+    For i = 0 To UBound(names)
+        x = 18 + (i Mod 4) * 189: y = 277 + (i \ 4) * 40
+        AddAction target, sinks, CStr(names(i)), CStr(labels(i)), x, y, 178, (i = 0)
+    Next i
+
+    AddHeading target, "個別フォルダシール・単件（通し番号を最大12枠）", 363
+    For i = 1 To 12
+        x = 18 + ((i - 1) Mod 6) * 126: y = 398 + ((i - 1) \ 6) * 48
+        AddLabel target, "slotLabel" + CStr(i), CStr(i) + "枠", x, y, 35, 19
+        AddText target, "tbID" + CStr(i), x + 34, y - 2, 79
+    Next i
+    AddLabel target, "bulkLabel", "複数転記：開始番号と終了番号", 18, 501, 260, 18
+    AddText target, "TextBox1", 285, 497, 104
+    AddLabel target, "toLabel", "～", 395, 501, 20, 18
+    AddText target, "TextBox2", 420, 497, 104
+    AddAction target, sinks, "btnApply", "シールへ反映", 18, 536, 178, False
+    AddAction target, sinks, "btnApplyBulk", "複数転記を実行", 207, 536, 178, False
+    AddAction target, sinks, "btnClear", "入力とシールをクリア", 396, 536, 178, False
+
+    AddHeading target, "シール印刷・設定", 591
+    AddAction target, sinks, "btnRegisterFixedPrint", "固定印刷設定を登録", 18, 623, 240, False
+    AddAction target, sinks, "btnFixedPrint", "固定設定で印刷", 270, 623, 240, False
+End Sub
+
+Private Sub AddHeading(ByVal frm As Object, ByVal title As String, ByVal y As Double)
+    Dim c As Object
+    Set c = frm.Controls.Add("Forms.Label.1")
+    c.Caption = title: c.Left = 18: c.Top = y: c.Width = 744: c.Height = 23
+    c.BackStyle = 1: c.BackColor = RGB(223, 232, 246)
+    c.ForeColor = RGB(25, 52, 87): c.Font.Name = "Meiryo UI": c.Font.Size = 10
+    c.Font.Bold = True
+End Sub
+
+Private Sub AddLabel(ByVal frm As Object, ByVal key As String, ByVal title As String, _
+                     ByVal x As Double, ByVal y As Double, ByVal w As Double, ByVal h As Double)
+    Dim c As Object
+    Set c = frm.Controls.Add("Forms.Label.1", key, True)
+    c.Caption = title: c.Left = x: c.Top = y: c.Width = w: c.Height = h
+    c.Font.Name = "Meiryo UI": c.Font.Size = 9
+End Sub
+
+Private Sub AddText(ByVal frm As Object, ByVal key As String, ByVal x As Double, _
+                    ByVal y As Double, ByVal w As Double)
+    Dim c As Object
+    Set c = frm.Controls.Add("Forms.TextBox.1", key, True)
+    c.Left = x: c.Top = y: c.Width = w: c.Height = 24
+    c.Font.Name = "Meiryo UI": c.Font.Size = 10
+End Sub
+
+Private Sub AddAction(ByVal frm As Object, ByVal sinks As Collection, ByVal key As String, _
+                      ByVal title As String, ByVal x As Double, ByVal y As Double, _
+                      ByVal w As Double, ByVal isToggle As Boolean)
+    Dim c As Object, sink As clsFrmSealNewEvent
+    If isToggle Then
+        Set c = frm.Controls.Add("Forms.ToggleButton.1", key, True)
+    Else
+        Set c = frm.Controls.Add("Forms.CommandButton.1", key, True)
+    End If
+    c.Caption = title: c.Left = x: c.Top = y: c.Width = w: c.Height = 31
+    c.Font.Name = "Meiryo UI": c.Font.Size = 9
+    Set sink = New clsFrmSealNewEvent: sink.Connect c, frm: sinks.Add sink
+End Sub
+
+Public Sub ShowFrmSealNew()
+    frmSealNew.Show vbModeless
+End Sub

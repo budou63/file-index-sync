@@ -1,0 +1,28 @@
+Option Explicit
+
+Private WithEvents mButton As MSForms.CommandButton
+Private WithEvents mToggle As MSForms.ToggleButton
+Private mOwner As Object
+
+Public Sub Connect(ByVal control As Object, ByVal owner As Object)
+    Set mOwner = owner
+    Select Case TypeName(control)
+        Case "CommandButton": Set mButton = control
+        Case "ToggleButton": Set mToggle = control
+        Case Else: Err.Raise vbObjectError + 7312, , "イベント未対応: " + TypeName(control)
+    End Select
+End Sub
+
+Public Sub Disconnect()
+    Set mButton = Nothing
+    Set mToggle = Nothing
+    Set mOwner = Nothing
+End Sub
+
+Private Sub mButton_Click()
+    mOwner.DispatchSealNewClick mButton.Name
+End Sub
+
+Private Sub mToggle_Click()
+    mOwner.DispatchSealNewClick mToggle.Name
+End Sub
