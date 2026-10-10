@@ -70,10 +70,16 @@ class HeaderDetectionRegressionTests(unittest.TestCase):
         self.assertIn("SearchFormat:=False", helper)
 
     def test_csv_import_uses_header_row_bound_for_header_mapping(self) -> None:
-        csv_import = procedure("CSV取込_シンプル版")
+        csv_import = procedure("CSVImportExecute")
         self.assertIn("srcLastCol = GetLastHeaderCol(wsCSV)", csv_import)
         self.assertIn("dstLastCol = GetLastHeaderCol(ws)", csv_import)
-        self.assertIn("dstLastCol = GetLastHeaderCol(ws) + 1", csv_import)
+        self.assertIn("finalLastCol = finalLastCol + 1", csv_import)
+
+    def test_csv_import_entrypoint_preserves_file_picker_cancel(self) -> None:
+        csv_entry = procedure("CSV取込_シンプル版")
+        self.assertIn("Application.GetOpenFilename", csv_entry)
+        self.assertIn("If VarType(filePath) = vbBoolean Then Exit Sub", csv_entry)
+        self.assertLess(csv_entry.index("GetOpenFilename"), csv_entry.index("CSVImportExecute"))
 
     def test_missing_year_diagnostic_identifies_the_actual_workbook_and_headers(self) -> None:
         step2 = procedure("手順2_新ファイル基準表を作成する")

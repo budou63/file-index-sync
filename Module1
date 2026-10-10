@@ -1451,211 +1451,1092 @@ Public Sub 後処理_行移動後()
 End Sub
 
 Public Sub CSV取込_シンプル版()
-
-    Dim ws As Worksheet
     Dim filePath As Variant
-    Dim wbCSV As Workbook
-    Dim wsCSV As Worksheet
-    Dim dstLastRow As Long
-    Dim dstLastCol As Long
-    Dim srcLastRow As Long
-    Dim srcLastCol As Long
-    Dim appendRow As Long
-    Dim srcRow As Long
-    Dim appendedCount As Long
-    Dim deletedCount As Long
-    Dim skippedBlankYearCount As Long
-    Dim existingHasHeader As Boolean
-    Dim srcWarekiCol As Long
-    Dim srcYearCol As Long
-    Dim dstWarekiCol As Long
-    Dim dstYearCol As Long
-    Dim targetFiscalYear As String
-    Dim targetFiscalYearValue As Long
-    Dim rowYear As String
-    Dim rowYearValue As Long
-    Dim errNumber As Long
-    Dim errDescription As String
-    Dim srcToDstCol As Object
-    Dim dstHeaderMap As Object
-    Dim srcCol As Long
-    Dim dstCol As Long
-    Dim headerText As String
-    Dim canonical As String
+    filePath = Application.GetOpenFilename("CSV ファイル (*.csv), *.csv", , "文書管理システムのCSVを選択")
+    If VarType(filePath) = vbBoolean Then Exit Sub
+    CSVImportExecute CStr(filePath)
+End Sub
 
+Private Sub CSVImportExecute(ByVal filePath As String)
+    Dim ws As Worksheet, wbCSV As Workbook, wsCSV As Worksheet, openBook As Workbook
+    Dim csvText As String, encodingName As String, fileName As String, backupPath As String, stagePath As String
+    Dim stageCodePage As Long
+    Dim localRoot As String, backupFolder As String, validationErrors As String, warningText As String
+    Dim previewText As String, reductionWarning As String, currentHeader As String, canonical As String
+    Dim newHeaders As Long, importStartRow As Long
+    Dim originCodePage As Long, headers As Variant, stats As Object, headerMap As Object
+    Dim textColumns As Object, protectedSamples As Object, srcToDstCol As Object, dstHeaderMap As Object
+    Dim sourceValues As Variant, writeData As Variant, backupValues As Variant, requiredHeaders As Variant
+    Dim formatBackup As Object
+    Dim srcLastRow As Long, srcLastCol As Long, dstLastRow As Long, dstLastCol As Long
+    Dim oldLastRow As Long, oldLastCol As Long, finalLastCol As Long, outputDataRows As Long
+    Dim existingTargetCount As Long, deletedCount As Long, importCount As Long, outputRow As Long
+    Dim sourceRow As Long, sourceCol As Long, oldRow As Long, destinationCol As Long
+    Dim targetYearValue As Long, targetYearText As String, existingYearValue As Long
+    Dim existingWarekiCol As Long, existingWesternCol As Long, oldScreenUpdating As Boolean
+    Dim oldDisplayAlerts As Boolean, commitStarted As Boolean, backupCreated As Boolean
+    Dim restoreSucceeded As Boolean, importSucceeded As Boolean, errNumber As Long, errDescription As String
+    Dim fso As Object, hasHeader As Boolean, inserted As Boolean, foundFormula As Range, mergeState As Variant
+
+    oldScreenUpdating = Application.ScreenUpdating
+    oldDisplayAlerts = Application.DisplayAlerts
     On Error GoTo ErrorHandler
-
-    ' ファイル選択
-    filePath = Application.GetOpenFilename("CSV Files (*.csv), *.csv")
-    
-    If filePath = False Then Exit Sub
-    
-    ' 目録CSVシート
+    fileName = CsvSafeFileName(filePath)
+    If Len(Dir(filePath)) = 0 Then Err.Raise vbObjectError + 2140, , "選択したCSVファイルが見つかりません。"
+    If ThisWorkbook.Path = "" Then Err.Raise vbObjectError + 2141, , "ブックが未保存です。復元用バックアップを作成できないため取込を中止します。"
     Set ws = ThisWorkbook.Worksheets("目録CSV")
-    
-    Application.ScreenUpdating = False
-    Application.DisplayAlerts = False
-    
-    ' CSVを開く
-    Set wbCSV = Workbooks.Open(filePath)
-    Set wsCSV = wbCSV.Sheets(1)
-    Set srcToDstCol = CreateObject("Scripting.Dictionary")
-    Set dstHeaderMap = CreateObject("Scripting.Dictionary")
+    If ws.ProtectContents Then Err.Raise vbObjectError + 2142, , "目録CSVシートが保護されています。保護を解除してから再実行してください。"
+    If ws.ListObjects.Count > 0 Then Err.Raise vbObjectError + 2143, , "目録CSVにExcelテーブルがあります。表構造を安全に保てないため中止しました。"
+    mergeState = ws.UsedRange.MergeCells
+    If IsNull(mergeState) Then
+        Err.Raise vbObjectError + 2144, , "目録CSVの使用範囲に結合セルがあります。シート構造を確認してください。"
+    ElseIf CBool(mergeState) Then
+        Err.Raise vbObjectError + 2144, , "目録CSVの使用範囲に結合セルがあります。シート構造を確認してください。"
+    End If
+    On Error Resume Next
+    Set foundFormula = ws.UsedRange.SpecialCells(xlCellTypeFormulas)
+    On Error GoTo ErrorHandler
+    If Not foundFormula Is Nothing Then Err.Raise vbObjectError + 2145, , "目録CSVに数式があります。数式を値へ置き換えないため中止しました。"
 
+    Application.ScreenUpdating = False
+    csvText = ReadCsvTextWithDetectedEncoding(filePath, encodingName, originCodePage)
+    If Len(csvText) = 0 Then Err.Raise vbObjectError + 2146, , "CSVファイルが空です。"
+    Set stats = AnalyzeCsvImportText(csvText, headers)
+    validationErrors = CStr(stats("FatalIssues"))
+    targetYearValue = CLng(stats("TargetYearValue"))
+    targetYearText = CStr(stats("TargetYearText"))
+    If Len(validationErrors) > 0 Then
+        warningText = CsvImportIssueSummary(stats)
+        CsvWriteImportLog fileName, targetYearText, 0, 0, 0, "失敗", warningText & ";encoding=" & encodingName
+        MsgBox "CSVの事前検証で問題が見つかったため、目録CSVは変更していません。" & vbCrLf & vbCrLf & _
+               "ファイル: " & fileName & vbCrLf & "対象年度: " & IIf(targetYearText = "", "判定不可", targetYearText) & vbCrLf & _
+               CsvImportIssueSummary(stats) & vbCrLf & vbCrLf & "問題: " & validationErrors, vbExclamation, "CSV取込を中止しました"
+        GoTo CleanExit
+    End If
+
+    Set headerMap = CreateObject("Scripting.Dictionary")
+    headerMap.CompareMode = vbTextCompare
+    For sourceCol = LBound(headers) To UBound(headers)
+        canonical = CanonicalHeaderName(CStr(headers(sourceCol)))
+        headerMap.Add canonical, CLng(sourceCol)
+    Next sourceCol
+    Set textColumns = stats("TextColumns")
+    Set protectedSamples = stats("ProtectedSamples")
+    If textColumns.Count = 0 Then Err.Raise vbObjectError + 2147, , "識別列の文字列保護設定を作成できませんでした。"
+    For Each openBook In Application.Workbooks
+        If StrComp(openBook.FullName, filePath, vbTextCompare) = 0 Then
+            Err.Raise vbObjectError + 2148, , "選択したCSVがExcelですでに開かれています。閉じてから再実行してください。"
+        End If
+    Next openBook
+
+    CsvPrepareStageCopy csvText, headers, originCodePage, stagePath, stageCodePage
+    If Len(stagePath) > 0 Then
+        CsvOpenTextAsWorkbook stagePath, stageCodePage, textColumns, wbCSV
+    Else
+        CsvOpenTextAsWorkbook filePath, stageCodePage, textColumns, wbCSV
+    End If
+    If wbCSV Is Nothing Then Err.Raise vbObjectError + 2149, , "CSVをExcelへ安全に読み込めませんでした。"
+    Set wsCSV = wbCSV.Worksheets(1)
     srcLastRow = GetLastUsedRow(wsCSV)
     srcLastCol = GetLastHeaderCol(wsCSV)
+    If srcLastCol <> UBound(headers) Or srcLastRow <> CLng(stats("DataRows")) + 1 Then _
+        Err.Raise vbObjectError + 2150, , "CSVの解析結果とExcelの読込結果が一致しません。引用符・改行・列数を確認してください。"
+    For sourceCol = LBound(headers) To UBound(headers)
+        wsCSV.Cells(1, sourceCol).Value2 = CStr(headers(sourceCol))
+    Next sourceCol
+    CsvVerifyStageHeaders wsCSV, headers, srcLastCol
+    CsvValidateProtectedSamples protectedSamples, textColumns, srcLastRow, srcLastCol
+
     dstLastRow = GetLastUsedRow(ws)
     dstLastCol = GetLastHeaderCol(ws)
-    existingHasHeader = (dstLastRow >= 1 And dstLastCol > 0 And Len(Trim$(CStr(ws.Cells(1, 1).Value))) > 0)
+    If dstLastRow > 1 And dstLastCol = 0 Then Err.Raise vbObjectError + 2151, , "目録CSVに見出しがないのにデータ行があります。"
+    If dstLastCol > 0 And Len(Trim(CStr(ws.Cells(1, 1).Value2))) = 0 Then Err.Raise vbObjectError + 2152, , "目録CSVのA1が空欄です。見出し行を確認してください。"
+    If GetLastUsedCol(ws) > dstLastCol Then Err.Raise vbObjectError + 2153, , "目録CSVに見出しのないデータ列があります。"
 
-    If srcLastCol <= 0 Then Err.Raise vbObjectError + 2101, , "選択したCSVの見出し行が見つかりません。"
-
-    ' 取込CSV側の年度列を特定（優先: 年度（和暦） -> 年度）
-    srcWarekiCol = FindHeaderColumn(wsCSV, srcLastCol, Array("年度（和暦）", "年度(和暦)"))
-    srcYearCol = FindHeaderColumn(wsCSV, srcLastCol, Array("年度"))
-    If srcWarekiCol <= 0 And srcYearCol <= 0 Then
-        Err.Raise vbObjectError + 2102, , "取込CSVに「年度（和暦）」または「年度」列が見つかりません。"
+    existingTargetCount = 0
+    oldLastRow = dstLastRow
+    oldLastCol = dstLastCol
+    hasHeader = (dstLastCol > 0)
+    Set dstHeaderMap = CreateObject("Scripting.Dictionary")
+    dstHeaderMap.CompareMode = vbTextCompare
+    If hasHeader Then
+        For destinationCol = 1 To dstLastCol
+            currentHeader = Trim(CStr(ws.Cells(1, destinationCol).Value2))
+            If currentHeader = "" Then Err.Raise vbObjectError + 2154, , "目録CSVの見出し行に空欄があります（列 " & destinationCol & "）。"
+            canonical = CanonicalHeaderName(currentHeader)
+            If dstHeaderMap.Exists(canonical) Then Err.Raise vbObjectError + 2155, , "目録CSVの見出しが重複しています: " & currentHeader
+            dstHeaderMap.Add canonical, destinationCol
+        Next destinationCol
+        existingWarekiCol = FindHeaderColumn(ws, dstLastCol, Array("年度（和暦）", "年度(和暦)"))
+        existingWesternCol = FindHeaderColumn(ws, dstLastCol, Array("年度"))
+        If existingWarekiCol <= 0 And existingWesternCol <= 0 Then Err.Raise vbObjectError + 2156, , "既存の目録CSVに年度列がありません。既存行を年度別に保護できません。"
+        If Not dstHeaderMap.Exists(CanonicalHeaderName("ファイルID")) Then Err.Raise vbObjectError + 2157, , "既存の目録CSVにファイルID列がありません。"
+        For oldRow = 2 To dstLastRow
+            existingYearValue = GetNormalizedYearFromRow(ws, oldRow, existingWarekiCol, existingWesternCol)
+            If existingYearValue = targetYearValue Then existingTargetCount = existingTargetCount + 1
+        Next oldRow
     End If
 
-    ' 2行目以降の最初の変換可能な非空欄値を「今回取込対象年度」とする
-    For srcRow = 2 To srcLastRow
-        rowYear = GetFiscalYearTextFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
-        rowYearValue = GetNormalizedYearFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
-        If rowYearValue > 0 Then
-            targetFiscalYear = rowYear
-            targetFiscalYearValue = rowYearValue
-            Exit For
+    requiredHeaders = Array("ファイルID", "ファイル番号", "バーコード番号", "タイトル", "保存期間", "媒体種別", _
+                            "分類名２", "分類名３", "分類コード２", "分類コード３")
+    For sourceCol = LBound(requiredHeaders) To UBound(requiredHeaders)
+        canonical = CanonicalHeaderName(CStr(requiredHeaders(sourceCol)))
+        If Not headerMap.Exists(canonical) Then Err.Raise vbObjectError + 2158, , "同期処理に必要な見出しがありません: " & CStr(requiredHeaders(sourceCol))
+    Next sourceCol
+    importCount = srcLastRow - 1
+    If importCount <= 0 Then Err.Raise vbObjectError + 2159, , "CSVに取込対象のデータ行がありません。"
+
+    previewText = "CSVファイル: " & fileName & vbCrLf & "文字コード: " & encodingName & vbCrLf & _
+                  "対象年度: " & targetYearText & vbCrLf & "既存の対象年度件数: " & existingTargetCount & " 件" & vbCrLf & _
+                  "新しいCSVの取込予定件数: " & importCount & " 件" & vbCrLf & _
+                  "取込後の対象年度件数: " & importCount & " 件" & vbCrLf & _
+                  "年度・識別項目の問題: " & CsvImportIssueSummary(stats) & vbCrLf & _
+                  "識別列の文字列保護: " & textColumns.Count & " 列" & vbCrLf & vbCrLf & _
+                  "この内容で目録CSVの同年度データを入れ替えますか？"
+    If Not ConfirmCsvImport(previewText, False) Then
+        CsvWriteImportLog fileName, targetYearText, existingTargetCount, 0, 0, "キャンセル", "取込前の確認で中止;encoding=" & encodingName
+        GoTo CleanExit
+    End If
+    If existingTargetCount >= 10 And importCount * 2 <= existingTargetCount Then
+        reductionWarning = "新CSVは既存の対象年度件数の半分以下です。" & vbCrLf & _
+                           "既存: " & existingTargetCount & " 件 / 取込予定: " & importCount & " 件" & vbCrLf & _
+                           "件数減少が正当な場合もありますが、CSVを確認してください。" & vbCrLf & "この件数で続行しますか？"
+        If Not ConfirmCsvImport(reductionWarning, True) Then
+            CsvWriteImportLog fileName, targetYearText, existingTargetCount, 0, 0, "キャンセル", "件数減少の確認で中止;encoding=" & encodingName
+            GoTo CleanExit
         End If
-    Next srcRow
-    If targetFiscalYearValue <= 0 Then
-        Err.Raise vbObjectError + 2103, , "取込CSVの年度列から対象年度を取得できません。"
     End If
 
-    ' 単年CSV前提のため、対象年度以外が混在していないか事前検証
-    For srcRow = 2 To srcLastRow
-        rowYear = GetFiscalYearTextFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
-        rowYearValue = GetNormalizedYearFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
-        If rowYear <> "" And rowYearValue > 0 And rowYearValue <> targetFiscalYearValue Then
-            Err.Raise vbObjectError + 2104, , _
-                "取込CSVに複数年度が混在しています。行" & srcRow & _
-                " の年度=""" & rowYear & """（対象年度: " & targetFiscalYear & "）"
-        End If
-    Next srcRow
-
-    If Not existingHasHeader Then
-        ' 初回取込: 見出しはそのまま取り込む
-        ws.Range(ws.Cells(1, 1), ws.Cells(1, srcLastCol)).Value = _
-            wsCSV.Range(wsCSV.Cells(1, 1), wsCSV.Cells(1, srcLastCol)).Value
-        NormalizeHeaderLineBreaks ws
-        dstLastCol = GetLastHeaderCol(ws)
-        For srcCol = 1 To srcLastCol
-            srcToDstCol.Add srcCol, srcCol
-        Next srcCol
-        appendRow = 2
+    If hasHeader Then
+        backupValues = CsvReadRange2D(ws.Range(ws.Cells(1, 1), ws.Cells(oldLastRow, oldLastCol)))
     Else
-        ' 追記取込: 既存見出しと既存行は動かさず、見出し名で取込先列を対応付ける
-        NormalizeHeaderLineBreaks ws
-        dstLastCol = GetLastHeaderCol(ws)
-        BuildHeaderMap ws, dstLastCol, dstHeaderMap
-
-        For srcCol = 1 To srcLastCol
-            headerText = Trim$(CStr(wsCSV.Cells(1, srcCol).Value))
-            canonical = CanonicalHeaderName(headerText)
-            If headerText <> "" And dstHeaderMap.Exists(canonical) Then
-                dstCol = CLng(dstHeaderMap(canonical))
-            ElseIf headerText <> "" Then
-                dstLastCol = GetLastHeaderCol(ws) + 1
-                ws.Cells(1, dstLastCol).Value = headerText
-                dstHeaderMap.Add canonical, dstLastCol
-                dstCol = dstLastCol
-            Else
-                Err.Raise vbObjectError + 2106, , "取込CSVの列" & srcCol & "の見出しが空欄です。"
-            End If
-            srcToDstCol.Add srcCol, dstCol
-        Next srcCol
-
-        ' 見出し追加後の最新列数で年度列を検索する
-        dstLastCol = GetLastHeaderCol(ws)
-
-        ' 目録CSVシート側の年度列を特定（優先: 年度（和暦） -> 年度）
-        dstWarekiCol = FindHeaderColumn(ws, dstLastCol, Array("年度（和暦）", "年度(和暦)"))
-        dstYearCol = FindHeaderColumn(ws, dstLastCol, Array("年度"))
-        If dstWarekiCol <= 0 And dstYearCol <= 0 Then
-            Err.Raise vbObjectError + 2105, , "目録CSVシートに「年度（和暦）」または「年度」列が見つかりません。"
-        End If
-
-        ' 高速化対応: 対象年度行を連続ブロック単位で一括削除（他年度は残す）
-        deletedCount = DeleteRowsByFiscalYearBulk(ws, 2, dstLastRow, dstWarekiCol, dstYearCol, targetFiscalYearValue)
-
-        dstLastRow = GetLastUsedRow(ws)
-        appendRow = FindInsertRowByYearOrder(ws, 2, dstLastRow, dstWarekiCol, dstYearCol, targetFiscalYearValue)
+        oldLastRow = 1
+        oldLastCol = 0
     End If
-
-    ' データ部（2行目以降）を年度順挿入（古い年度 -> 新しい年度）
-    Dim importRowCount As Long
-    Dim writeData() As Variant
-    Dim writeIndex As Long
-    importRowCount = 0
-    For srcRow = 2 To srcLastRow
-        rowYear = GetFiscalYearTextFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
-        rowYearValue = GetNormalizedYearFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
-        If rowYear = "" Or rowYearValue <= 0 Then
-            skippedBlankYearCount = skippedBlankYearCount + 1
+    Set srcToDstCol = CreateObject("Scripting.Dictionary")
+    srcToDstCol.CompareMode = vbTextCompare
+    finalLastCol = dstLastCol
+    For sourceCol = 1 To srcLastCol
+        currentHeader = CStr(headers(sourceCol))
+        canonical = CanonicalHeaderName(currentHeader)
+        If hasHeader And dstHeaderMap.Exists(canonical) Then
+            destinationCol = CLng(dstHeaderMap(canonical))
         Else
-            importRowCount = importRowCount + 1
+            finalLastCol = finalLastCol + 1
+            If finalLastCol > ws.Columns.Count Then Err.Raise vbObjectError + 2160, , "新しい見出しがExcelの列上限を超えます。"
+            destinationCol = finalLastCol
+            If Not dstHeaderMap.Exists(canonical) Then dstHeaderMap.Add canonical, destinationCol
+            newHeaders = newHeaders + 1
         End If
-    Next srcRow
+        srcToDstCol.Add CStr(sourceCol), destinationCol
+    Next sourceCol
 
-    If importRowCount > 0 Then
-        dstLastCol = GetLastHeaderCol(ws)
-        ReDim writeData(1 To importRowCount, 1 To dstLastCol)
-        writeIndex = 0
-        For srcRow = 2 To srcLastRow
-            rowYear = GetFiscalYearTextFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
-            rowYearValue = GetNormalizedYearFromRow(wsCSV, srcRow, srcWarekiCol, srcYearCol)
-            If rowYear <> "" And rowYearValue > 0 Then
-                writeIndex = writeIndex + 1
-                For srcCol = 1 To srcLastCol
-                    dstCol = CLng(srcToDstCol(srcCol))
-                    writeData(writeIndex, dstCol) = wsCSV.Cells(srcRow, srcCol).Value
-                Next srcCol
-            End If
-        Next srcRow
-
-        ws.Rows(appendRow).Resize(importRowCount).Insert Shift:=xlDown
-        ws.Range(ws.Cells(appendRow, 1), ws.Cells(appendRow + importRowCount - 1, dstLastCol)).Value = writeData
-        appendedCount = importRowCount
+    If Not hasHeader Then
+        existingWarekiCol = CsvHeaderColumn(headers, Array("年度（和暦）", "年度(和暦)"))
+        existingWesternCol = CsvHeaderColumn(headers, Array("年度"))
     End If
+    sourceValues = CsvReadRange2D(wsCSV.Range(wsCSV.Cells(2, 1), wsCSV.Cells(srcLastRow, srcLastCol)))
+    CsvApplyProtectedSamples sourceValues, protectedSamples
+    CsvApplyMultilineSamples sourceValues, stats("MultilineSamples")
+    CsvConvertDateColumns sourceValues, headers
+    outputDataRows = (oldLastRow - 1) - existingTargetCount + importCount
+    If outputDataRows < importCount Then Err.Raise vbObjectError + 2161, , "取込後行数の計算が一致しません。"
+    ReDim writeData(1 To outputDataRows + 1, 1 To finalLastCol)
+    If hasHeader Then
+        For destinationCol = 1 To oldLastCol
+            writeData(1, destinationCol) = backupValues(1, destinationCol)
+        Next destinationCol
+    End If
+    For sourceCol = 1 To srcLastCol
+        destinationCol = CLng(srcToDstCol(CStr(sourceCol)))
+        If Not hasHeader Or destinationCol > oldLastCol Then writeData(1, destinationCol) = wsCSV.Cells(1, sourceCol).Value2
+    Next sourceCol
 
-    wbCSV.Close False
+    outputRow = 2
+    inserted = False
+    If hasHeader Then
+        For oldRow = 2 To oldLastRow
+            existingYearValue = GetNormalizedYearFromRow(ws, oldRow, existingWarekiCol, existingWesternCol)
+            If existingYearValue = targetYearValue Then
+                deletedCount = deletedCount + 1
+            Else
+                If Not inserted And existingYearValue > targetYearValue Then
+                    importStartRow = outputRow
+                    CsvAppendImportedRows writeData, outputRow, sourceValues, importCount, srcLastCol, srcToDstCol
+                    inserted = True
+                End If
+                For destinationCol = 1 To oldLastCol
+                    writeData(outputRow, destinationCol) = backupValues(oldRow, destinationCol)
+                Next destinationCol
+                outputRow = outputRow + 1
+            End If
+        Next oldRow
+    End If
+    If Not inserted Then
+        importStartRow = outputRow
+        CsvAppendImportedRows writeData, outputRow, sourceValues, importCount, srcLastCol, srcToDstCol
+    End If
+    If outputRow <> outputDataRows + 2 Then Err.Raise vbObjectError + 2162, , "新旧行の組立件数が一致しません。シートはまだ変更していません。"
+    Set formatBackup = CreateObject("Scripting.Dictionary")
+    formatBackup.CompareMode = vbBinaryCompare
+    CsvBuildFormatBackup ws, backupValues, writeData, hasHeader, oldLastRow, oldLastCol, formatBackup
 
-    ' CSV取込は新システムの現状同期として扱うため、
-    ' 年度表現の繰上げ・タイトル年度変換はここでは行わない。
-    
-    Application.ScreenUpdating = True
-    Application.DisplayAlerts = True
-    
-    WriteProcessLog "CSV取込", CStr(filePath), "", appendedCount, "成功", "目録CSVシートへ取込"
+    localRoot = Environ("LOCALAPPDATA")
+    If Len(localRoot) = 0 Then Err.Raise vbObjectError + 2163, , "LOCALAPPDATAが取得できず、安全な復元用バックアップを作れません。"
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    backupFolder = fso.BuildPath(localRoot, "file-index-sync")
+    If Not fso.FolderExists(backupFolder) Then fso.CreateFolder backupFolder
+    backupFolder = fso.BuildPath(backupFolder, "CSVImportBackups")
+    If Not fso.FolderExists(backupFolder) Then fso.CreateFolder backupFolder
+    backupPath = fso.BuildPath(backupFolder, "CSVImportBackup_" & Format(Now, "yyyymmdd_hhnnss") & "_" & Replace(ThisWorkbook.Name, " ", "_") & ".xlsm")
+    If fso.FileExists(backupPath) Then backupPath = fso.BuildPath(backupFolder, "CSVImportBackup_" & Format(Now, "yyyymmdd_hhnnss") & "_" & Format(Timer * 1000, "0") & "_" & Replace(ThisWorkbook.Name, " ", "_") & ".xlsm")
+    ThisWorkbook.SaveCopyAs backupPath
+    If Not fso.FileExists(backupPath) Then Err.Raise vbObjectError + 2164, , "復元用バックアップを作成できませんでした。シートは変更していません。"
+    backupCreated = True
+    If fso.GetFile(backupPath).Size <= 0 Then Err.Raise vbObjectError + 2165, , "復元用バックアップのサイズが0です。シートは変更していません。"
+    commitStarted = True
 
-    MsgBox "CSV取込完了" & vbCrLf & _
-           "対象年度: " & targetFiscalYear & vbCrLf & _
-           "削除件数: " & deletedCount & " 件" & vbCrLf & _
-           "取込件数: " & appendedCount & " 件" & vbCrLf & _
-           "年度空欄スキップ件数: " & skippedBlankYearCount & " 件", vbInformation
-    Exit Sub
+    CsvSetProtectedTextFormats ws, formatBackup
+    ws.Range(ws.Cells(1, 1), ws.Cells(outputDataRows + 1, finalLastCol)).Value2 = writeData
+    If oldLastRow > outputDataRows + 1 Then
+        ws.Range(ws.Cells(outputDataRows + 2, 1), ws.Cells(oldLastRow, Application.Max(oldLastCol, finalLastCol))).ClearContents
+    End If
+    CsvRestoreNumberFormats ws, formatBackup
+    If Not CsvRangeMatches(ws.Range(ws.Cells(1, 1), ws.Cells(outputDataRows + 1, finalLastCol)), writeData) Then _
+        Err.Raise vbObjectError + 2166, , "書込後の照合に失敗しました。自動復元を試みます。"
+
+    wbCSV.Close SaveChanges:=False
+    Set wbCSV = Nothing
+    Set wsCSV = Nothing
+    CsvWriteImportLog fileName, targetYearText, existingTargetCount, deletedCount, importCount, "成功", _
+                      "encoding=" & encodingName & ";newHeaders=" & newHeaders & ";" & CsvImportIssueSummary(stats)
+    importSucceeded = True
+    MsgBox "CSV取込が完了しました。" & vbCrLf & "対象年度: " & targetYearText & vbCrLf & _
+           "既存件数: " & existingTargetCount & " 件" & vbCrLf & "削除件数: " & deletedCount & " 件" & vbCrLf & _
+           "取込件数: " & importCount & " 件" & vbCrLf & "追加見出し: " & newHeaders & " 列", vbInformation, "CSV取込完了"
+    GoTo CleanExit
 
 ErrorHandler:
     errNumber = Err.Number
     errDescription = Err.Description
-    On Error Resume Next
-    If Not wbCSV Is Nothing Then wbCSV.Close False
-    Application.ScreenUpdating = True
-    Application.DisplayAlerts = True
-    On Error GoTo 0
-    WriteProcessLog "CSV取込", CStr(filePath), "", appendedCount, "失敗", "Err " & CStr(errNumber) & ": " & errDescription
-    MsgBox "CSV取込中にエラーが発生しました: " & errDescription, vbExclamation
+    restoreSucceeded = False
+    If commitStarted Then restoreSucceeded = CsvRestoreImportSnapshot(ws, backupValues, formatBackup, oldLastRow, oldLastCol, outputDataRows + 1, finalLastCol, hasHeader)
+    If commitStarted And restoreSucceeded Then
+        CsvWriteImportLog fileName, targetYearText, existingTargetCount, deletedCount, 0, "失敗", "restore=verified;Err " & CStr(errNumber) & ": " & errDescription
+    ElseIf commitStarted Then
+        CsvWriteImportLog fileName, targetYearText, existingTargetCount, deletedCount, 0, "失敗", "restore=FAILED;backup=" & backupPath & ";Err " & CStr(errNumber) & ": " & errDescription
+    Else
+        CsvWriteImportLog fileName, targetYearText, existingTargetCount, 0, 0, "失敗", "no sheet write;Err " & CStr(errNumber) & ": " & errDescription
+    End If
+    If commitStarted And restoreSucceeded Then
+        MsgBox "CSV取込に失敗しました。既存データを復元し、復元後の内容も照合しました。" & vbCrLf & "原因: " & errDescription, vbExclamation, "CSV取込失敗"
+    ElseIf commitStarted Then
+        MsgBox "CSV取込に失敗し、自動復元も確認できませんでした。次のバックアップから復元してください。" & vbCrLf & _
+               backupPath & vbCrLf & "原因: " & errDescription, vbCritical, "要確認"
+    Else
+        MsgBox "CSV取込を中止しました。目録CSVのデータ書込は開始していません。" & vbCrLf & "原因: " & errDescription, vbExclamation, "CSV取込失敗"
+    End If
 
+CleanExit:
+    On Error Resume Next
+    If Not wbCSV Is Nothing Then wbCSV.Close SaveChanges:=False
+    If Len(stagePath) > 0 Then
+        If Len(Dir(stagePath)) > 0 Then Kill stagePath
+    End If
+    If backupCreated And (importSucceeded Or restoreSucceeded) Then
+        If Len(backupPath) > 0 Then Kill backupPath
+    ElseIf backupCreated And Not commitStarted Then
+        If Len(backupPath) > 0 Then Kill backupPath
+    End If
+    Application.ScreenUpdating = oldScreenUpdating
+    Application.DisplayAlerts = oldDisplayAlerts
+    On Error GoTo 0
 End Sub
+
+
+Private Function ReadCsvTextWithDetectedEncoding( _
+    ByVal filePath As String, ByRef encodingName As String, ByRef originCodePage As Long) As String
+    Dim stream As Object, bytes As Variant, textCharset As String, fileSize As Long
+    Dim hasUtf8Multibyte As Boolean
+    Set stream = CreateObject("ADODB.Stream")
+    stream.Type = 1
+    stream.Open
+    stream.LoadFromFile filePath
+    fileSize = CLng(stream.Size)
+    If fileSize <= 0 Then Err.Raise vbObjectError + 2170, , "CSVファイルが空です。"
+    bytes = stream.Read
+    If fileSize >= 3 And CLng(bytes(0)) = 239 And CLng(bytes(1)) = 187 And CLng(bytes(2)) = 191 Then
+        textCharset = "utf-8": encodingName = "UTF-8 BOM": originCodePage = 65001
+    ElseIf fileSize >= 2 And ((CLng(bytes(0)) = 255 And CLng(bytes(1)) = 254) Or _
+                               (CLng(bytes(0)) = 254 And CLng(bytes(1)) = 255)) Then
+        stream.Close
+        Err.Raise vbObjectError + 2171, , "UTF-16形式のCSVは未対応です。UTF-8 BOMまたは日本語Windows形式で保存してください。"
+    ElseIf CsvIsValidUtf8(bytes, hasUtf8Multibyte) And hasUtf8Multibyte Then
+        textCharset = "utf-8": encodingName = "UTF-8": originCodePage = 65001
+    Else
+        textCharset = "shift_jis": encodingName = "CP932/Shift-JIS": originCodePage = 932
+    End If
+    stream.Position = 0
+    stream.Type = 2
+    stream.Charset = textCharset
+    stream.Position = 0
+    ReadCsvTextWithDetectedEncoding = stream.ReadText(-1)
+    stream.Close
+    If Len(ReadCsvTextWithDetectedEncoding) > 0 Then
+        If AscW(Left(ReadCsvTextWithDetectedEncoding, 1)) = &HFEFF Then _
+            ReadCsvTextWithDetectedEncoding = Mid(ReadCsvTextWithDetectedEncoding, 2)
+    End If
+End Function
+
+Private Function CsvIsValidUtf8(ByRef bytes As Variant, ByRef hasMultibyte As Boolean) As Boolean
+    Dim i As Long, lastIndex As Long, b1 As Long, b2 As Long, b3 As Long, b4 As Long
+    CsvIsValidUtf8 = False
+    hasMultibyte = False
+    On Error GoTo InvalidBytes
+    lastIndex = UBound(bytes)
+    i = LBound(bytes)
+    Do While i <= lastIndex
+        b1 = CLng(bytes(i))
+        If b1 <= 127 Then
+            i = i + 1
+        ElseIf b1 >= 194 And b1 <= 223 Then
+            If i + 1 > lastIndex Then GoTo InvalidBytes
+            b2 = CLng(bytes(i + 1))
+            If b2 < 128 Or b2 > 191 Then GoTo InvalidBytes
+            hasMultibyte = True: i = i + 2
+        ElseIf b1 >= 224 And b1 <= 239 Then
+            If i + 2 > lastIndex Then GoTo InvalidBytes
+            b2 = CLng(bytes(i + 1)): b3 = CLng(bytes(i + 2))
+            If b3 < 128 Or b3 > 191 Then GoTo InvalidBytes
+            If b1 = 224 Then
+                If b2 < 160 Or b2 > 191 Then GoTo InvalidBytes
+            ElseIf b1 = 237 Then
+                If b2 < 128 Or b2 > 159 Then GoTo InvalidBytes
+            ElseIf b2 < 128 Or b2 > 191 Then
+                GoTo InvalidBytes
+            End If
+            hasMultibyte = True: i = i + 3
+        ElseIf b1 >= 240 And b1 <= 244 Then
+            If i + 3 > lastIndex Then GoTo InvalidBytes
+            b2 = CLng(bytes(i + 1)): b3 = CLng(bytes(i + 2)): b4 = CLng(bytes(i + 3))
+            If b3 < 128 Or b3 > 191 Or b4 < 128 Or b4 > 191 Then GoTo InvalidBytes
+            If b1 = 240 Then
+                If b2 < 144 Or b2 > 191 Then GoTo InvalidBytes
+            ElseIf b1 = 244 Then
+                If b2 < 128 Or b2 > 143 Then GoTo InvalidBytes
+            ElseIf b2 < 128 Or b2 > 191 Then
+                GoTo InvalidBytes
+            End If
+            hasMultibyte = True: i = i + 4
+        Else
+            GoTo InvalidBytes
+        End If
+    Loop
+    CsvIsValidUtf8 = True
+    Exit Function
+InvalidBytes:
+    hasMultibyte = False
+    CsvIsValidUtf8 = False
+End Function
+
+
+Private Function AnalyzeCsvImportText(ByVal csvText As String, ByRef headers As Variant) As Object
+    Dim stats As Object, textColumns As Object, protectedSamples As Object, multilineSamples As Object, yearCounts As Object
+    Dim fileIdSeen As Object, fileNoSeen As Object, barcodeSeen As Object, fields As Collection
+    Dim fieldBuffer As String, i As Long, csvLength As Long, fieldLength As Long
+    Dim ch As String, quoteChar As String, inQuotes As Boolean, recordTouched As Boolean
+    Dim haveHeaders As Boolean, logicalRow As Long
+    Set stats = CreateObject("Scripting.Dictionary")
+    Set textColumns = CreateObject("Scripting.Dictionary")
+    Set protectedSamples = CreateObject("Scripting.Dictionary")
+    Set multilineSamples = CreateObject("Scripting.Dictionary")
+    Set yearCounts = CreateObject("Scripting.Dictionary")
+    Set fileIdSeen = CreateObject("Scripting.Dictionary")
+    Set fileNoSeen = CreateObject("Scripting.Dictionary")
+    Set barcodeSeen = CreateObject("Scripting.Dictionary")
+    textColumns.CompareMode = vbTextCompare: protectedSamples.CompareMode = vbBinaryCompare
+    multilineSamples.CompareMode = vbBinaryCompare
+    yearCounts.CompareMode = vbTextCompare: fileIdSeen.CompareMode = vbTextCompare
+    fileNoSeen.CompareMode = vbTextCompare: barcodeSeen.CompareMode = vbTextCompare
+    stats.Add "TextColumns", textColumns
+    stats.Add "ProtectedSamples", protectedSamples
+    stats.Add "MultilineSamples", multilineSamples
+    stats.Add "YearCounts", yearCounts
+    stats.Add "DataRows", CLng(0): stats.Add "BlankYearCount", CLng(0)
+    stats.Add "InvalidYearCount", CLng(0): stats.Add "PartialYearCount", CLng(0)
+    stats.Add "YearMismatchCount", CLng(0): stats.Add "MixedYearCount", CLng(0)
+    stats.Add "BlankRecordCount", CLng(0): stats.Add "RaggedRecordCount", CLng(0)
+    stats.Add "MissingFileIDCount", CLng(0): stats.Add "DuplicateFileIDCount", CLng(0)
+    stats.Add "MissingFileNoCount", CLng(0): stats.Add "DuplicateFileNoCount", CLng(0)
+    stats.Add "MissingBarcodeCount", CLng(0): stats.Add "DuplicateBarcodeCount", CLng(0)
+    stats.Add "LongNumericCells", CLng(0): stats.Add "FormulaLikeCount", CLng(0): stats.Add "FatalIssues", ""
+    stats.Add "TargetYearValue", CLng(0): stats.Add "TargetYearText", ""
+    Set fields = New Collection
+    csvLength = Len(csvText): fieldBuffer = String(csvLength, vbNullChar)
+    quoteChar = Chr(34): i = 1
+    Do While i <= csvLength
+        ch = Mid(csvText, i, 1)
+        If inQuotes Then
+            If ch = quoteChar Then
+                If i < csvLength And Mid(csvText, i + 1, 1) = quoteChar Then
+                    fieldLength = fieldLength + 1: Mid(fieldBuffer, fieldLength, 1) = quoteChar: i = i + 1
+                Else
+                    inQuotes = False
+                End If
+            Else
+                fieldLength = fieldLength + 1: Mid(fieldBuffer, fieldLength, 1) = ch
+            End If
+            recordTouched = True
+        ElseIf ch = quoteChar Then
+            If fieldLength <> 0 Then Err.Raise vbObjectError + 2172, , "CSVの引用符形式が不正です（レコード " & logicalRow + 1 & "）。"
+            inQuotes = True: recordTouched = True
+        ElseIf ch = "," Then
+            fields.Add Left(fieldBuffer, fieldLength): fieldLength = 0: recordTouched = True
+        ElseIf ch = vbCr Or ch = vbLf Then
+            fields.Add Left(fieldBuffer, fieldLength): fieldLength = 0
+            If recordTouched Or fields.Count > 1 Then
+                logicalRow = logicalRow + 1
+                CsvProcessImportRecord fields, headers, stats, haveHeaders, logicalRow, fileIdSeen, fileNoSeen, barcodeSeen
+            Else
+                stats("BlankRecordCount") = CLng(stats("BlankRecordCount")) + 1
+                CsvAddFatal stats, "空行が含まれています（レコード " & logicalRow + 1 & "）。"
+            End If
+            Set fields = New Collection: recordTouched = False
+            If ch = vbCr And i < csvLength Then
+                If Mid(csvText, i + 1, 1) = vbLf Then i = i + 1
+            End If
+        Else
+            fieldLength = fieldLength + 1: Mid(fieldBuffer, fieldLength, 1) = ch: recordTouched = True
+        End If
+        i = i + 1
+    Loop
+    If inQuotes Then Err.Raise vbObjectError + 2173, , "CSVの引用符が閉じていません。"
+    If recordTouched Or fieldLength > 0 Or fields.Count > 0 Then
+        fields.Add Left(fieldBuffer, fieldLength): logicalRow = logicalRow + 1
+        CsvProcessImportRecord fields, headers, stats, haveHeaders, logicalRow, fileIdSeen, fileNoSeen, barcodeSeen
+    End If
+    If Not haveHeaders Then CsvAddFatal stats, "CSVの見出し行がありません。"
+    If CLng(stats("DataRows")) = 0 Then CsvAddFatal stats, "CSVにデータ行がありません。"
+    If CLng(stats("TargetYearValue")) <= 0 Then CsvAddFatal stats, "対象年度を判定できません。"
+    Set AnalyzeCsvImportText = stats
+End Function
+
+
+Private Sub CsvProcessImportRecord( _
+    ByVal fields As Collection, ByRef headers As Variant, ByRef stats As Object, _
+    ByRef haveHeaders As Boolean, ByVal logicalRow As Long, _
+    ByRef fileIdSeen As Object, ByRef fileNoSeen As Object, ByRef barcodeSeen As Object)
+    Dim headerMap As Object, textColumns As Object, protectedSamples As Object, multilineSamples As Object, yearCounts As Object
+    Dim col As Long, req As Variant, dataRow As Long
+    Dim fileIdCol As Long, fileNoCol As Long, barcodeCol As Long, warekiCol As Long, westernCol As Long
+    Dim yearValue As Long, warekiValue As Long, westernValue As Long
+    Dim rawWareki As String, rawWestern As String, displayYear As String, rawValue As String
+    Dim fileId As String, fileNo As String, barcode As String, canonical As String, allBlank As Boolean
+    If Not haveHeaders Then
+        If fields.Count < 4 Then CsvAddFatal stats, "CSVの見出しが4列未満です。"
+        ReDim headers(1 To fields.Count)
+        Set headerMap = CreateObject("Scripting.Dictionary"): headerMap.CompareMode = vbTextCompare
+        Set textColumns = stats("TextColumns")
+        For col = 1 To fields.Count
+            headers(col) = CStr(fields(col))
+            canonical = CanonicalHeaderName(CStr(headers(col)))
+            If canonical = "" Then CsvAddFatal stats, "見出しが空欄です（列 " & col & "）。"
+            If headerMap.Exists(canonical) Then
+                CsvAddFatal stats, "同じ意味の見出しが重複しています: " & CStr(headers(col))
+            Else
+                headerMap.Add canonical, col
+            End If
+            If CsvHeaderIsIdentifier(CStr(headers(col))) Then textColumns(CStr(col)) = True
+        Next col
+        warekiCol = CsvHeaderColumn(headers, Array("年度（和暦）", "年度(和暦)"))
+        westernCol = CsvHeaderColumn(headers, Array("年度"))
+        If warekiCol <= 0 And westernCol <= 0 Then CsvAddFatal stats, "年度列がありません（年度（和暦）または年度が必須です）。"
+        fileIdCol = CsvHeaderColumn(headers, Array("ファイルID"))
+        fileNoCol = CsvHeaderColumn(headers, Array("ファイル番号"))
+        barcodeCol = CsvHeaderColumn(headers, Array("バーコード番号"))
+        If fileIdCol <= 0 Then CsvAddFatal stats, "必須見出し「ファイルID」がありません。"
+        If fileNoCol <= 0 Then CsvAddFatal stats, "必須見出し「ファイル番号」がありません。"
+        If barcodeCol <= 0 Then CsvAddFatal stats, "必須見出し「バーコード番号」がありません。"
+        For Each req In Array("タイトル", "保存期間", "媒体種別", "分類名２", "分類名３", "分類コード２", "分類コード３")
+            If Not headerMap.Exists(CanonicalHeaderName(CStr(req))) Then CsvAddFatal stats, "同期処理に必要な見出しがありません: " & CStr(req)
+        Next req
+        stats("FileIDCol") = fileIdCol: stats("FileNoCol") = fileNoCol: stats("BarcodeCol") = barcodeCol
+        stats("WarekiCol") = warekiCol: stats("WesternCol") = westernCol
+        haveHeaders = True
+        Exit Sub
+    End If
+
+    If fields.Count <> UBound(headers) Then
+        stats("RaggedRecordCount") = CLng(stats("RaggedRecordCount")) + 1
+        CsvAddFatal stats, "列数が見出しと異なります（レコード " & logicalRow & "、期待 " & UBound(headers) & "、実際 " & fields.Count & "）。"
+        Exit Sub
+    End If
+    allBlank = True
+    For col = 1 To fields.Count
+        If CStr(fields(col)) <> "" Then allBlank = False: Exit For
+    Next col
+    If allBlank Then
+        stats("BlankRecordCount") = CLng(stats("BlankRecordCount")) + 1
+        CsvAddFatal stats, "空行が含まれています（レコード " & logicalRow & "）。"
+        Exit Sub
+    End If
+    stats("DataRows") = CLng(stats("DataRows")) + 1
+    dataRow = CLng(stats("DataRows")) + 1
+    warekiCol = CLng(stats("WarekiCol")): westernCol = CLng(stats("WesternCol"))
+    fileIdCol = CLng(stats("FileIDCol")): fileNoCol = CLng(stats("FileNoCol"))
+    barcodeCol = CLng(stats("BarcodeCol"))
+    rawWareki = "": rawWestern = "": warekiValue = 0: westernValue = 0: displayYear = ""
+    If warekiCol > 0 Then
+        rawWareki = Trim(CStr(fields(warekiCol)))
+        If rawWareki <> "" Then warekiValue = NormalizeYearValue(rawWareki)
+        If warekiValue > 0 Then displayYear = rawWareki
+    End If
+    If westernCol > 0 Then
+        rawWestern = Trim(CStr(fields(westernCol)))
+        If rawWestern <> "" Then westernValue = NormalizeYearValue(rawWestern)
+        If displayYear = "" And westernValue > 0 Then displayYear = rawWestern
+    End If
+    If rawWareki = "" And rawWestern = "" Then
+        stats("BlankYearCount") = CLng(stats("BlankYearCount")) + 1
+        CsvAddFatal stats, "年度が空欄の行があります（レコード " & logicalRow & "）。"
+    ElseIf (rawWareki <> "" And warekiValue <= 0) Or (rawWestern <> "" And westernValue <= 0) Then
+        stats("InvalidYearCount") = CLng(stats("InvalidYearCount")) + 1
+        CsvAddFatal stats, "年度を解釈できない値があります（レコード " & logicalRow & "）。"
+    ElseIf warekiCol > 0 And westernCol > 0 And rawWareki <> "" And rawWestern <> "" And warekiValue <> westernValue Then
+        stats("YearMismatchCount") = CLng(stats("YearMismatchCount")) + 1
+        CsvAddFatal stats, "年度と年度（和暦）が一致しません（レコード " & logicalRow & "）。"
+    Else
+        If warekiCol > 0 And westernCol > 0 Then
+            If (rawWareki = "" And rawWestern <> "") Or (rawWareki <> "" And rawWestern = "") Then _
+                stats("PartialYearCount") = CLng(stats("PartialYearCount")) + 1
+        End If
+
+        If warekiValue > 0 Then yearValue = warekiValue Else yearValue = westernValue
+        If displayYear = "" Then displayYear = CStr(yearValue)
+        Set yearCounts = stats("YearCounts")
+        If yearCounts.Exists(CStr(yearValue)) Then
+            yearCounts(CStr(yearValue)) = CLng(yearCounts(CStr(yearValue))) + 1
+        Else
+            yearCounts.Add CStr(yearValue), 1
+        End If
+        If CLng(stats("TargetYearValue")) = 0 Then
+            stats("TargetYearValue") = yearValue: stats("TargetYearText") = displayYear
+        ElseIf CLng(stats("TargetYearValue")) <> yearValue Then
+            stats("MixedYearCount") = CLng(stats("MixedYearCount")) + 1
+            CsvAddFatal stats, "CSVに複数年度が混在しています（レコード " & logicalRow & "、年度 " & displayYear & "）。"
+        End If
+    End If
+    If fileIdCol > 0 Then
+        fileId = Trim(CStr(fields(fileIdCol)))
+        If fileId = "" Then
+            stats("MissingFileIDCount") = CLng(stats("MissingFileIDCount")) + 1
+            CsvAddFatal stats, "ファイルIDが空欄の行があります（レコード " & logicalRow & "）。"
+        ElseIf fileIdSeen.Exists(fileId) Then
+            stats("DuplicateFileIDCount") = CLng(stats("DuplicateFileIDCount")) + 1
+            CsvAddFatal stats, "ファイルIDが重複しています（レコード " & logicalRow & "）。"
+        Else
+            fileIdSeen.Add fileId, True
+        End If
+    End If
+    If fileNoCol > 0 Then
+        fileNo = Trim(CStr(fields(fileNoCol)))
+        If fileNo = "" Then
+            stats("MissingFileNoCount") = CLng(stats("MissingFileNoCount")) + 1
+        ElseIf fileNoSeen.Exists(fileNo) Then
+            stats("DuplicateFileNoCount") = CLng(stats("DuplicateFileNoCount")) + 1
+            CsvAddFatal stats, "ファイル番号が重複しています（レコード " & logicalRow & "）。"
+        Else
+            fileNoSeen.Add fileNo, True
+        End If
+    End If
+    If barcodeCol > 0 Then
+        barcode = Trim(CStr(fields(barcodeCol)))
+        If barcode = "" Then
+            stats("MissingBarcodeCount") = CLng(stats("MissingBarcodeCount")) + 1
+        ElseIf barcodeSeen.Exists(barcode) Then
+            stats("DuplicateBarcodeCount") = CLng(stats("DuplicateBarcodeCount")) + 1
+            CsvAddFatal stats, "バーコード番号が重複しています（レコード " & logicalRow & "）。"
+        Else
+            barcodeSeen.Add barcode, True
+        End If
+    End If
+
+    Set textColumns = stats("TextColumns")
+    Set protectedSamples = stats("ProtectedSamples")
+    Set multilineSamples = stats("MultilineSamples")
+    For col = 1 To fields.Count
+        rawValue = CStr(fields(col))
+        If CsvLooksLikeFormulaText(rawValue) Then
+            stats("FormulaLikeCount") = CLng(stats("FormulaLikeCount")) + 1
+            CsvAddFatal stats, "数式として解釈される可能性のある値があります（レコード " & logicalRow & "、列 " & col & "）。"
+        End If
+        If CsvIsNumericIdentifierRisk(rawValue) Then stats("LongNumericCells") = CLng(stats("LongNumericCells")) + 1
+        If textColumns.Exists(CStr(col)) Or CsvIsNumericIdentifierRisk(rawValue) Then _
+            protectedSamples(CStr(col) & "|" & CStr(dataRow)) = rawValue
+        If InStr(1, rawValue, vbCr, vbBinaryCompare) > 0 Or InStr(1, rawValue, vbLf, vbBinaryCompare) > 0 Then _
+            multilineSamples(CStr(col) & "|" & CStr(dataRow)) = rawValue
+    Next col
+End Sub
+
+Private Sub CsvAddFatal(ByRef stats As Object, ByVal messageText As String)
+    Dim currentText As String
+    currentText = CStr(stats("FatalIssues"))
+    If Len(currentText) = 0 Then
+        stats("FatalIssues") = messageText
+    ElseIf Len(currentText) < 1600 Then
+        stats("FatalIssues") = currentText & vbCrLf & messageText
+    End If
+End Sub
+
+Private Function CsvImportIssueSummary(ByVal stats As Object) As String
+    CsvImportIssueSummary = "年度空欄 " & CLng(stats("BlankYearCount")) & " 件 / " & _
+        "年度不正 " & CLng(stats("InvalidYearCount")) & " 件 / 年度列不一致 " & CLng(stats("YearMismatchCount")) & " 件 / 年度列片側空欄 " & CLng(stats("PartialYearCount")) & " 件 / " & _
+        "複数年度混在 " & CLng(stats("MixedYearCount")) & " 件 / ファイルID欠損 " & CLng(stats("MissingFileIDCount")) & " 件 / " & _
+        "ファイルID重複 " & CLng(stats("DuplicateFileIDCount")) & " 件 / ファイル番号欠損・重複 " & _
+        CLng(stats("MissingFileNoCount")) & "/" & CLng(stats("DuplicateFileNoCount")) & " 件 / " & _
+        "バーコード欠損・重複 " & CLng(stats("MissingBarcodeCount")) & "/" & CLng(stats("DuplicateBarcodeCount")) & " 件 / " & _
+        "空行 " & CLng(stats("BlankRecordCount")) & " 件 / 列数不一致 " & CLng(stats("RaggedRecordCount")) & " 件 / 数式風文字列 " & CLng(stats("FormulaLikeCount")) & " 件 / 先頭ゼロ・長数字保護 " & CLng(stats("LongNumericCells")) & " 値"
+End Function
+
+Private Function CsvHeaderColumn(ByRef headers As Variant, ByVal candidates As Variant) As Long
+    Dim col As Long, candidate As Long, headerKey As String
+    If Not IsArray(headers) Then Exit Function
+    For col = LBound(headers) To UBound(headers)
+        headerKey = CanonicalHeaderName(CStr(headers(col)))
+        For candidate = LBound(candidates) To UBound(candidates)
+            If StrComp(headerKey, CanonicalHeaderName(CStr(candidates(candidate))), vbTextCompare) = 0 Then
+                CsvHeaderColumn = col
+                Exit Function
+            End If
+        Next candidate
+    Next col
+End Function
+
+
+Private Function CsvHeaderIsIdentifier(ByVal headerName As String) As Boolean
+    Dim normalized As String
+    normalized = UCase(NormalizeHeaderToken(headerName))
+    CsvHeaderIsIdentifier = (InStr(1, normalized, "ID", vbTextCompare) > 0 Or _
+        InStr(1, normalized, "コード", vbTextCompare) > 0 Or InStr(1, normalized, "番号", vbTextCompare) > 0)
+End Function
+
+Private Function CsvLooksLikeFormulaText(ByVal valueText As String) As Boolean
+    Dim firstChar As String
+    If Len(valueText) = 0 Then Exit Function
+    firstChar = Left$(valueText, 1)
+    If firstChar = "=" Then
+        CsvLooksLikeFormulaText = True
+    ElseIf firstChar = "+" Or firstChar = "-" Or firstChar = "@" Then
+        If Not IsNumeric(valueText) And Not IsDate(valueText) Then CsvLooksLikeFormulaText = True
+    End If
+End Function
+
+Private Function CsvIsNumericIdentifierRisk(ByVal valueText As String) As Boolean
+    Dim i As Long, ch As String
+    If Len(valueText) = 0 Then Exit Function
+    If Len(valueText) <= 15 And (Len(valueText) = 1 Or Left(valueText, 1) <> "0") Then Exit Function
+    For i = 1 To Len(valueText)
+        ch = Mid(valueText, i, 1)
+        If ch < "0" Or ch > "9" Then Exit Function
+    Next i
+    CsvIsNumericIdentifierRisk = True
+End Function
+
+Private Sub CsvPrepareStageCopy(ByVal csvText As String, ByRef headers As Variant, ByVal sourceCodePage As Long, ByRef stagePath As String, ByRef stageCodePage As Long)
+    Dim col As Long, i As Long, headerEnd As Long, dataStart As Long, bodyIndex As Long
+    Dim safeLength As Long, bodyLength As Long, headerRecord As String, safeBuffer As String, stageText As String
+    Dim bodyText As String, bodyBuffer As String
+    Dim ch As String, quoteChar As String, inQuotes As Boolean, needsFlatten As Boolean
+    Dim tempFolder As String, tempName As String, errNumber As Long, errDescription As String
+    Dim fso As Object, stream As Object
+    On Error GoTo CreateFailed
+    stagePath = "": stageCodePage = sourceCodePage
+    For col = LBound(headers) To UBound(headers)
+        If InStr(1, CStr(headers(col)), vbCr, vbBinaryCompare) > 0 Or _
+           InStr(1, CStr(headers(col)), vbLf, vbBinaryCompare) > 0 Then
+            needsFlatten = True: Exit For
+        End If
+    Next col
+    If Not needsFlatten Then Exit Sub
+
+    quoteChar = Chr(34): inQuotes = False
+    For i = 1 To Len(csvText)
+        ch = Mid$(csvText, i, 1)
+        If ch = quoteChar Then
+            If inQuotes And i < Len(csvText) And Mid$(csvText, i + 1, 1) = quoteChar Then
+                i = i + 1
+            Else
+                inQuotes = Not inQuotes
+            End If
+        ElseIf Not inQuotes And (ch = vbCr Or ch = vbLf) Then
+            headerEnd = i: dataStart = i + 1
+            If ch = vbCr And i < Len(csvText) Then
+                If Mid$(csvText, i + 1, 1) = vbLf Then dataStart = i + 2
+            End If
+            Exit For
+        End If
+    Next i
+    If headerEnd <= 0 Or dataStart <= headerEnd Then Err.Raise vbObjectError + 2180, , "CSVの見出し行の終端を安全に特定できません。"
+
+    headerRecord = Left$(csvText, headerEnd - 1)
+    safeBuffer = String$(Len(headerRecord), vbNullChar)
+    safeLength = 0: inQuotes = False
+    For i = 1 To Len(headerRecord)
+        ch = Mid$(headerRecord, i, 1)
+        If ch = quoteChar Then
+            If inQuotes And i < Len(headerRecord) And Mid$(headerRecord, i + 1, 1) = quoteChar Then
+                safeLength = safeLength + 1: Mid$(safeBuffer, safeLength, 1) = quoteChar
+                i = i + 1
+                safeLength = safeLength + 1: Mid$(safeBuffer, safeLength, 1) = quoteChar
+            Else
+                inQuotes = Not inQuotes
+                safeLength = safeLength + 1: Mid$(safeBuffer, safeLength, 1) = quoteChar
+            End If
+        ElseIf inQuotes And (ch = vbCr Or ch = vbLf) Then
+            safeLength = safeLength + 1: Mid$(safeBuffer, safeLength, 1) = " "
+        Else
+            safeLength = safeLength + 1: Mid$(safeBuffer, safeLength, 1) = ch
+        End If
+    Next i
+    bodyText = Mid$(csvText, dataStart)
+    bodyBuffer = String$(Len(bodyText), vbNullChar)
+    bodyLength = 0: inQuotes = False
+    For bodyIndex = 1 To Len(bodyText)
+        ch = Mid$(bodyText, bodyIndex, 1)
+        If ch = quoteChar Then
+            If inQuotes And bodyIndex < Len(bodyText) And Mid$(bodyText, bodyIndex + 1, 1) = quoteChar Then
+                bodyLength = bodyLength + 1: Mid$(bodyBuffer, bodyLength, 1) = quoteChar
+                bodyIndex = bodyIndex + 1
+                bodyLength = bodyLength + 1: Mid$(bodyBuffer, bodyLength, 1) = quoteChar
+            Else
+                inQuotes = Not inQuotes
+                bodyLength = bodyLength + 1: Mid$(bodyBuffer, bodyLength, 1) = quoteChar
+            End If
+        ElseIf inQuotes And (ch = vbCr Or ch = vbLf) Then
+            bodyLength = bodyLength + 1: Mid$(bodyBuffer, bodyLength, 1) = " "
+            If ch = vbCr And bodyIndex < Len(bodyText) Then
+                If Mid$(bodyText, bodyIndex + 1, 1) = vbLf Then bodyIndex = bodyIndex + 1
+            End If
+        Else
+            bodyLength = bodyLength + 1: Mid$(bodyBuffer, bodyLength, 1) = ch
+        End If
+    Next bodyIndex
+    stageText = Left$(safeBuffer, safeLength) & vbCrLf & Left$(bodyBuffer, bodyLength)
+    tempFolder = Environ("TEMP")
+    If Len(tempFolder) = 0 Then Err.Raise vbObjectError + 2181, , "一時フォルダーが取得できず、CSVの見出しを安全に処理できません。"
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    tempName = Replace(fso.GetTempName, ".tmp", ".csv", 1, -1, vbTextCompare)
+    stagePath = fso.BuildPath(tempFolder, "CSVImportStage_" & tempName)
+    Set stream = CreateObject("ADODB.Stream")
+    stream.Type = 2: stream.Charset = "utf-8": stream.Open
+    stream.WriteText stageText
+    stream.SaveToFile stagePath, 2
+    stream.Close
+    If Not fso.FileExists(stagePath) Then Err.Raise vbObjectError + 2182, , "一時CSVを作成できませんでした。"
+    If fso.GetFile(stagePath).Size <= 3 Then Err.Raise vbObjectError + 2183, , "一時CSVのサイズが不正です。"
+    stageCodePage = 65001
+    Exit Sub
+CreateFailed:
+    errNumber = Err.Number: errDescription = Err.Description
+    On Error Resume Next
+    If Not stream Is Nothing Then stream.Close
+    If Len(stagePath) > 0 Then If Len(Dir(stagePath)) > 0 Then Kill stagePath
+    On Error GoTo 0
+    Err.Raise errNumber, "CsvPrepareStageCopy", errDescription
+End Sub
+
+Private Sub CsvOpenTextAsWorkbook( _
+    ByVal filePath As String, ByVal originCodePage As Long, _
+    ByVal textColumns As Object, ByRef wbCSV As Workbook)
+    Dim fieldInfo As Variant, fieldCount As Long, i As Long, col As Long
+    fieldCount = textColumns.Count
+    If fieldCount <= 0 Then Err.Raise vbObjectError + 2174, , "識別列の文字列保護設定がありません。"
+    ReDim fieldInfo(0 To fieldCount - 1)
+    i = 0
+    For col = 1 To 16384
+        If textColumns.Exists(CStr(col)) Then
+            fieldInfo(i) = Array(col, xlTextFormat)
+            i = i + 1
+            If i >= fieldCount Then Exit For
+        End If
+    Next col
+    Workbooks.OpenText Filename:=filePath, Origin:=originCodePage, StartRow:=1, _
+        DataType:=xlDelimited, TextQualifier:=xlTextQualifierDoubleQuote, ConsecutiveDelimiter:=False, _
+        Tab:=False, Semicolon:=False, Comma:=True, Space:=False, Other:=False, _
+        FieldInfo:=fieldInfo, TrailingMinusNumbers:=True, Local:=True
+    Set wbCSV = Application.ActiveWorkbook
+End Sub
+
+Private Sub CsvVerifyStageHeaders(ByVal wsCSV As Worksheet, ByRef headers As Variant, ByVal srcLastCol As Long)
+    Dim col As Long
+    For col = 1 To srcLastCol
+        If StrComp(CanonicalHeaderName(CStr(wsCSV.Cells(1, col).Value2)), _
+                   CanonicalHeaderName(CStr(headers(col))), vbTextCompare) <> 0 Then
+            Err.Raise vbObjectError + 2175, , "文字コード変換後のCSV見出しが一致しません（列 " & col & "）。"
+        End If
+    Next col
+End Sub
+
+Private Sub CsvValidateProtectedSamples(ByVal protectedSamples As Object, ByVal textColumns As Object, ByVal stageLastRow As Long, ByVal stageLastCol As Long)
+    Dim sampleKey As Variant, parts As Variant, col As Long, rowNo As Long, rawValue As String
+    For Each sampleKey In protectedSamples.Keys
+        parts = Split(CStr(sampleKey), "|")
+        If UBound(parts) <> 1 Then Err.Raise vbObjectError + 2177, , "識別値保護データの行・列対応が不正です。"
+        col = CLng(parts(0)): rowNo = CLng(parts(1))
+        If col < 1 Or col > stageLastCol Or rowNo < 2 Or rowNo > stageLastRow Then _
+            Err.Raise vbObjectError + 2177, , "識別値保護データがCSV読込範囲外を指しています。"
+        rawValue = CStr(protectedSamples(sampleKey))
+        If Not textColumns.Exists(CStr(col)) And Not CsvIsNumericIdentifierRisk(rawValue) Then _
+            Err.Raise vbObjectError + 2177, , "文字列保護対象外の値が保護データに含まれています。"
+    Next sampleKey
+End Sub
+
+Private Sub CsvConvertDateColumns(ByRef sourceValues As Variant, ByRef headers As Variant)
+    Dim col As Long, rowNo As Long, headerText As String, valueText As String
+    For col = LBound(headers) To UBound(headers)
+        headerText = CStr(headers(col))
+        If CsvHeaderIsDate(headerText) And Not CsvHeaderIsIdentifier(headerText) Then
+            For rowNo = 1 To UBound(sourceValues, 1)
+                If VarType(sourceValues(rowNo, col)) = vbString Then
+                    valueText = Trim$(CStr(sourceValues(rowNo, col)))
+                    If Len(valueText) > 0 And IsDate(valueText) Then _
+                        sourceValues(rowNo, col) = CDbl(CDate(valueText))
+                End If
+            Next rowNo
+        End If
+    Next col
+End Sub
+
+Private Function CsvHeaderIsDate(ByVal headerName As String) As Boolean
+    headerName = Trim$(headerName)
+    CsvHeaderIsDate = (InStr(1, headerName, "日時", vbBinaryCompare) > 0 Or _
+                       InStr(1, headerName, "日付", vbBinaryCompare) > 0 Or _
+                       Right$(headerName, 1) = "日")
+End Function
+
+Private Sub CsvApplyMultilineSamples(ByRef sourceValues As Variant, ByVal multilineSamples As Object)
+    Dim sampleKey As Variant, parts As Variant, col As Long, rowNo As Long
+    For Each sampleKey In multilineSamples.Keys
+        parts = Split(CStr(sampleKey), "|")
+        If UBound(parts) <> 1 Then Err.Raise vbObjectError + 2178, , "複数行データの行・列対応が不正です。"
+        col = CLng(parts(0)): rowNo = CLng(parts(1))
+        If rowNo < 2 Or col < 1 Then Err.Raise vbObjectError + 2178, , "複数行データの復元位置が不正です。"
+        sourceValues(rowNo - 1, col) = CStr(multilineSamples(sampleKey))
+    Next sampleKey
+End Sub
+
+Private Sub CsvApplyProtectedSamples(ByRef sourceValues As Variant, ByVal protectedSamples As Object)
+    Dim sampleKey As Variant, parts As Variant, col As Long, rowNo As Long
+    Rem OpenText may coerce values despite FieldInfo; restore protected cells from validated raw CSV fields.
+    For Each sampleKey In protectedSamples.Keys
+        parts = Split(CStr(sampleKey), "|")
+        col = CLng(parts(0)): rowNo = CLng(parts(1))
+        sourceValues(rowNo - 1, col) = CStr(protectedSamples(sampleKey))
+    Next sampleKey
+End Sub
+
+Private Function CsvSafeFileName(ByVal filePath As String) As String
+    On Error Resume Next
+    CsvSafeFileName = CreateObject("Scripting.FileSystemObject").GetFileName(filePath)
+    On Error GoTo 0
+    If CsvSafeFileName = "" Then CsvSafeFileName = filePath
+End Function
+
+Private Function ConfirmCsvImport(ByVal promptText As String, ByVal isDecreaseWarning As Boolean) As Boolean
+    Dim titleText As String, buttonText As String
+    If isDecreaseWarning Then
+        titleText = "取込件数の減少確認"
+        buttonText = "OKで続行します。キャンセルすると取込を中止します。"
+    Else
+        titleText = "CSV取込前の確認"
+        buttonText = "OKで実行、キャンセルで中止します。"
+    End If
+    ConfirmCsvImport = (MsgBox(promptText & vbCrLf & vbCrLf & buttonText, _
+        vbQuestion Or vbOKCancel Or vbDefaultButton2, titleText) = vbOK)
+End Function
+
+Private Sub CsvWriteImportLog( _
+    ByVal fileName As String, ByVal targetYear As String, _
+    ByVal existingCount As Long, ByVal deletedCount As Long, _
+    ByVal importedCount As Long, ByVal resultText As String, ByVal noteText As String)
+    WriteProcessLog "CSV取込", fileName, targetYear, importedCount, resultText, _
+        "既存件数=" & existingCount & ";削除件数=" & deletedCount & ";取込件数=" & importedCount & ";" & noteText
+End Sub
+
+
+Private Sub CsvAppendImportedRows( _
+    ByRef outputData As Variant, ByRef outputRow As Long, _
+    ByRef sourceData As Variant, ByVal importCount As Long, _
+    ByVal srcLastCol As Long, ByVal srcToDstCol As Object)
+    Dim rowNo As Long, col As Long, destinationCol As Long
+    For rowNo = 1 To importCount
+        For col = 1 To srcLastCol
+            destinationCol = CLng(srcToDstCol(CStr(col)))
+            outputData(outputRow, destinationCol) = sourceData(rowNo, col)
+        Next col
+        outputRow = outputRow + 1
+    Next rowNo
+End Sub
+
+Private Function CsvReadRange2D(ByVal targetRange As Range) As Variant
+    Dim value As Variant, result As Variant
+    value = targetRange.Value2
+    If targetRange.Rows.Count = 1 And targetRange.Columns.Count = 1 Then
+        ReDim result(1 To 1, 1 To 1)
+        result(1, 1) = value
+        CsvReadRange2D = result
+    Else
+        CsvReadRange2D = value
+    End If
+End Function
+
+Private Function CsvRangeMatches(ByVal targetRange As Range, ByRef expected As Variant) As Boolean
+    Dim actual As Variant, rowNo As Long, col As Long
+    On Error GoTo NotEqual
+    actual = CsvReadRange2D(targetRange)
+    For rowNo = 1 To UBound(expected, 1)
+        For col = 1 To UBound(expected, 2)
+            If Not CsvCellValuesEqual(actual(rowNo, col), expected(rowNo, col)) Then GoTo NotEqual
+        Next col
+    Next rowNo
+    CsvRangeMatches = True
+    Exit Function
+NotEqual:
+    CsvRangeMatches = False
+End Function
+
+Private Function CsvCellValuesEqual(ByVal leftValue As Variant, ByVal rightValue As Variant) As Boolean
+    If IsError(leftValue) Or IsError(rightValue) Then
+        If IsError(leftValue) And IsError(rightValue) Then CsvCellValuesEqual = (CStr(leftValue) = CStr(rightValue))
+        Exit Function
+    End If
+    If IsNull(leftValue) Or IsNull(rightValue) Then
+        CsvCellValuesEqual = (IsNull(leftValue) And IsNull(rightValue))
+        Exit Function
+    End If
+    If VarType(rightValue) = vbString Then
+        If IsEmpty(leftValue) Then leftValue = ""
+        If VarType(leftValue) <> vbString Then Exit Function
+        CsvCellValuesEqual = (StrComp(CStr(leftValue), CStr(rightValue), vbBinaryCompare) = 0)
+        Exit Function
+    End If
+    If IsEmpty(leftValue) Or IsEmpty(rightValue) Then
+        CsvCellValuesEqual = ((IsEmpty(leftValue) Or CStr(leftValue) = "") And _
+                              (IsEmpty(rightValue) Or CStr(rightValue) = ""))
+        Exit Function
+    End If
+    If IsNumeric(leftValue) And IsNumeric(rightValue) Then
+        CsvCellValuesEqual = (CDbl(leftValue) = CDbl(rightValue))
+    Else
+        CsvCellValuesEqual = (StrComp(CStr(leftValue), CStr(rightValue), vbBinaryCompare) = 0)
+    End If
+End Function
+
+Private Function CsvStringNeedsText(ByVal valueText As String) As Boolean
+    Dim firstChar As String
+    If Len(valueText) = 0 Then Exit Function
+    firstChar = Left$(valueText, 1)
+    If firstChar = "=" Or firstChar = "+" Or firstChar = "-" Or firstChar = "@" Then
+        CsvStringNeedsText = True
+        Exit Function
+    End If
+    If IsNumeric(valueText) Or IsDate(valueText) Then CsvStringNeedsText = True
+End Function
+
+Private Sub CsvBuildFormatBackup( _
+    ByVal ws As Worksheet, ByRef backupValues As Variant, ByRef writeData As Variant, _
+    ByVal hasHeader As Boolean, ByVal oldLastRow As Long, ByVal oldLastCol As Long, _
+    ByVal formatBackup As Object)
+    Dim rowNo As Long, col As Long, cellValue As Variant
+    If hasHeader Then
+        For rowNo = 1 To oldLastRow
+            For col = 1 To oldLastCol
+                cellValue = backupValues(rowNo, col)
+                If VarType(cellValue) = vbString Then
+                    If CsvStringNeedsText(CStr(cellValue)) Then CsvRememberNumberFormat ws, rowNo, col, formatBackup
+                End If
+            Next col
+        Next rowNo
+    End If
+    For rowNo = 1 To UBound(writeData, 1)
+        For col = 1 To UBound(writeData, 2)
+            cellValue = writeData(rowNo, col)
+            If VarType(cellValue) = vbString Then
+                If CsvStringNeedsText(CStr(cellValue)) Then CsvRememberNumberFormat ws, rowNo, col, formatBackup
+            End If
+        Next col
+    Next rowNo
+End Sub
+
+Private Sub CsvRememberNumberFormat(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal col As Long, ByVal formatBackup As Object)
+    Dim key As String
+    key = CStr(rowNo) & "|" & CStr(col)
+    If Not formatBackup.Exists(key) Then formatBackup.Add key, CStr(ws.Cells(rowNo, col).NumberFormat)
+End Sub
+
+Private Sub CsvSetProtectedTextFormats(ByVal ws As Worksheet, ByVal formatBackup As Object)
+    Dim cellKey As Variant, parts As Variant
+    If formatBackup Is Nothing Then Exit Sub
+    For Each cellKey In formatBackup.Keys
+        parts = Split(CStr(cellKey), "|")
+        ws.Cells(CLng(parts(0)), CLng(parts(1))).NumberFormat = "@"
+    Next cellKey
+End Sub
+
+Private Sub CsvRestoreNumberFormats(ByVal ws As Worksheet, ByVal formatBackup As Object)
+    Dim cellKey As Variant, parts As Variant
+    If formatBackup Is Nothing Then Exit Sub
+    For Each cellKey In formatBackup.Keys
+        parts = Split(CStr(cellKey), "|")
+        ws.Cells(CLng(parts(0)), CLng(parts(1))).NumberFormat = CStr(formatBackup(cellKey))
+    Next cellKey
+End Sub
+
+Private Function CsvFormatSnapshotMatches(ByVal ws As Worksheet, ByVal formatBackup As Object) As Boolean
+    Dim cellKey As Variant, parts As Variant
+    On Error GoTo NotEqual
+    If formatBackup Is Nothing Then
+        CsvFormatSnapshotMatches = True
+        Exit Function
+    End If
+    For Each cellKey In formatBackup.Keys
+        parts = Split(CStr(cellKey), "|")
+        If StrComp(CStr(ws.Cells(CLng(parts(0)), CLng(parts(1))).NumberFormat), _
+                   CStr(formatBackup(cellKey)), vbBinaryCompare) <> 0 Then GoTo NotEqual
+    Next cellKey
+    CsvFormatSnapshotMatches = True
+    Exit Function
+NotEqual:
+    CsvFormatSnapshotMatches = False
+End Function
+
+Private Function CsvRestoreImportSnapshot( _
+    ByVal ws As Worksheet, ByRef backupValues As Variant, ByVal formatBackup As Object, _
+    ByVal oldLastRow As Long, ByVal oldLastCol As Long, _
+    ByVal attemptedLastRow As Long, ByVal attemptedLastCol As Long, _
+    ByVal hadHeader As Boolean) As Boolean
+    Dim clearRows As Long, clearCols As Long, expected As Variant
+    On Error GoTo RestoreFailed
+    If ws Is Nothing Then GoTo RestoreFailed
+    clearRows = Application.Max(oldLastRow, attemptedLastRow, 1)
+    clearCols = Application.Max(oldLastCol, attemptedLastCol, 1)
+    CsvSetProtectedTextFormats ws, formatBackup
+    ws.Range(ws.Cells(1, 1), ws.Cells(clearRows, clearCols)).ClearContents
+    If hadHeader Then
+        expected = backupValues
+        ws.Range(ws.Cells(1, 1), ws.Cells(oldLastRow, oldLastCol)).Value2 = backupValues
+        If Not CsvRangeMatches(ws.Range(ws.Cells(1, 1), ws.Cells(oldLastRow, oldLastCol)), expected) Then GoTo RestoreFailed
+    ElseIf Application.WorksheetFunction.CountA(ws.Range(ws.Cells(1, 1), ws.Cells(clearRows, clearCols))) <> 0 Then
+        GoTo RestoreFailed
+    End If
+    CsvRestoreNumberFormats ws, formatBackup
+    If Not CsvFormatSnapshotMatches(ws, formatBackup) Then GoTo RestoreFailed
+    CsvRestoreImportSnapshot = True
+    Exit Function
+RestoreFailed:
+    CsvRestoreImportSnapshot = False
+End Function
+
 
 Private Function FindInsertRowByYearOrder( _
     ByVal ws As Worksheet, _
