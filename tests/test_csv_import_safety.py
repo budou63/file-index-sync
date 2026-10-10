@@ -75,6 +75,25 @@ class CsvImportSafetyTests(unittest.TestCase):
         self.assertIn("2018 + n", normalizer)
         self.assertIn("If n >= 1900 And n <= 2999 Then", normalizer)
 
+    def test_zero_count_diagnostic_is_limited_to_existing_rows_and_does_not_block_first_import(self) -> None:
+        worker = procedure("CSVImportExecute")
+        diagnostic = procedure("CsvShowZeroCountDiagnostic")
+        self.assertIn("If existingTargetCount = 0 And examinedRowCount > 0 Then", worker)
+        self.assertLess(worker.index("CsvShowZeroCountDiagnostic ws"), worker.index("ConfirmCsvImport(previewText, False)"))
+        for field in ("ThisWorkbook.FullName", "initialActiveBookPath", "ActiveWorkbook.FullName", "ws.Name", "lastRow", "lastCol", "warekiCol", "westernCol", "examinedCount", "recognizedCount"):
+            self.assertIn(field, diagnostic)
+        self.assertNotIn("Err.Raise", diagnostic)
+        self.assertNotIn("CsvWriteImportLog", diagnostic)
+
+    def test_count_and_replacement_must_agree_before_any_sheet_write(self) -> None:
+        worker = procedure("CSVImportExecute")
+        check = worker.index("If deletedCount <> existingTargetCount Then Err.Raise")
+        self.assertLess(worker.index("If existingYearValue = targetYearValue Then existingTargetCount = existingTargetCount + 1"), check)
+        self.assertLess(worker.index("deletedCount = deletedCount + 1"), check)
+        self.assertLess(check, worker.index("SaveCopyAs backupPath"))
+        self.assertLess(check, worker.index(".Value2 = writeData"))
+        self.assertIn("GetNormalizedYearFromRow(ws, oldRow, existingWarekiCol, existingWesternCol)", worker)
+
     def test_large_count_reduction_warns_but_does_not_forbid_import(self) -> None:
         worker = procedure("CSVImportExecute")
         self.assertIn("If existingTargetCount >= 10 And importCount * 2 <= existingTargetCount Then", worker)

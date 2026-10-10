@@ -1463,6 +1463,7 @@ Private Sub CSVImportExecute(ByVal filePath As String)
     Dim stageCodePage As Long
     Dim localRoot As String, backupFolder As String, validationErrors As String, warningText As String
     Dim previewText As String, reductionWarning As String, currentHeader As String, canonical As String
+    Dim initialActiveBookPath As String
     Dim newHeaders As Long, importStartRow As Long
     Dim originCodePage As Long, headers As Variant, stats As Object, headerMap As Object
     Dim textColumns As Object, protectedSamples As Object, srcToDstCol As Object, dstHeaderMap As Object
@@ -1471,6 +1472,7 @@ Private Sub CSVImportExecute(ByVal filePath As String)
     Dim srcLastRow As Long, srcLastCol As Long, dstLastRow As Long, dstLastCol As Long
     Dim oldLastRow As Long, oldLastCol As Long, finalLastCol As Long, outputDataRows As Long
     Dim existingTargetCount As Long, deletedCount As Long, importCount As Long, outputRow As Long
+    Dim recognizedYearCount As Long, examinedRowCount As Long
     Dim sourceRow As Long, sourceCol As Long, oldRow As Long, destinationCol As Long
     Dim targetYearValue As Long, targetYearText As String, existingYearValue As Long
     Dim existingWarekiCol As Long, existingWesternCol As Long, oldScreenUpdating As Boolean
@@ -1480,6 +1482,7 @@ Private Sub CSVImportExecute(ByVal filePath As String)
 
     oldScreenUpdating = Application.ScreenUpdating
     oldDisplayAlerts = Application.DisplayAlerts
+    If Not ActiveWorkbook Is Nothing Then initialActiveBookPath = ActiveWorkbook.FullName
     On Error GoTo ErrorHandler
     fileName = CsvSafeFileName(filePath)
     If Len(Dir(filePath)) = 0 Then Err.Raise vbObjectError + 2140, , "選択したCSVファイルが見つかりません。"
@@ -1573,6 +1576,8 @@ Private Sub CSVImportExecute(ByVal filePath As String)
         If Not dstHeaderMap.Exists(CanonicalHeaderName("ファイルID")) Then Err.Raise vbObjectError + 2157, , "既存の目録CSVにファイルID列がありません。"
         For oldRow = 2 To dstLastRow
             existingYearValue = GetNormalizedYearFromRow(ws, oldRow, existingWarekiCol, existingWesternCol)
+            examinedRowCount = examinedRowCount + 1
+            If existingYearValue > 0 Then recognizedYearCount = recognizedYearCount + 1
             If existingYearValue = targetYearValue Then existingTargetCount = existingTargetCount + 1
         Next oldRow
     End If
@@ -1585,6 +1590,9 @@ Private Sub CSVImportExecute(ByVal filePath As String)
     Next sourceCol
     importCount = srcLastRow - 1
     If importCount <= 0 Then Err.Raise vbObjectError + 2159, , "CSVに取込対象のデータ行がありません。"
+    If existingTargetCount = 0 And examinedRowCount > 0 Then _
+        CsvShowZeroCountDiagnostic ws, targetYearText, targetYearValue, dstLastRow, dstLastCol, _
+                                   existingWarekiCol, existingWesternCol, examinedRowCount, recognizedYearCount, initialActiveBookPath
 
     previewText = "ファイル：" & fileName & vbCrLf & "対象年度：" & targetYearText & vbCrLf & vbCrLf & _
                   targetYearText & "の登録件数" & vbCrLf & _
@@ -1673,6 +1681,8 @@ Private Sub CSVImportExecute(ByVal filePath As String)
         importStartRow = outputRow
         CsvAppendImportedRows writeData, outputRow, sourceValues, importCount, srcLastCol, srcToDstCol
     End If
+    If deletedCount <> existingTargetCount Then Err.Raise vbObjectError + 2180, , _
+        "確認時の既存件数と入替対象行数が一致しません（確認: " & existingTargetCount & " 件 / 入替: " & deletedCount & " 件）。目録CSVは変更していません。"
     If outputRow <> outputDataRows + 2 Then Err.Raise vbObjectError + 2162, , "新旧行の組立件数が一致しません。シートはまだ変更していません。"
     Set formatBackup = CreateObject("Scripting.Dictionary")
     formatBackup.CompareMode = vbBinaryCompare
@@ -2338,6 +2348,28 @@ Private Function CsvSafeFileName(ByVal filePath As String) As String
     On Error GoTo 0
     If CsvSafeFileName = "" Then CsvSafeFileName = filePath
 End Function
+
+Private Sub CsvShowZeroCountDiagnostic( _
+    ByVal ws As Worksheet, ByVal targetYearText As String, ByVal targetYearValue As Long, _
+    ByVal lastRow As Long, ByVal lastCol As Long, ByVal warekiCol As Long, ByVal westernCol As Long, _
+    ByVal examinedCount As Long, ByVal recognizedCount As Long, ByVal initialActiveBookPath As String)
+
+    Dim diagnosticText As String
+    Dim activeBookPath As String
+    If Not ActiveWorkbook Is Nothing Then activeBookPath = ActiveWorkbook.FullName
+    diagnosticText = "取込対象年度の既存件数は0件です。参照先と年度列を確認してください。" & vbCrLf & vbCrLf & _
+        "マクロのブック: " & ThisWorkbook.FullName & vbCrLf & _
+        "画面のブック（開始時）: " & initialActiveBookPath & vbCrLf & _
+        "画面のブック（CSV読込後）: " & activeBookPath & vbCrLf & _
+        "参照シート: " & ws.Name & vbCrLf & _
+        "対象年度: " & targetYearText & "（正規化: " & targetYearValue & "）" & vbCrLf & _
+        "最終行 / 最終見出し列: " & lastRow & " / " & lastCol & vbCrLf & _
+        "和暦列 / 西暦列: " & warekiCol & " / " & westernCol & vbCrLf & _
+        "判定対象行数: " & examinedCount & vbCrLf & _
+        "年度を判定できた件数: " & recognizedCount & vbCrLf & _
+        "対象年度として一致した件数: 0"
+    MsgBox diagnosticText, vbInformation, "CSV取込：既存件数0件の診断"
+End Sub
 
 Private Function ConfirmCsvImport(ByVal promptText As String, ByVal isDecreaseWarning As Boolean) As Boolean
     Dim titleText As String, buttonText As String
