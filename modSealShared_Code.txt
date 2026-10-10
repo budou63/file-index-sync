@@ -1,0 +1,230 @@
+Option Explicit
+
+' Legacy frmSeal seal helpers copied without changing their output rules.
+' Module1 and frmSealNew call this module without instantiating frmSeal.
+' Keep the legacy form methods available for existing callers.
+
+Public Sub BuildIndexes_NewSpec(ByVal wsSrc As Worksheet, ByRef serialIndex As Object, ByRef headerIndex As Object)
+
+    Dim lastCol As Long
+    Dim lastRow As Long
+    Dim r As Long
+    Dim key As String
+
+    Set serialIndex = CreateObject("Scripting.Dictionary")
+    Set headerIndex = CreateObject("Scripting.Dictionary")
+
+    lastCol = LastUsedCol(wsSrc)
+    lastRow = LastUsedRow(wsSrc)
+
+    headerIndex("通し番号") = FindHeaderByCandidates(wsSrc, lastCol, Array("通し番号"))
+    headerIndex("タイトル") = FindHeaderByCandidates(wsSrc, lastCol, Array("個別フォルダー", "個別フォルダ", "タイトル"))
+    headerIndex("分類名2") = FindHeaderByCandidates(wsSrc, lastCol, Array("第1ガイド", "第１ガイド", "分類名２", "分類名2"))
+    headerIndex("分類名3") = FindHeaderByCandidates(wsSrc, lastCol, Array("第2ガイド", "第２ガイド", "分類名３", "分類名3"))
+    headerIndex("年度和暦") = FindHeaderByCandidates(wsSrc, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    headerIndex("保存期間") = FindHeaderByCandidates(wsSrc, lastCol, Array("保存期間"))
+    headerIndex("キャビネット番号") = FindHeaderByCandidates(wsSrc, lastCol, Array("キャビネット番号"))
+    headerIndex("n+1") = FindHeaderByCandidates(wsSrc, lastCol, Array("ｎ＋1", "n+1"))
+
+    If CLng(headerIndex("通し番号")) = 0 Then Exit Sub
+
+    For r = 2 To lastRow
+        key = Trim$(CStr(wsSrc.Cells(r, CLng(headerIndex("通し番号"))).Value))
+        If Len(key) > 0 Then
+            If Not serialIndex.Exists(key) Then
+                serialIndex.Add key, r
+            End If
+        End If
+    Next r
+
+End Sub
+
+'========================================================
+' 1面分の転記
+' 左上基準:
+'   A2: 保存期間（継続→継）
+'   B2: タイトル
+'   H2: 分類名2
+'   A3: 年度（和暦の数値部）
+'   B3: 分類名3
+'========================================================
+Public Sub WriteOneSeal_NewSpec( _
+    ByVal wsSrc As Worksheet, _
+    ByVal srcRow As Long, _
+    ByVal wsSeal As Worksheet, _
+    ByVal slot As Long, _
+    ByVal colTitle As Long, _
+    ByVal colClass2 As Long, _
+    ByVal colClass3 As Long, _
+    ByVal colWareki As Long, _
+    ByVal colSaveTerm As Long)
+
+    Dim baseCol As Long
+    Dim baseRow As Long
+    Dim offSlash As Long
+    Dim offG1 As Long
+
+    Dim vTitle As String
+    Dim vClass2 As String
+    Dim vClass3 As String
+    Dim vWareki As String
+    Dim vSave As String
+    Dim vSaveOut As String ' 追記: A2出力用（保存期間=継続のとき「継」、それ以外は既存ロジック）
+    Dim slashOut As String ' 追記: G2出力用（ブロック使用時のみ "/"）
+
+    GroupBase slot, baseCol, baseRow, offSlash, offG1
+
+    vTitle = GetCellTrim(wsSrc, srcRow, colTitle)
+    vClass2 = GetCellTrim(wsSrc, srcRow, colClass2)
+    vClass3 = GetCellTrim(wsSrc, srcRow, colClass3)
+    vWareki = GetCellTrim(wsSrc, srcRow, colWareki)
+    vSave = GetCellTrim(wsSrc, srcRow, colSaveTerm)
+    vSaveOut = SaveTermToKei(vSave) ' 追記: 既存ロジックを変えずに出力値を事前算出
+    ' 追記: ブロック内で1つでも転記値があれば "/" を表示（完全空ブロックは非表示）
+    If Len(vSaveOut) > 0 _
+       Or Len(vTitle) > 0 _
+       Or Len(vClass2) > 0 _
+       Or Len(vClass3) > 0 _
+       Or Len(ExtractWarekiNumber(vWareki)) > 0 Then
+        slashOut = "/"
+    Else
+        slashOut = ""
+    End If
+
+    ClearMergeTarget wsSeal, baseRow, baseCol
+    ClearMergeTarget wsSeal, baseRow, baseCol + 1
+    ClearMergeTarget wsSeal, baseRow, baseCol + offSlash ' 追記: G2相当（/）の位置はブロック基準で指定
+    ClearMergeTarget wsSeal, baseRow, baseCol + 7
+    ClearMergeTarget wsSeal, baseRow + 1, baseCol
+    ClearMergeTarget wsSeal, baseRow + 1, baseCol + 1
+
+    PutMergeTopLeft wsSeal, baseRow, baseCol, vSaveOut ' 追記: A2（保存期間=継続なら「継」）
+    PutMergeTopLeft wsSeal, baseRow, baseCol + 1, vTitle
+    PutMergeTopLeft wsSeal, baseRow, baseCol + offSlash, slashOut ' 追記: 使用中ブロックのみ "/" を表示
+    PutMergeTopLeft wsSeal, baseRow, baseCol + 7, vClass2
+    PutMergeTopLeft wsSeal, baseRow + 1, baseCol, ExtractWarekiNumber(vWareki)
+    PutMergeTopLeft wsSeal, baseRow + 1, baseCol + 1, vClass3
+
+End Sub
+
+Public Function ExtractWarekiNumber(ByVal s As String) As String
+
+    Dim t As String
+    Dim i As Long
+    Dim ch As String
+    Dim buf As String
+
+    t = Trim$(CStr(s))
+    If Len(t) = 0 Then
+        ExtractWarekiNumber = ""
+        Exit Function
+    End If
+
+    t = Replace(t, "令和", "")
+    t = Replace(t, "年度", "")
+    t = Replace(t, "R", "")
+    t = Replace(t, "r", "")
+    t = Replace(t, " ", "")
+    t = Replace(t, "　", "")
+    t = StrConv(t, vbNarrow)
+
+    For i = 1 To Len(t)
+        ch = Mid$(t, i, 1)
+        If ch Like "#" Then buf = buf & ch
+    Next i
+
+    If Len(buf) = 0 Then
+        ExtractWarekiNumber = ""
+    Else
+        ExtractWarekiNumber = CStr(CLng(buf))
+    End If
+
+End Function
+
+Public Function SaveTermToKei(ByVal s As String) As String
+
+    If StrComp(Trim$(CStr(s)), "継続", vbBinaryCompare) = 0 Then
+        SaveTermToKei = "継"
+    Else
+        SaveTermToKei = ""
+    End If
+
+End Function
+
+Public Function FindHeaderByCandidates(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal candidates As Variant) As Long
+
+    Dim c As Long
+    Dim i As Long
+    Dim hv As String
+
+    FindHeaderByCandidates = 0
+    If lastCol <= 0 Then Exit Function
+
+    For c = 1 To lastCol
+        hv = Trim$(CStr(ws.Cells(1, c).Value))
+        For i = LBound(candidates) To UBound(candidates)
+            If StrComp(NormalizeSealHeaderName(hv), NormalizeSealHeaderName(Trim$(CStr(candidates(i)))), vbTextCompare) = 0 Then
+                FindHeaderByCandidates = c
+                Exit Function
+            End If
+        Next i
+    Next c
+
+End Function
+
+Private Function NormalizeSealHeaderName(ByVal headerName As String) As String
+
+    Dim normalized As String
+
+    normalized = Trim$(CStr(headerName))
+    normalized = Replace(normalized, " ", "")
+    normalized = Replace(normalized, "　", "")
+
+    Select Case normalized
+        Case "分類名2", "分類名２", "第1ガイド", "第１ガイド"
+            NormalizeSealHeaderName = "分類名２"
+        Case "分類名3", "分類名３", "第2ガイド", "第２ガイド"
+            NormalizeSealHeaderName = "分類名３"
+        Case "タイトル", "個別フォルダー", "個別フォルダ"
+            NormalizeSealHeaderName = "タイトル"
+        Case Else
+            NormalizeSealHeaderName = normalized
+    End Select
+
+End Function
+
+Private Function GetCellTrim(ByVal ws As Worksheet, ByVal r As Long, ByVal c As Long) As String
+
+    If c <= 0 Then
+        GetCellTrim = ""
+    Else
+        GetCellTrim = Trim$(CStr(ws.Cells(r, c).Value))
+    End If
+
+End Function
+
+Private Function LastUsedRow(ByVal ws As Worksheet) As Long
+
+    Dim lastCell As Range
+
+    Set lastCell = ws.Cells.Find(What:="*", LookIn:=xlFormulas, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    If lastCell Is Nothing Then
+        LastUsedRow = 1
+    Else
+        LastUsedRow = lastCell.Row
+    End If
+
+End Function
+
+Private Function LastUsedCol(ByVal ws As Worksheet) As Long
+
+    Dim lastCell As Range
+
+    Set lastCell = ws.Cells.Find(What:="*", LookIn:=xlFormulas, SearchOrder:=xlByColumns, SearchDirection:=xlPrevious)
+    If lastCell Is Nothing Then
+        LastUsedCol = 0
+    Else
+        LastUsedCol = lastCell.Column
+    End If
+
+End Function

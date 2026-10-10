@@ -91,26 +91,55 @@ End Sub
 ## 固定印刷設定（土木課C4476R）
 固定印刷設定の詳細手順は `README_固定印刷設定.md` を参照してください。現在の実装では、固定印刷プロファイルをExcelブック内のVeryHiddenシートではなく、各PC・各Windowsユーザーの `%LOCALAPPDATA%\file-index-sync\固定印刷設定\土木課C4476R.dat` に保存します。
 
-## frmSealNew（表示・イベント実機確認済み／VBAProject全体のコンパイル未確認）
+## frmSealNew（動的UIの基盤と既存業務処理の接続）
 
-既存のUserForm `frmSeal` は変更せず、コードで画面部品を生成する `frmSealNew` を追加しています。対象の検証用ブックで表示・レイアウトと、検証専用ボタンを用いた `WithEvents` のクリック経路を確認しました。CSV取込・差分出力・シール転記・印刷などの業務処理は実行していません。
+既存のUserForm `frmSeal` を残したまま、コードで画面部品を生成する `frmSealNew` を使います。画面は810×600、ボタン／トグル23・入力欄14・ラベル19です。各ボタンの `WithEvents` イベントから既存処理へ向かう振り分けをソースで照合しています（変更後の各ボタンのクリック実機試験は未実施）。業務処理の実機検証はダミーブックに限定し、CSV・外部出力・旧ブック移行・印刷などは外部データ／環境が未確認なら実行しません。
 
 ### 含まれるテキストソース
 
 - `clsFrmSealNewEvent_Code.txt`: 動的ボタン／トグルの `WithEvents` クラス
 - `modFrmSealNewLayout_Code.txt`: 画面部品の生成と配置、起動マクロ `ShowFrmSealNew`
 - `frmSealNew_FormCode.txt`: UserForm本体と既存ボタン処理のイベント振り分け
+- `modSealShared_Code.txt`: シール見出し探索・単件転記・和暦／保存期間の共通処理。**標準モジュール名は `modSealShared`**。`frmSeal_` の旧実装と同じ処理をフォームなしで実行します。
 
-### VBEへの貼り付け順
+### 検証用コピーへの導入
 
-1. 元ブックの**コピー**を `.xlsm` 形式で開き、`Alt+F11` でVBEを開きます。元の `frmSeal` と既存マクロは変更・削除しません。
-2. **挿入 > クラス モジュール**。プロパティウィンドウの `(Name)` を `clsFrmSealNewEvent` に設定し、`clsFrmSealNewEvent_Code.txt` の内容をコードウィンドウへ貼り付けます。
-3. **挿入 > 標準モジュール**。`(Name)` を `modFrmSealNewLayout` に設定し、`modFrmSealNewLayout_Code.txt` を貼り付けます。
-4. **挿入 > ユーザーフォーム**。フォームの `(Name)` を `frmSealNew` に設定し、`frmSealNew_FormCode.txt` の全コードをフォームのコードウィンドウへ貼り付けます。フォーム上へ手作業で部品を配置する必要はありません。フォームは実行時に標準モジュールが生成します。
-5. **デバッグ > VBAProject のコンパイル**を実行し、エラーがなければExcelへ戻ります。
-6. `Alt+F8` から `ShowFrmSealNew` を実行します。VBEのイミディエイトウィンドウなら `modFrmSealNewLayout.ShowFrmSealNew` でも起動できます。
+1. 対象ブックを閉じ、`.xlsm` とVBAProjectのバックアップを作ってから作業します。元ブックは変更しません。
+2. `Module1` と `固定印刷設定` がなければ、それぞれ同名の標準モジュールとして導入します。**さらに `modSealShared_Code.txt` を `modSealShared` として導入**します。既に同名モジュールがある場合は上書き／重複追加せず、GitHub `main` と内容・依存関係を比較し、不足分だけを反映します。既存 `Module1` に今回の変更（旧フォームのヘルパー参照先を `modSealShared` に変更）が必要です。
+3. `新ファイル基準表_SheetModule.bas` の内容は、標準モジュールではなくシート「新ファイル基準表」のコードモジュールへ追加します。既存 `Worksheet_Change`／`Worksheet_SelectionChange` があれば統合します。行移動クリック確定と自動補完に必要です。
+4. `clsFrmSealNewEvent_Code.txt` をクラス `clsFrmSealNewEvent`、`modFrmSealNewLayout_Code.txt` を標準モジュール `modFrmSealNewLayout`、`frmSealNew_FormCode.txt` をUserForm `frmSealNew` へ導入します。部品の手配置は不要です。
+5. `frmSeal` は削除・置換しません。`Module1` の旧フォーム**画面起動** (`frmSeal.Show`) は互換性のため残し、転記ヘルパーだけ `modSealShared` に振り替えています。デザイナーにトグルがない**検証コピーのみ**、`frmSeal_` の該当参照を `Me.Controls("tglDuplicateCheckMode")`／`Me.Controls("tglMoveMode")` の遅延参照にすると、コントロール未宣言によるコンパイルエラーを回避できます。職場の本来のフォームにはデザイナー差分の確認なしに適用しません。
+6. **デバッグ > VBAProject のコンパイル**でエラーを解消してから `ShowFrmSealNew` を実行します。コンパイル未完のブックでは業務ボタンを有効化せず、更新処理はダミーデータのコピーだけでテストします。
 
-`WithEvents` クラス／標準モジュール／UserFormの3種類を上記の `(Name)` で作り、指定ファイルのコードをそれぞれのコード画面へ貼り付けます。ソース先頭にVBEエクスポート用 `Attribute` 行は含めていません。
+### 23個のボタンと依存関係
+
+| コントロール | 呼び出し処理 | 必要なコード／シート・外部条件 |
+|---|---|---|
+| `CommandButton1` | `CSV取込_シンプル版` | `Module1`; 選択するCSVと `新ファイル基準表` |
+| `CommandButton2` | `手順2_新ファイル基準表を作成する` | `Module1`; `目録CSV`、`新ファイル基準表`、書式テンプレート |
+| `CommandButton10` | `新ファイル基準表生成` | `Module1`; 手順2・3、`目録CSV`／`コード管理CSV` |
+| `CommandButton3` | `手順4_差分インポートCSVを作成する` | `Module1`; `目録CSV`、`新ファイル基準表`、`差分インポートCSV` |
+| `CommandButton4` | `手順5_差分インポートCSVを外部出力する` | `Module1`; `差分インポートCSV`、ユーザーが指定する出力先 |
+| `CommandButton5` | `キャビネットガイド作成_実行` | `Module1`; `新ファイル基準表`、出力ガイドシート |
+| `CommandButton6` | `旧基準表_継続文書移行` | `Module1`; `新ファイル基準表`、選択する旧基準表ブック |
+| `CommandButton7` | `新ファイル基準表_通し番号_手動再採番` | `Module1`; `新ファイル基準表` |
+| `cmdColorCheck` | `色ルールチェック` | `Module1`; `新ファイル基準表`、`色チェック結果` |
+| `btnDuplicateCheck` | `重複フォルダ候補をマーキングして並び替え` | `Module1`; `新ファイル基準表` |
+| `tglDuplicateCheckMode` | `重複確認モードを開始する`／`重複確認モードを完了する` | `Module1`; `新ファイル基準表` |
+| `tglMoveMode` | `行移動モード開始_または確定` | `Module1`、`新ファイル基準表`のシートイベント |
+| `cmdMoveUp` | `行移動_上へ` | `Module1`; `新ファイル基準表`の行選択 |
+| `cmdMoveDown` | `行移動_下へ` | `Module1`; `新ファイル基準表`の行選択 |
+| `cmdMoveToRow` | `行移動_指定行へ` | `Module1`; `新ファイル基準表`、指定行入力 |
+| `cmdMoveByClick` | `行移動_移動先クリック開始` | `Module1`と `Worksheet_SelectionChange` |
+| `cmdMoveCancel` | `行移動_キャンセル` | `Module1`; 行移動中の状態 |
+| `cmdMoveUndo` | `行移動_元に戻す` | `Module1`; 直前の行移動履歴 |
+| `btnApply` | `ApplySingleSlots_NewSpec`／`GenerateMultiSealSheets_NewSpec` | フォーム処理、`Module1`、`modSealShared` の共通ヘルパー、基準表／シールシート |
+| `btnApplyBulk` | `btnApply_Click`（開始・終了番号の範囲処理） | 同上、`TextBox1`／`TextBox2` |
+| `btnClear` | `ClearAllSeals_NewSpec`と入力欄の消去 | `Module1`; 単件・複数シールシートの値を書き換え |
+| `btnRegisterFixedPrint` | `固定印刷設定を登録する` | `固定印刷設定.bas`; Windowsプリンター、PC別プロファイル |
+| `btnFixedPrint` | `固定設定で印刷する` | `固定印刷設定.bas`; 対応プリンターと登録済み設定 |
+
+`Module1` のシール転記は `modSealShared.BuildIndexes_NewSpec` や `modSealShared.ExtractWarekiNumber` を直接呼びます。新フォームは同じ実装に委譲します。旧フォームの公開ヘルパーは職場フォームの既存呼び出しに備えて保持し、フォームは削除しません。固定印刷は `%LOCALAPPDATA%` のPC別設定を使います。CSV、旧ブック、出力先、プリンターなどをダミーで用意できない処理は接続確認までとし、本番データで代用しません。
 
 ### 画面と機能対応
 
@@ -124,12 +153,12 @@ End Sub
 
 イベントは既存フォームの23個のClick手続きを新フォーム内で振り分け、元の処理名を呼び出します。単件欄は `tbID1`～`tbID12`、複数範囲は `TextBox1`（開始）／`TextBox2`（終了）で、既存の転記コードが参照する名前を維持しています。
 
-**重要:** 既存の `Module1` 内の大量シール生成等は、互換性のため `frmSeal` の公開処理（例：`BuildIndexes_NewSpec`、`ExtractWarekiNumber`）も引き続き呼び出します。既存 `frmSeal` をブックに残してください。この試作品で旧フォームを置換したり、マクロを削除したりしないでください。`入力とシールをクリア`、CSV処理、再採番、印刷はブックの内容を変更し得ます。必ず複製ブックで試してください。
+**重要:** `Module1` 内のシール転記は `modSealShared` を使用し、旧 `frmSeal` を生成しません。旧 `frmSeal` の画面起動と公開メソッドは残しており、旧フォームは置換しません。この試作品で旧フォームを置換したり、マクロを削除したりしないでください。`入力とシールをクリア`、CSV処理、再採番、印刷はブックの内容を変更し得ます。必ず複製ブックで試してください。
 
 ### 検証状況と制約
 
-- 静的確認: 23イベント名と振り分け先の対応、主要入力コントロール名、既存マクロ名のリポジトリ内定義を確認する自動テストを用意しています。
-- Excel実機: フォーム表示、56個の動的コントロール（ボタン／トグル23、テキストボックス14、ラベル19）、日本語タイトル、WithEventsクリック経路を確認。フォーム本体は810×600。検証時は `Module1` がないコピーなので、業務ボタンを無効化し、入力欄の値設定だけを確認しました。
-- 画面から呼ぶ既存マクロの一部はCSV・シート・行移動状態・印刷に副作用を持ちます。静的確認では実行していません。
-- VBAProject全体のコンパイルは未成功です。検証用ブックの既存 `frmSeal` はデザイナー上のコントロールが0個ですが、コード91行目は `Me.tglDuplicateCheckMode.Value` を直接参照するため、コンパイルで「メソッドまたはデータ メンバーが見つかりません」となります。既存 `frmSeal` は変更していません。
-- `Module1` が欠けた検証用ブックでは業務ボタンを無効にしたまま保存しています。操作先マクロ、12枠転記、複数転記、印刷は未検証です。表示確認には検証用ブックのコピーを使用してください。
+- 静的テストで生成キー23件・イベント振り分け23件・既存呼び出し先とシートイベント依存を照合します。
+- **コンパイル:** 元の検証用ブックとは別の `サンプルデータ/新ファイル基準表検証用.hermes-compile-stage-20261010.xlsm` に35コンポーネント（既存34＋ `modSealShared`）を保存し、Excel/VBEの `VBAProject のコンパイル` を実行。コマンド実行が返り、再取得時のコマンド `Enabled=False` まで確認しました。この結果はこのコピーだけのもので、元の検証用ブック／職場ブックの結果ではありません。
+- **未検証:** この修正後の画面表示、WithEventsの各ボタンクリック、単件／複数転記を含む23業務操作、外部ファイル／印刷。前回のフォーム表示・診断クリック結果を今回のコードの実機確認済みとして流用しません。
+- CSV取込・外部CSV出力・旧ブック移行・固定印刷登録・プリンター印刷は外部ファイル／PC別設定／実機プリンターを伴うため、ダミー環境を用意できない場合は実行しません。
+- デザイナー上のトグルがない検証コピーでは、`frmSeal` を保持して該当参照を `Me.Controls(...)` に遅延化します。職場の旧フォームそのものは未検証で、変更・置換していません。

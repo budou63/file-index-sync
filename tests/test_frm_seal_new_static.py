@@ -23,14 +23,58 @@ class FrmSealNewStaticTests(unittest.TestCase):
         for name in names:
             current = body(FORM, name)
             current = re.sub(r'Me\.Controls\("(tgl(?:MoveMode|DuplicateCheckMode))"\)', r"Me.\1", current)
+            original = body(baseline, name)
+            original = re.sub(r'Me\.Controls\("(tgl(?:MoveMode|DuplicateCheckMode))"\)', r"Me.\1", original)
             with self.subTest(handler=name):
-                self.assertEqual(current, body(baseline, name))
+                self.assertEqual(current, original)
     def test_every_dispatched_action_is_generated_and_has_event_sink(self):
         keys = {name for name, _ in re.findall(r"(?im)^\s*Case [\"](\w+)[\"]: (\w+)_Click", FORM)}
         self.assertTrue(all((chr(34) + name + chr(34)) in LAYOUT for name in keys))
         self.assertIn("sinks.Add sink", LAYOUT)
         self.assertIn("Private WithEvents mButton As MSForms.CommandButton", EVENT_CLASS)
         self.assertIn("Private WithEvents mToggle As MSForms.ToggleButton", EVENT_CLASS)
+    def test_all_23_generated_action_keys_have_dispatch_handlers(self):
+        dispatched = re.findall(r"(?im)^\s*Case [\"](\w+)[\"]: (\w+)_Click", FORM)
+        self.assertEqual(len(dispatched), 23)
+        self.assertEqual(len({key for key, _ in dispatched}), 23)
+        generated = re.findall(r"(?im)^\s*names = Array\((.+)\)", LAYOUT)
+        direct = re.findall(r"(?im)^\s*AddAction target, sinks, [\"](\w+)[\"]", LAYOUT)
+        generated_names = [name for row in generated for name in re.findall(chr(34) + r"(\w+)" + chr(34), row)]
+        self.assertEqual(len(generated_names) + len(direct), 23)
+        self.assertEqual(set(generated_names + direct), {key for key, _ in dispatched})
+    def test_old_form_control_refs_are_late_bound_for_empty_copy(self):
+        old_form = (ROOT / "frmSeal_").read_text(encoding="utf-8")
+        for name in ("tglDuplicateCheckMode", "tglMoveMode"):
+            self.assertNotIn("Me." + name, old_form)
+            self.assertIn("Me.Controls(" + chr(34) + name + chr(34) + ")", old_form)
+    def test_missing_sheet_event_module_dependency_is_present(self):
+        sheet = (ROOT / "新ファイル基準表_SheetModule.bas").read_text(encoding="utf-8-sig")
+        self.assertIn("Private Sub Worksheet_Change", sheet)
+        self.assertIn("Private Sub Worksheet_SelectionChange", sheet)
+        self.assertIn("行移動_移動先クリックで確定", sheet)
+    def test_codepage_sensitive_symbols_use_chrW(self):
+        module = (ROOT / "Module1").read_text(encoding="utf-8")
+        for literal in ("ChrW(&H2212)", "ChrW(&H2713)", "ChrW(&HB7)", "ChrW(&H2011)", "ChrW(&H2013)", "ChrW(&H2014)"):
+            self.assertIn(literal, module)
+        for symbol in ("−", "✓", "·", "‑", "–", "—"):
+            self.assertNotIn(chr(34) + symbol + chr(34), module)
+    def test_shared_seal_helpers_match_legacy_and_are_used_without_form_instantiation(self):
+        legacy = (ROOT / "frmSeal_").read_text(encoding="utf-8-sig")
+        shared = (ROOT / "modSealShared_Code.txt").read_text(encoding="utf-8")
+        start = "Public Sub BuildIndexes_NewSpec("
+        self.assertEqual(shared[shared.index(start):], legacy[legacy.index(start):])
+        module = (ROOT / "Module1").read_text(encoding="utf-8")
+        self.assertEqual(re.findall(r"\bfrmSeal\.(\w+)", module), ["Show"])
+        for name in ("BuildIndexes_NewSpec", "WriteOneSeal_NewSpec", "ExtractWarekiNumber", "SaveTermToKei"):
+            with self.subTest(helper=name):
+                self.assertIn("modSealShared." + name, module)
+                self.assertIn("modSealShared." + name, FORM)
+        for name in ("BuildIndexes_NewSpec", "WriteOneSeal_NewSpec", "ExtractWarekiNumber", "SaveTermToKei", "FindHeaderByCandidates"):
+            with self.subTest(public_api=name):
+                self.assertRegex(FORM, r"(?im)^Public (?:Sub|Function) " + name + r"\b")
+        self.assertIn("GroupBase slot, baseCol, baseRow, offSlash, offG1", shared)
+        self.assertIn("PutMergeTopLeft wsSeal, baseRow, baseCol", shared)
+
     def test_button_caption_arrays_are_initialized_before_use(self):
         self.assertIn("Dim labels As Variant, names As Variant", LAYOUT)
         self.assertEqual(LAYOUT.count("labels = Array("), 3)

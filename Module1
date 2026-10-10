@@ -4258,7 +4258,7 @@ Private Function NormalizeHyphenChars(ByVal s As String) As String
     s = Replace(s, "ｰ", "-")
     s = Replace(s, "ー", "-")
     s = Replace(s, "‐", "-")
-    s = Replace(s, "−", "-")
+    s = Replace(s, ChrW(&H2212), "-")
     NormalizeHyphenChars = s
 
 End Function
@@ -5390,7 +5390,7 @@ Private Function IsNPlus1Flag(ByVal flagText As String) As Boolean
     s = NormalizeBasicText(flagText)
 
     Select Case UCase$(s)
-        Case "1", "○", "◯", "✓", "TRUE", "レ"
+        Case "1", "○", "◯", ChrW(&H2713), "TRUE", "レ"
             IsNPlus1Flag = True
         Case Else
             IsNPlus1Flag = False
@@ -9970,7 +9970,7 @@ Public Sub ApplyBySerial_NewSpec(ByVal startSerial As String)
         Err.Raise vbObjectError + 1202, , "転記先シート（個別フォルダシール）が見つかりません。"
     End If
 
-    frmSeal.BuildIndexes_NewSpec wsSrc, serialIndex, headerIndex
+    modSealShared.BuildIndexes_NewSpec wsSrc, serialIndex, headerIndex
 
     If serialIndex Is Nothing Or headerIndex Is Nothing Then
         Err.Raise vbObjectError + 1203, , "見出しインデックスの作成に失敗しました。"
@@ -9990,7 +9990,7 @@ Public Sub ApplyBySerial_NewSpec(ByVal startSerial As String)
 
         If serialIndex.Exists(serialKey) Then
             srcRow = CLng(serialIndex(serialKey))
-            frmSeal.WriteOneSeal_NewSpec _
+            modSealShared.WriteOneSeal_NewSpec _
                 wsSrc, srcRow, wsSeal, slot, _
                 CLng(headerIndex("タイトル")), _
                 CLng(headerIndex("分類名2")), _
@@ -10637,7 +10637,7 @@ Public Sub GenerateMultiSealSheets_NewSpec(ByVal startNo As Long, ByVal endNo As
     ' 既存PrintArea/UsedRange/結合セルから右端列を再判定しない。
     printLastCol = SEAL_PAGE_COL_LAST
 
-    frmSeal.BuildIndexes_NewSpec wsSrc, serialIndex, headerIndex
+    modSealShared.BuildIndexes_NewSpec wsSrc, serialIndex, headerIndex
     serialCol = CLng(headerIndex("通し番号"))
     If serialCol = 0 Then Err.Raise vbObjectError + 2306, , "見出し「通し番号」が見つかりません。"
 
@@ -10910,13 +10910,13 @@ Private Sub WriteOneSeal_NewSpec_WithRowOffset( _
     vClass3 = Trim$(CStr(wsSrc.Cells(srcRow, colClass3).Value))
     vWareki = Trim$(CStr(wsSrc.Cells(srcRow, colWareki).Value))
     vSave = Trim$(CStr(wsSrc.Cells(srcRow, colSaveTerm).Value))
-    vSaveOut = frmSeal.SaveTermToKei(vSave)
+    vSaveOut = modSealShared.SaveTermToKei(vSave)
 
     If Len(vSaveOut) > 0 _
        Or Len(vTitle) > 0 _
        Or Len(vClass2) > 0 _
        Or Len(vClass3) > 0 _
-       Or Len(frmSeal.ExtractWarekiNumber(vWareki)) > 0 Then
+       Or Len(modSealShared.ExtractWarekiNumber(vWareki)) > 0 Then
         slashOut = "/"
     Else
         slashOut = ""
@@ -10933,7 +10933,7 @@ Private Sub WriteOneSeal_NewSpec_WithRowOffset( _
     PutMergeTopLeft wsSeal, baseRow, baseCol + 1, vTitle
     PutMergeTopLeft wsSeal, baseRow, baseCol + offSlash, slashOut
     PutMergeTopLeft wsSeal, baseRow, baseCol + 7, vClass2
-    PutMergeTopLeft wsSeal, baseRow + 1, baseCol, frmSeal.ExtractWarekiNumber(vWareki)
+    PutMergeTopLeft wsSeal, baseRow + 1, baseCol, modSealShared.ExtractWarekiNumber(vWareki)
     PutMergeTopLeft wsSeal, baseRow + 1, baseCol + 1, vClass3
 
 End Sub
@@ -12319,13 +12319,13 @@ Public Function NormalizeGuideKey(ByVal s As String) As String
     normalized = Replace(normalized, "＼", "/")
     normalized = Replace(normalized, "\", "/")
     normalized = Replace(normalized, "･", "・")
-    normalized = Replace(normalized, "·", "・")
+    normalized = Replace(normalized, ChrW(&HB7), "・")
     normalized = Replace(normalized, "－", "-")
     normalized = Replace(normalized, "―", "-")
     normalized = Replace(normalized, "‐", "-")
-    normalized = Replace(normalized, "‑", "-")
-    normalized = Replace(normalized, "–", "-")
-    normalized = Replace(normalized, "—", "-")
+    normalized = Replace(normalized, ChrW(&H2011), "-")
+    normalized = Replace(normalized, ChrW(&H2013), "-")
+    normalized = Replace(normalized, ChrW(&H2014), "-")
     normalized = Replace(normalized, "ー", "-")
     normalized = Replace(normalized, "ｰ", "-")
 

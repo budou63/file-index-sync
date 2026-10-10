@@ -88,22 +88,22 @@ Private Sub tglDuplicateCheckMode_Click()
 
     On Error GoTo EH
 
-    If Me.tglDuplicateCheckMode.Value Then
+    If Me.Controls("tglDuplicateCheckMode").Value Then
         Call 重複確認モードを開始する
-        Me.tglDuplicateCheckMode.Caption = "確認完了"
+        Me.Controls("tglDuplicateCheckMode").Caption = "確認完了"
     Else
         Call 重複確認モードを完了する
-        Me.tglDuplicateCheckMode.Caption = "重複確認"
+        Me.Controls("tglDuplicateCheckMode").Caption = "重複確認"
     End If
     Exit Sub
 
 EH:
     On Error Resume Next
-    Me.tglDuplicateCheckMode.Value = Not Me.tglDuplicateCheckMode.Value
-    If Me.tglDuplicateCheckMode.Value Then
-        Me.tglDuplicateCheckMode.Caption = "確認完了"
+    Me.Controls("tglDuplicateCheckMode").Value = Not Me.Controls("tglDuplicateCheckMode").Value
+    If Me.Controls("tglDuplicateCheckMode").Value Then
+        Me.Controls("tglDuplicateCheckMode").Caption = "確認完了"
     Else
-        Me.tglDuplicateCheckMode.Caption = "重複確認"
+        Me.Controls("tglDuplicateCheckMode").Caption = "重複確認"
     End If
     On Error GoTo 0
     MsgBox "重複確認モードの切替中にエラーが発生しました: " & Err.Description, vbExclamation
@@ -115,7 +115,7 @@ Private Sub UserForm_Initialize()
     Me.Width = FRM_SEAL_WIDTH_LARGE
     Me.Height = FRM_SEAL_HEIGHT_LARGE
     On Error Resume Next
-    Me.tglDuplicateCheckMode.Caption = IIf(Me.tglDuplicateCheckMode.Value, "確認完了", "重複確認")
+    Me.Controls("tglDuplicateCheckMode").Caption = IIf(Me.Controls("tglDuplicateCheckMode").Value, "確認完了", "重複確認")
     On Error GoTo 0
     SyncMoveModeButtons
 
@@ -222,15 +222,15 @@ Private Sub SyncMoveModeButtons()
     mSyncingMoveModeButtons = True
 
     If IsRowMoveModeActive() Then
-        Me.tglMoveMode.Value = True
-        Me.tglMoveMode.Caption = "移動確定"
-        Me.tglMoveMode.BackColor = MOVE_MODE_ACTIVE_BACKCOLOR
-        Me.tglMoveMode.ForeColor = MOVE_MODE_FORECOLOR
+        Me.Controls("tglMoveMode").Value = True
+        Me.Controls("tglMoveMode").Caption = "移動確定"
+        Me.Controls("tglMoveMode").BackColor = MOVE_MODE_ACTIVE_BACKCOLOR
+        Me.Controls("tglMoveMode").ForeColor = MOVE_MODE_FORECOLOR
     Else
-        Me.tglMoveMode.Value = False
-        Me.tglMoveMode.Caption = "移動開始"
-        Me.tglMoveMode.BackColor = MOVE_MODE_INACTIVE_BACKCOLOR
-        Me.tglMoveMode.ForeColor = MOVE_MODE_FORECOLOR
+        Me.Controls("tglMoveMode").Value = False
+        Me.Controls("tglMoveMode").Caption = "移動開始"
+        Me.Controls("tglMoveMode").BackColor = MOVE_MODE_INACTIVE_BACKCOLOR
+        Me.Controls("tglMoveMode").ForeColor = MOVE_MODE_FORECOLOR
     End If
 
     On Error Resume Next
