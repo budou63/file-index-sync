@@ -23,20 +23,18 @@ def procedure(name: str) -> str:
 class HeaderDetectionRegressionTests(unittest.TestCase):
     def test_step3_uses_source_data_columns_to_bound_rows_not_find_state(self) -> None:
         step3 = procedure("手順3_コード管理CSVを作成する")
-        self.assertIn("srcLastRow = GetLastMokurokuDataRow(wsSrc, class2CodeCol, class2NameCol, class3CodeCol, class3NameCol)", step3)
+        self.assertIn("srcLastRow = GetLastStep3DataRow(wsSrc)", step3)
         self.assertNotIn("srcLastRow = GetLastUsedRow(wsSrc)", step3)
-        self.assertLess(step3.index("ValidateGuideCodeSourceHeaders"), step3.index("GetLastMokurokuDataRow"))
-        self.assertLess(step3.index("GetLastMokurokuDataRow"), step3.index("Set pendingGuideRows"))
+        self.assertLess(step3.index("ValidateGuideCodeSourceHeaders"), step3.index("GetLastStep3DataRow"))
+        self.assertLess(step3.index("GetLastStep3DataRow"), step3.index("Set pendingGuideRows"))
 
-    def test_step3_data_bound_checks_a_through_h_and_guide_columns(self) -> None:
-        helper = procedure("GetLastMokurokuDataRow")
-        self.assertIn("For col = 1 To 8", helper)
-        self.assertIn("class2CodeCol", helper)
-        self.assertIn("class2NameCol", helper)
-        self.assertIn("class3CodeCol", helper)
-        self.assertIn("class3NameCol", helper)
-        self.assertIn(".End(xlUp).Row", helper)
-        self.assertNotIn(".Find(", helper)
+    def test_step3_data_bound_scans_hidden_rows_and_ignores_format_only_rows(self) -> None:
+        helper = procedure("GetLastStep3DataRow")
+        bounds = procedure("CsvGetUnfilteredImportBounds")
+        self.assertIn("CsvGetUnfilteredImportBounds ws", helper)
+        self.assertIn("ws.UsedRange", bounds)
+        self.assertIn("CsvValueHasContent", bounds)
+        self.assertNotIn("End(xlUp)", helper)
 
     def test_step3_empty_source_diagnostic_identifies_macro_workbook_and_sheet(self) -> None:
         step3 = procedure("手順3_コード管理CSVを作成する")
@@ -49,7 +47,7 @@ class HeaderDetectionRegressionTests(unittest.TestCase):
         self.assertIn("findLastRow = GetLastUsedRow(wsSrc)", step3)
         self.assertIn("If findLastRow <> srcLastRow Then", step3)
         self.assertIn("行数診断", step3)
-        self.assertLess(step3.index("srcLastRow = GetLastMokurokuDataRow"), step3.index("findLastRow = GetLastUsedRow(wsSrc)"))
+        self.assertLess(step3.index("srcLastRow = GetLastStep3DataRow"), step3.index("findLastRow = GetLastUsedRow(wsSrc)"))
         self.assertLess(step3.index("findLastRow = GetLastUsedRow(wsSrc)"), step3.index("BuildSystemGuideCodeMasterFromMokuroku"))
 
     def test_step2_uses_header_row_bound_for_source_year_search(self) -> None:

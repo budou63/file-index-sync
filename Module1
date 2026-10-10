@@ -125,7 +125,7 @@ Public Sub 新ファイル基準表生成()
 
     ' 手順2 -> 手順3 の順で既存マクロをそのまま呼び出す
     Call 手順2_新ファイル基準表を作成する
-    Call 手順3_コード管理CSVを作成する
+    Call 手順3_コード管理CSVを作成する(True)
 
     MsgBox "新ファイル基準表とコード管理CSVの作成が完了しました。", vbInformation
     GoTo Cleanup
@@ -8544,7 +8544,7 @@ ContinueFixedHeader:
 
 End Sub
 
-Public Sub 手順3_コード管理CSVを作成する()
+Public Sub 手順3_コード管理CSVを作成する(Optional ByVal propagateError As Boolean = False)
 
     Dim wsSrc As Worksheet
     Dim wsDst As Worksheet
@@ -8554,6 +8554,7 @@ Public Sub 手順3_コード管理CSVを作成する()
     Dim commitStarted As Boolean
     Dim keepBackupOpen As Boolean
     Dim failureMessage As String
+    Dim failureNumber As Long
     Dim srcLastRow As Long
     Dim findLastRow As Long
     Dim rowDiagnostic As String
@@ -8588,10 +8589,10 @@ Public Sub 手順3_コード管理CSVを作成する()
     srcLastCol = GetLastHeaderCol(wsSrc)
     ValidateGuideCodeSourceHeaders wsSrc, srcLastCol, _
         class2CodeCol, class2NameCol, class3CodeCol, class3NameCol
-    srcLastRow = GetLastMokurokuDataRow(wsSrc, class2CodeCol, class2NameCol, class3CodeCol, class3NameCol)
+    srcLastRow = GetLastStep3DataRow(wsSrc)
     findLastRow = GetLastUsedRow(wsSrc)
     If findLastRow <> srcLastRow Then
-        rowDiagnostic = vbCrLf & "行数診断: A:H/分類列=" & CStr(srcLastRow) & _
+        rowDiagnostic = vbCrLf & "行数診断: 実データ最終行=" & CStr(srcLastRow) & _
             "、従来Find=" & CStr(findLastRow)
         Debug.Print "コード管理CSV " & wsSrc.Name & rowDiagnostic
     End If
@@ -8599,10 +8600,10 @@ Public Sub 手順3_コード管理CSVを作成する()
         Err.Raise vbObjectError + 2607, , _
             "目録CSVのデータ行を認識できません。コード管理CSVを更新できません。" & vbCrLf & _
             "マクロのブック: " & ThisWorkbook.FullName & vbCrLf & _
-            "参照シート: " & wsSrc.Name & "、A:H/分類列の最終行: " & CStr(srcLastRow) & _
+            "参照シート: " & wsSrc.Name & "、実データ最終行: " & CStr(srcLastRow) & _
             "、従来のFindによる最終行: " & CStr(findLastRow)
     End If
-    EnsureCodeMasterRangeHasNoErrors wsDst, GetLastUsedRow(wsDst)
+    EnsureCodeMasterRangeHasNoErrors wsDst, GetLastStep3DataRow(wsDst)
     ' 既存の仮採番・競合・要確認行を消去前にメモリへ退避する。
     Set pendingGuideRows = CapturePendingGuideCodeRows(wsDst)
 
@@ -8637,6 +8638,7 @@ Public Sub 手順3_コード管理CSVを作成する()
                 If Not dict.Exists(uniqueKey) Then
                     dict.Add uniqueKey, True
                     wsBuild.Cells(outRow, 1).value = pairDefs(i)(0)
+                    wsBuild.Cells(outRow, 2).NumberFormat = "@"
                     wsBuild.Cells(outRow, 2).value = codeValue
                     wsBuild.Cells(outRow, 3).Value = nameValue
                     outRow = outRow + 1
@@ -8710,9 +8712,11 @@ SafeExit:
     Application.ScreenUpdating = True
     Application.EnableEvents = True
     On Error GoTo 0
+    If propagateError And Len(failureMessage) > 0 Then Err.Raise failureNumber, "手順3_コード管理CSVを作成する", failureMessage
     Exit Sub
 
 ErrorHandler:
+    failureNumber = Err.Number
     failureMessage = Err.Description
     If commitStarted Then
         On Error Resume Next
@@ -8725,36 +8729,24 @@ ErrorHandler:
         End If
         On Error GoTo 0
     End If
-    MsgBox "コード管理CSV の作成中にエラーが発生しました: " & failureMessage, vbCritical
+    If Not propagateError Then MsgBox "コード管理CSV の作成中にエラーが発生しました: " & failureMessage, vbCritical
     Resume SafeExit
 
 End Sub
 
-Private Function GetLastMokurokuDataRow( _
-    ByVal wsSrc As Worksheet, ByVal class2CodeCol As Long, ByVal class2NameCol As Long, _
-    ByVal class3CodeCol As Long, ByVal class3NameCol As Long) As Long
+Private Function GetLastStep3DataRow(ByVal ws As Worksheet) As Long
+    Dim lastHeaderCol As Long
+    Dim lastValueCol As Long
 
-    Dim col As Long
-    Dim candidate As Long
-    Dim guideColumns As Variant
-    Dim i As Long
-
-    ' 職場目録CSVの先頭A:H（ファイルID～タイトル）と必要な分類列を直接調べる。
-    ' ExcelのFindダイアログに残る検索条件には依存しない。
-    GetLastMokurokuDataRow = 1
-    For col = 1 To 8
-        candidate = wsSrc.Cells(wsSrc.Rows.Count, col).End(xlUp).Row
-        If candidate > GetLastMokurokuDataRow Then GetLastMokurokuDataRow = candidate
-    Next col
-    guideColumns = Array(class2CodeCol, class2NameCol, class3CodeCol, class3NameCol)
-    For i = LBound(guideColumns) To UBound(guideColumns)
-        candidate = wsSrc.Cells(wsSrc.Rows.Count, CLng(guideColumns(i))).End(xlUp).Row
-        If candidate > GetLastMokurokuDataRow Then GetLastMokurokuDataRow = candidate
-    Next i
+    ' UsedRangeは走査上限だけに用い、非表示行を含めて実際に値のある最終行を取得する。
+    ' 書式だけの行は数えず、広すぎて走査不能なら書込み前に停止する。
+    CsvGetUnfilteredImportBounds ws, GetLastStep3DataRow, lastHeaderCol, lastValueCol
 End Function
 
 Private Sub RestoreCodeMasterFromBackup(ByVal wsDst As Worksheet, ByVal wsBackup As Worksheet)
     Dim col As Long
+    Dim wsUnfiltered As Worksheet
+    Dim backupRange As Range
     Dim lastCol As Long
     Dim filterIndex As Long
     Dim filterOperator As Long
@@ -8764,9 +8756,18 @@ Private Sub RestoreCodeMasterFromBackup(ByVal wsDst As Worksheet, ByVal wsBackup
 
     If wsDst.AutoFilterMode Then wsDst.AutoFilterMode = False
     wsDst.Cells.Clear
-    wsBackup.UsedRange.Copy Destination:=wsDst.Range(wsBackup.UsedRange.Address)
+    ' 元のフィルター条件はwsBackupに残し、コピー側だけ解除して全行を位置どおり復元する。
+    If wsBackup.FilterMode Then
+        wsBackup.Copy After:=wsBackup
+        Set wsUnfiltered = wsBackup.Parent.Worksheets(wsBackup.Index + 1)
+        wsUnfiltered.AutoFilterMode = False
+        Set backupRange = wsUnfiltered.UsedRange
+    Else
+        Set backupRange = wsBackup.UsedRange
+    End If
+    backupRange.Copy Destination:=wsDst.Range(backupRange.Address)
+    lastCol = backupRange.Column + backupRange.Columns.Count - 1
 
-    lastCol = wsBackup.UsedRange.Column + wsBackup.UsedRange.Columns.Count - 1
     For col = 1 To lastCol
         wsDst.Columns(col).ColumnWidth = wsBackup.Columns(col).ColumnWidth
         wsDst.Columns(col).Hidden = wsBackup.Columns(col).Hidden
@@ -8918,9 +8919,11 @@ Private Sub BuildSystemGuideCodeMasterFromMokuroku( _
                 If Not exactMap.Exists(exactKey) Then
                     exactMap.Add exactKey, displayName
                     wsMaster.Cells(outRow, 1).Value = itemName
+                    wsMaster.Cells(outRow, 2).NumberFormat = "@"
                     wsMaster.Cells(outRow, 2).Value = codeValue
                     wsMaster.Cells(outRow, 3).Value = displayName
                     wsMaster.Cells(outRow, 4).Value = "システム"
+                    wsMaster.Cells(outRow, 5).NumberFormat = "@"
                     wsMaster.Cells(outRow, 5).Value = parentCodeValue
                     dict(BuildGuideCodeMasterExactKey(itemName, codeValue, displayKey, parentCodeValue)) = True
                     outRow = outRow + 1
@@ -9049,7 +9052,7 @@ Private Function CapturePendingGuideCodeRows(ByVal wsMaster As Worksheet) As Col
         Exit Function
     End If
 
-    lastRow = GetLastUsedRow(wsMaster)
+    lastRow = GetLastStep3DataRow(wsMaster)
     EnsureCodeMasterRangeHasNoErrors wsMaster, lastRow
     For r = 2 To lastRow
         itemName = CanonicalHeaderName(Trim$(CStr(wsMaster.Cells(r, 1).Value)))
@@ -9161,9 +9164,11 @@ Private Sub AddCodeMasterRecord( _
 
     dict.Add uniqueKey, True
     wsDst.Cells(outRow, 1).Value = itemName
+    wsDst.Cells(outRow, 2).NumberFormat = "@"
     wsDst.Cells(outRow, 2).Value = codeValue
     wsDst.Cells(outRow, 3).Value = displayName
     wsDst.Cells(outRow, 4).Value = statusValue
+    wsDst.Cells(outRow, 5).NumberFormat = "@"
     wsDst.Cells(outRow, 5).Value = parentCodeValue
     outRow = outRow + 1
 

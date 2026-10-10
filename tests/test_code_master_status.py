@@ -252,7 +252,9 @@ class FinalGuideStateReconciliationTests(unittest.TestCase):
         self.assertIn("ValidateGuideCodeMasterPostcondition wsDst", step3)
         self.assertIn("RestoreCodeMasterFromBackup wsDst, wsBackup", step3)
         restore = procedure("RestoreCodeMasterFromBackup")
-        self.assertIn("wsBackup.UsedRange.Copy Destination:=wsDst.Range", restore)
+        self.assertIn("If wsBackup.FilterMode Then", restore)
+        self.assertIn("Set backupRange = wsUnfiltered.UsedRange", restore)
+        self.assertIn("backupRange.Copy Destination:=wsDst.Range(backupRange.Address)", restore)
         self.assertIn("wsDst.Columns(col).ColumnWidth", restore)
         self.assertIn("wsBackup.AutoFilter.Filters(filterIndex)", restore)
         self.assertIn("hasCriteria2 = (Err.Number = 0)", restore)
@@ -466,6 +468,34 @@ class FinalGuideStateReconciliationTests(unittest.TestCase):
         self.assertIn('RGB(244, 204, 204)', color)
         self.assertIn("statusCell.Interior.Pattern = xlNone", color)
 
+
+
+
+class Step3FilteredAndTextCodeRegressionTests(unittest.TestCase):
+    def test_step3_reads_hidden_data_and_pending_rows_without_end_xlup(self) -> None:
+        step3 = procedure("手順3_コード管理CSVを作成する")
+        capture = procedure("CapturePendingGuideCodeRows")
+        bounds = procedure("GetLastStep3DataRow")
+        self.assertIn("GetLastStep3DataRow(wsSrc)", step3)
+        self.assertIn("GetLastStep3DataRow(wsDst)", step3)
+        self.assertIn("GetLastStep3DataRow(wsMaster)", capture)
+        self.assertIn("CsvGetUnfilteredImportBounds", bounds)
+        self.assertNotIn("End(xlUp)", bounds)
+
+    def test_guide_codes_and_parents_keep_leading_zeroes_in_temporary_sheet(self) -> None:
+        build = procedure("BuildSystemGuideCodeMasterFromMokuroku")
+        pending = procedure("AddCodeMasterRecord")
+        for body, sheet in ((build, "wsMaster"), (pending, "wsDst")):
+            for col in (2, 5):
+                self.assertIn(f'{sheet}.Cells(outRow, {col}).NumberFormat = "@"', body)
+        self.assertIn("ValidateGuideCodeMasterPostcondition wsBuild", procedure("手順3_コード管理CSVを作成する"))
+
+    def test_step3_failure_propagates_only_in_batch_mode(self) -> None:
+        batch = procedure("新ファイル基準表生成")
+        step3 = procedure("手順3_コード管理CSVを作成する")
+        self.assertIn("手順3_コード管理CSVを作成する(True)", batch)
+        self.assertIn("If propagateError And Len(failureMessage) > 0 Then Err.Raise", step3)
+        self.assertLess(batch.index("手順3_コード管理CSVを作成する(True)"), batch.index("新ファイル基準表とコード管理CSVの作成が完了しました。"))
 
 if __name__ == "__main__":
     unittest.main()
