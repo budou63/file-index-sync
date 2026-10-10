@@ -50,6 +50,31 @@ class CsvImportSafetyTests(unittest.TestCase):
         self.assertIn("If VarType(filePath) = vbBoolean Then Exit Sub", entry)
         self.assertLess(entry.index("GetOpenFilename"), entry.index("CSVImportExecute"))
 
+    def test_normal_preview_is_compact_without_removing_safety_checks(self) -> None:
+        worker = procedure("CSVImportExecute")
+        preview = worker[worker.index("    previewText = "):worker.index("    If Not ConfirmCsvImport(previewText, False)")]
+        for token in ("ファイル：", "対象年度：", "の登録件数", "取込前：", "取込後：", "同じ年度のデータを入れ替えます。実行しますか？"):
+            self.assertIn(token, preview)
+        for token in ("文字コード", "新しいCSVの取込予定件数", "CsvImportIssueSummary", "識別列の文字列保護"):
+            self.assertNotIn(token, preview)
+        self.assertIn("CSV取込の確認", procedure("ConfirmCsvImport"))
+        self.assertIn("CsvImportIssueSummary(stats)", worker[:worker.index("    previewText = ")])
+        self.assertIn("CsvValidateProtectedSamples", worker)
+
+    def test_existing_count_uses_this_workbook_and_shared_year_normalization(self) -> None:
+        worker = procedure("CSVImportExecute")
+        count = worker[worker.index("    existingTargetCount = 0"):worker.index("    requiredHeaders = ")]
+        self.assertIn('ThisWorkbook.Worksheets("目録CSV")', worker)
+        self.assertIn("GetLastUsedRow(ws)", worker)
+        self.assertIn("GetLastHeaderCol(ws)", worker)
+        self.assertIn('FindHeaderColumn(ws, dstLastCol, Array("年度（和暦）", "年度(和暦)"))', count)
+        self.assertIn('FindHeaderColumn(ws, dstLastCol, Array("年度"))', count)
+        self.assertIn("GetNormalizedYearFromRow(ws, oldRow, existingWarekiCol, existingWesternCol)", count)
+        self.assertIn("If existingYearValue = targetYearValue Then existingTargetCount = existingTargetCount + 1", count)
+        normalizer = procedure("NormalizeYearValue")
+        self.assertIn("2018 + n", normalizer)
+        self.assertIn("If n >= 1900 And n <= 2999 Then", normalizer)
+
     def test_large_count_reduction_warns_but_does_not_forbid_import(self) -> None:
         worker = procedure("CSVImportExecute")
         self.assertIn("If existingTargetCount >= 10 And importCount * 2 <= existingTargetCount Then", worker)

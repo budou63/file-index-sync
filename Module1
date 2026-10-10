@@ -1586,13 +1586,10 @@ Private Sub CSVImportExecute(ByVal filePath As String)
     importCount = srcLastRow - 1
     If importCount <= 0 Then Err.Raise vbObjectError + 2159, , "CSVに取込対象のデータ行がありません。"
 
-    previewText = "CSVファイル: " & fileName & vbCrLf & "文字コード: " & encodingName & vbCrLf & _
-                  "対象年度: " & targetYearText & vbCrLf & "既存の対象年度件数: " & existingTargetCount & " 件" & vbCrLf & _
-                  "新しいCSVの取込予定件数: " & importCount & " 件" & vbCrLf & _
-                  "取込後の対象年度件数: " & importCount & " 件" & vbCrLf & _
-                  "年度・識別項目の問題: " & CsvImportIssueSummary(stats) & vbCrLf & _
-                  "識別列の文字列保護: " & textColumns.Count & " 列" & vbCrLf & vbCrLf & _
-                  "この内容で目録CSVの同年度データを入れ替えますか？"
+    previewText = "ファイル：" & fileName & vbCrLf & "対象年度：" & targetYearText & vbCrLf & vbCrLf & _
+                  targetYearText & "の登録件数" & vbCrLf & _
+                  "取込前：" & existingTargetCount & "件 → 取込後：" & importCount & "件" & vbCrLf & vbCrLf & _
+                  "同じ年度のデータを入れ替えます。実行しますか？"
     If Not ConfirmCsvImport(previewText, False) Then
         CsvWriteImportLog fileName, targetYearText, existingTargetCount, 0, 0, "キャンセル", "取込前の確認で中止;encoding=" & encodingName
         GoTo CleanExit
@@ -2348,10 +2345,10 @@ Private Function ConfirmCsvImport(ByVal promptText As String, ByVal isDecreaseWa
         titleText = "取込件数の減少確認"
         buttonText = "OKで続行します。キャンセルすると取込を中止します。"
     Else
-        titleText = "CSV取込前の確認"
-        buttonText = "OKで実行、キャンセルで中止します。"
+        titleText = "CSV取込の確認"
+        buttonText = ""
     End If
-    ConfirmCsvImport = (MsgBox(promptText & vbCrLf & vbCrLf & buttonText, _
+    ConfirmCsvImport = (MsgBox(promptText & IIf(Len(buttonText) > 0, vbCrLf & vbCrLf & buttonText, ""), _
         vbQuestion Or vbOKCancel Or vbDefaultButton2, titleText) = vbOK)
 End Function
 
