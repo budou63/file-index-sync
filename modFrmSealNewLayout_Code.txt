@@ -94,3 +94,40 @@ Public Sub ShowFrmSealNew()
     frmSealNew.EnsureFrmSealNewInitialized
     frmSealNew.Show vbModeless
 End Sub
+
+
+Public Sub InstallFrmSealNewLauncher()
+    Dim ws As Worksheet
+    Dim btn As Object
+    Dim quote As String
+
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets("操作パネル")
+    On Error GoTo 0
+
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add(Before:=ThisWorkbook.Worksheets(1))
+        ws.Name = "操作パネル"
+        ws.Range("A1").Value = "新ファイル基準表・操作パネル"
+        ws.Range("A2").Value = "下のボタンからフォームを開けます。ブック名を変更した後は起動ボタン設置マクロを再実行してください。"
+        ws.Columns("A").ColumnWidth = 85
+    Else
+        On Error Resume Next
+        Set btn = ws.Buttons("btnOpenFrmSealNew")
+        On Error GoTo 0
+        If btn Is Nothing Then
+            Err.Raise vbObjectError + 9271, "InstallFrmSealNewLauncher", _
+                "既存の操作パネルシートは上書きしません。起動ボタンを確認してください。"
+        End If
+    End If
+
+    If btn Is Nothing Then
+        Set btn = ws.Buttons.Add(ws.Range("A4").Left, ws.Range("A4").Top, 200, 32)
+        btn.Name = "btnOpenFrmSealNew"
+    End If
+    quote = Chr$(39)
+    btn.Caption = "新フォームを開く"
+    btn.OnAction = quote & Replace(ThisWorkbook.Name, quote, quote & quote) & _
+                   quote & "!modFrmSealNewLayout.ShowFrmSealNew"
+    ws.Activate
+End Sub

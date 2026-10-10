@@ -121,7 +121,7 @@ Public Sub 新ファイル基準表生成()
     ' 実行高速化のため一時的に設定変更
     Application.ScreenUpdating = False
     Application.EnableEvents = False
-    Application.Calculation = xlCalculationManual
+    TrySetManualCalculation
 
     ' 手順2 -> 手順3 の順で既存マクロをそのまま呼び出す
     Call 手順2_新ファイル基準表を作成する
@@ -137,7 +137,7 @@ Cleanup:
     ' 例外時を含め、必ず元の設定へ戻す
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
-    Application.Calculation = oldCalculation
+    RestoreCalculationIfPossible oldCalculation
 
 End Sub
 
@@ -175,7 +175,7 @@ Private Sub ExecuteDuplicateCheckMode(ByVal isStartMode As Boolean)
     oldCalculation = Application.Calculation
     Application.ScreenUpdating = False
     Application.EnableEvents = False
-    Application.Calculation = xlCalculationManual
+    TrySetManualCalculation
 
     Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     lastRow = GetLastUsedRow(ws)
@@ -257,7 +257,7 @@ Private Sub ExecuteDuplicateCheckMode(ByVal isStartMode As Boolean)
 SafeExit:
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
-    Application.Calculation = oldCalculation
+    RestoreCalculationIfPossible oldCalculation
     Exit Sub
 
 ErrorHandler:
@@ -2531,7 +2531,7 @@ Public Sub 重複フォルダ候補をマーキング()
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
-    Application.Calculation = xlCalculationManual
+    TrySetManualCalculation
 
     Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     lastRow = GetLastUsedRow(ws)
@@ -2592,7 +2592,7 @@ Public Sub 重複フォルダ候補をマーキング()
 SafeExit:
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
-    Application.Calculation = oldCalculation
+    RestoreCalculationIfPossible oldCalculation
     Exit Sub
 
 ErrorHandler:
@@ -2641,7 +2641,7 @@ Public Sub 重複フォルダ候補をマーキングして並び替え()
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
-    Application.Calculation = xlCalculationManual
+    TrySetManualCalculation
 
     Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     lastRow = GetLastUsedRow(ws)
@@ -2737,7 +2737,7 @@ Public Sub 重複フォルダ候補をマーキングして並び替え()
 SafeExit:
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
-    Application.Calculation = oldCalculation
+    RestoreCalculationIfPossible oldCalculation
     Exit Sub
 
 ErrorHandler:
@@ -4375,7 +4375,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     previousCalculationMode = Application.Calculation
     Application.ScreenUpdating = False
     Application.EnableEvents = False
-    Application.Calculation = xlCalculationManual
+    TrySetManualCalculation
 
     ' 見出し検索は、シート全体の使用最終列ではなく1行目の見出し行を基準にする。
     ' GetLastUsedCol はデータ・書式・Find の状態に影響され得るため、見出し検索には使わない。
@@ -4714,7 +4714,7 @@ SafeExit:
 
     Application.ScreenUpdating = previousScreenUpdating
     Application.EnableEvents = previousEnableEvents
-    Application.Calculation = previousCalculationMode
+    RestoreCalculationIfPossible previousCalculationMode
     Exit Sub
 
 ErrorHandler:
@@ -5659,7 +5659,7 @@ Private Function AssignMissingSerial_NewFileStandardCore(ByVal targetWs As Works
         Set targetWs = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     End If
 
-    Application.Calculation = xlCalculationManual
+    TrySetManualCalculation
     Application.EnableEvents = False
     Application.ScreenUpdating = False
 
@@ -5699,7 +5699,7 @@ Private Function AssignMissingSerial_NewFileStandardCore(ByVal targetWs As Works
     Next rowNo
 
 SafeExit:
-    Application.Calculation = prevCalculation
+    RestoreCalculationIfPossible prevCalculation
     Application.EnableEvents = prevEnableEvents
     Application.ScreenUpdating = prevScreenUpdating
     Exit Function
@@ -5794,7 +5794,7 @@ Private Function ReindexSerial_NewFileStandardCore(ByVal targetWs As Worksheet) 
         Set targetWs = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     End If
 
-    Application.Calculation = xlCalculationManual
+    TrySetManualCalculation
     Application.EnableEvents = False
     Application.ScreenUpdating = False
 
@@ -5830,7 +5830,7 @@ Private Function ReindexSerial_NewFileStandardCore(ByVal targetWs As Worksheet) 
     ReindexSerial_NewFileStandardCore = nextSerial
 
 SafeExit:
-    Application.Calculation = prevCalculation
+    RestoreCalculationIfPossible prevCalculation
     Application.EnableEvents = prevEnableEvents
     Application.ScreenUpdating = prevScreenUpdating
     Exit Function
@@ -5846,7 +5846,7 @@ End Function
 Private Sub RestoreAppState(ByVal calcMode As XlCalculation, ByVal enableEvents As Boolean, ByVal screenUpdating As Boolean)
 
     On Error Resume Next
-    Application.Calculation = calcMode
+    RestoreCalculationIfPossible calcMode
     Application.EnableEvents = enableEvents
     Application.ScreenUpdating = screenUpdating
     On Error GoTo 0
@@ -9088,7 +9088,7 @@ Private Function RecalculateHaikiDateByRowMap(ByVal wsEdit As Worksheet, ByVal r
     prevCalculation = Application.Calculation
     prevEnableEvents = Application.EnableEvents
     prevScreenUpdating = Application.ScreenUpdating
-    Application.Calculation = xlCalculationManual
+    TrySetManualCalculation
     Application.EnableEvents = False
     Application.ScreenUpdating = False
 
@@ -9103,7 +9103,7 @@ Private Function RecalculateHaikiDateByRowMap(ByVal wsEdit As Worksheet, ByVal r
     Next key
 
 SafeExit:
-    Application.Calculation = prevCalculation
+    RestoreCalculationIfPossible prevCalculation
     Application.EnableEvents = prevEnableEvents
     Application.ScreenUpdating = prevScreenUpdating
     Exit Function
@@ -11083,7 +11083,7 @@ Public Sub 旧基準表_継続文書移行()
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
-    Application.Calculation = xlCalculationManual
+    TrySetManualCalculation
     Application.DisplayAlerts = False
 
     oldBookPath = SelectOldStandardWorkbookPath()
@@ -11253,7 +11253,7 @@ SafeExit:
     If Not wbOld Is Nothing Then wbOld.Close SaveChanges:=False
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
-    Application.Calculation = previousCalculationMode
+    RestoreCalculationIfPossible previousCalculationMode
     Application.DisplayAlerts = oldDisplayAlerts
     Application.StatusBar = False
     On Error GoTo 0
@@ -12066,7 +12066,7 @@ Public Sub 新ファイル基準表_色ルール修正()
     oldCalculation = Application.Calculation
     Application.ScreenUpdating = False
     Application.EnableEvents = False
-    Application.Calculation = xlCalculationManual
+    TrySetManualCalculation
 
     Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     lastRow = GetLastUsedRow(ws)
@@ -12248,7 +12248,7 @@ SafeExit:
     On Error Resume Next
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
-    Application.Calculation = oldCalculation
+    RestoreCalculationIfPossible oldCalculation
     On Error GoTo 0
     Exit Sub
 
@@ -12842,4 +12842,27 @@ Private Sub AppendCellComment_ColorRule(ByVal targetCell As Range, ByVal appendT
     End If
     On Error GoTo 0
 
+End Sub
+
+
+Private Sub TrySetManualCalculation()
+    Rem Some Excel workbooks reject changing Application.Calculation (1004).
+    Rem This is an optimization only; keep the current mode if it is unavailable.
+    On Error Resume Next
+    If Application.Calculation <> xlCalculationManual Then Application.Calculation = xlCalculationManual
+    If Err.Number <> 0 Then
+        Debug.Print "手動計算へ切替不可: " & Err.Number & " " & Err.Description
+        Err.Clear
+    End If
+    On Error GoTo 0
+End Sub
+
+Private Sub RestoreCalculationIfPossible(ByVal savedMode As XlCalculation)
+    On Error Resume Next
+    If Application.Calculation <> savedMode Then Application.Calculation = savedMode
+    If Err.Number <> 0 Then
+        Debug.Print "計算モードを復元不可: " & Err.Number & " " & Err.Description
+        Err.Clear
+    End If
+    On Error GoTo 0
 End Sub
