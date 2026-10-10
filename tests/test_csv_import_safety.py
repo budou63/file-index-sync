@@ -65,8 +65,9 @@ class CsvImportSafetyTests(unittest.TestCase):
         worker = procedure("CSVImportExecute")
         count = worker[worker.index("    existingTargetCount = 0"):worker.index("    requiredHeaders = ")]
         self.assertIn('ThisWorkbook.Worksheets("目録CSV")', worker)
-        self.assertIn("GetLastUsedRow(ws)", worker)
-        self.assertIn("GetLastHeaderCol(ws)", worker)
+        self.assertIn("CsvGetUnfilteredImportBounds ws, dstLastRow, dstLastCol, dstValueLastCol", worker)
+        self.assertNotIn("dstLastRow = GetLastUsedRow(ws)", worker)
+        self.assertNotIn("dstLastCol = GetLastHeaderCol(ws)", worker)
         self.assertIn('FindHeaderColumn(ws, dstLastCol, Array("年度（和暦）", "年度(和暦)"))', count)
         self.assertIn('FindHeaderColumn(ws, dstLastCol, Array("年度"))', count)
         self.assertIn("GetNormalizedYearFromRow(ws, oldRow, existingWarekiCol, existingWesternCol)", count)
@@ -74,6 +75,34 @@ class CsvImportSafetyTests(unittest.TestCase):
         normalizer = procedure("NormalizeYearValue")
         self.assertIn("2018 + n", normalizer)
         self.assertIn("If n >= 1900 And n <= 2999 Then", normalizer)
+
+    def test_import_bounds_scan_all_values_including_filtered_rows(self) -> None:
+        worker = procedure("CSVImportExecute")
+        bounds = procedure("CsvGetUnfilteredImportBounds")
+        self.assertIn("CsvGetUnfilteredImportBounds ws, dstLastRow, dstLastCol, dstValueLastCol", worker)
+        self.assertIn("Set usedCells = ws.UsedRange", bounds)
+        self.assertIn("CountA(block)", bounds)
+        self.assertIn("values = CsvReadRange2D(block)", bounds)
+        self.assertIn("CsvValueHasContent(values(r, c))", bounds)
+        self.assertIn("If blocksVisited > 10000 Then", bounds)
+        self.assertIn("If CDbl(boundRow) * CDbl(boundCol) > 50000000# Then", bounds)
+        for forbidden in (".Find(", ".End(", "ShowAllData", "AutoFilterMode = False", "lastDataRow = boundRow"):
+            self.assertNotIn(forbidden, bounds)
+        self.assertIn("If dstValueLastCol > dstLastCol Then Err.Raise", worker)
+
+    def test_filtered_write_and_restore_address_hidden_rows_without_clearing_filter(self) -> None:
+        worker = procedure("CSVImportExecute")
+        self.assertIn("filterWasActive = ws.FilterMode", worker)
+        self.assertIn("CsvWriteRowsByPosition ws, writeData", worker)
+        self.assertIn("CsvClearRowsByPosition ws, outputDataRows + 2", worker)
+        writer = procedure("CsvWriteRowsByPosition")
+        self.assertIn("For r = 1 To lastRow", writer)
+        self.assertIn("ws.Range(ws.Cells(r, 1), ws.Cells(r, lastCol)).Value2 = rowValues", writer)
+        restore = procedure("CsvRestoreImportSnapshot")
+        self.assertIn("CsvClearRowsByPosition ws, 2, clearRows, clearCols", restore)
+        self.assertIn("CsvWriteRowsByPosition ws, backupValues, oldLastRow, oldLastCol", restore)
+        for forbidden in ("ShowAllData", "AutoFilterMode = False", "AutoFilter.Apply"):
+            self.assertNotIn(forbidden, worker + writer + restore)
 
     def test_zero_count_diagnostic_is_limited_to_existing_rows_and_does_not_block_first_import(self) -> None:
         worker = procedure("CSVImportExecute")

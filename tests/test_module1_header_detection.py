@@ -72,7 +72,9 @@ class HeaderDetectionRegressionTests(unittest.TestCase):
     def test_csv_import_uses_header_row_bound_for_header_mapping(self) -> None:
         csv_import = procedure("CSVImportExecute")
         self.assertIn("srcLastCol = GetLastHeaderCol(wsCSV)", csv_import)
-        self.assertIn("dstLastCol = GetLastHeaderCol(ws)", csv_import)
+        self.assertIn("CsvGetUnfilteredImportBounds ws, dstLastRow, dstLastCol, dstValueLastCol", csv_import)
+        bounds = procedure("CsvGetUnfilteredImportBounds")
+        self.assertIn("If chunkStart + r - 1 = 1 And c > lastHeaderCol Then", bounds)
         self.assertIn("finalLastCol = finalLastCol + 1", csv_import)
 
     def test_csv_import_entrypoint_preserves_file_picker_cancel(self) -> None:

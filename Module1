@@ -1470,6 +1470,8 @@ Private Sub CSVImportExecute(ByVal filePath As String)
     Dim sourceValues As Variant, writeData As Variant, backupValues As Variant, requiredHeaders As Variant
     Dim formatBackup As Object
     Dim srcLastRow As Long, srcLastCol As Long, dstLastRow As Long, dstLastCol As Long
+    Dim dstValueLastCol As Long
+    Dim filterWasActive As Boolean
     Dim oldLastRow As Long, oldLastCol As Long, finalLastCol As Long, outputDataRows As Long
     Dim existingTargetCount As Long, deletedCount As Long, importCount As Long, outputRow As Long
     Dim recognizedYearCount As Long, examinedRowCount As Long
@@ -1550,11 +1552,10 @@ Private Sub CSVImportExecute(ByVal filePath As String)
     CsvVerifyStageHeaders wsCSV, headers, srcLastCol
     CsvValidateProtectedSamples protectedSamples, textColumns, srcLastRow, srcLastCol
 
-    dstLastRow = GetLastUsedRow(ws)
-    dstLastCol = GetLastHeaderCol(ws)
+    CsvGetUnfilteredImportBounds ws, dstLastRow, dstLastCol, dstValueLastCol
     If dstLastRow > 1 And dstLastCol = 0 Then Err.Raise vbObjectError + 2151, , "目録CSVに見出しがないのにデータ行があります。"
     If dstLastCol > 0 And Len(Trim(CStr(ws.Cells(1, 1).Value2))) = 0 Then Err.Raise vbObjectError + 2152, , "目録CSVのA1が空欄です。見出し行を確認してください。"
-    If GetLastUsedCol(ws) > dstLastCol Then Err.Raise vbObjectError + 2153, , "目録CSVに見出しのないデータ列があります。"
+    If dstValueLastCol > dstLastCol Then Err.Raise vbObjectError + 2153, , "目録CSVに見出しのないデータ列があります。"
 
     existingTargetCount = 0
     oldLastRow = dstLastRow
@@ -1700,13 +1701,22 @@ Private Sub CSVImportExecute(ByVal filePath As String)
     ThisWorkbook.SaveCopyAs backupPath
     If Not fso.FileExists(backupPath) Then Err.Raise vbObjectError + 2164, , "復元用バックアップを作成できませんでした。シートは変更していません。"
     backupCreated = True
+    filterWasActive = ws.FilterMode
     If fso.GetFile(backupPath).Size <= 0 Then Err.Raise vbObjectError + 2165, , "復元用バックアップのサイズが0です。シートは変更していません。"
     commitStarted = True
 
     CsvSetProtectedTextFormats ws, formatBackup
-    ws.Range(ws.Cells(1, 1), ws.Cells(outputDataRows + 1, finalLastCol)).Value2 = writeData
+    If filterWasActive Then
+        CsvWriteRowsByPosition ws, writeData, outputDataRows + 1, finalLastCol
+    Else
+        ws.Range(ws.Cells(1, 1), ws.Cells(outputDataRows + 1, finalLastCol)).Value2 = writeData
+    End If
     If oldLastRow > outputDataRows + 1 Then
-        ws.Range(ws.Cells(outputDataRows + 2, 1), ws.Cells(oldLastRow, Application.Max(oldLastCol, finalLastCol))).ClearContents
+        If filterWasActive Then
+            CsvClearRowsByPosition ws, outputDataRows + 2, oldLastRow, Application.Max(oldLastCol, finalLastCol)
+        Else
+            ws.Range(ws.Cells(outputDataRows + 2, 1), ws.Cells(oldLastRow, Application.Max(oldLastCol, finalLastCol))).ClearContents
+        End If
     End If
     CsvRestoreNumberFormats ws, formatBackup
     If Not CsvRangeMatches(ws.Range(ws.Cells(1, 1), ws.Cells(outputDataRows + 1, finalLastCol)), writeData) Then _
@@ -1727,7 +1737,7 @@ ErrorHandler:
     errNumber = Err.Number
     errDescription = Err.Description
     restoreSucceeded = False
-    If commitStarted Then restoreSucceeded = CsvRestoreImportSnapshot(ws, backupValues, formatBackup, oldLastRow, oldLastCol, outputDataRows + 1, finalLastCol, hasHeader)
+    If commitStarted Then restoreSucceeded = CsvRestoreImportSnapshot(ws, backupValues, formatBackup, oldLastRow, oldLastCol, outputDataRows + 1, finalLastCol, hasHeader, filterWasActive)
     If commitStarted And restoreSucceeded Then
         CsvWriteImportLog fileName, targetYearText, existingTargetCount, deletedCount, 0, "失敗", "restore=verified;Err " & CStr(errNumber) & ": " & errDescription
     ElseIf commitStarted Then
@@ -2349,6 +2359,55 @@ Private Function CsvSafeFileName(ByVal filePath As String) As String
     If CsvSafeFileName = "" Then CsvSafeFileName = filePath
 End Function
 
+Rem CSV取込専用。Find / End(xlUp) はフィルターで可視セルだけを見ることがある。
+Rem UsedRange は走査の上限にだけ使い、書式だけの行・列は Value2 で除外する。
+Private Sub CsvGetUnfilteredImportBounds( _
+    ByVal ws As Worksheet, ByRef lastDataRow As Long, ByRef lastHeaderCol As Long, ByRef lastValueCol As Long)
+    Dim usedCells As Range, block As Range, values As Variant
+    Dim boundRow As Long, boundCol As Long, chunkRows As Long, chunkStart As Long, chunkEnd As Long
+    Dim r As Long, c As Long, blocksVisited As Long
+
+    Set usedCells = ws.UsedRange
+    boundRow = usedCells.Row + usedCells.Rows.Count - 1
+    boundCol = usedCells.Column + usedCells.Columns.Count - 1
+    If boundRow < 1 Or boundRow > ws.Rows.Count Or boundCol < 1 Or boundCol > ws.Columns.Count Then _
+        Err.Raise vbObjectError + 2181, , "目録CSVの実データ範囲を判定できません。シートは変更していません。"
+    If CDbl(boundRow) * CDbl(boundCol) > 50000000# Then _
+        Err.Raise vbObjectError + 2182, , "目録CSVの使用範囲が広すぎて全行を確認できません。シートは変更していません。"
+
+    lastDataRow = 1
+    lastHeaderCol = 0
+    lastValueCol = 0
+    chunkRows = Application.Max(1, 65536 \ boundCol)
+    For chunkStart = 1 To boundRow Step chunkRows
+        blocksVisited = blocksVisited + 1
+        If blocksVisited > 10000 Then _
+            Err.Raise vbObjectError + 2182, , "目録CSVの使用範囲が広すぎて全行を確認できません。シートは変更していません。"
+        chunkEnd = Application.Min(boundRow, chunkStart + chunkRows - 1)
+        Set block = ws.Range(ws.Cells(chunkStart, 1), ws.Cells(chunkEnd, boundCol))
+        If Application.WorksheetFunction.CountA(block) > 0 Then
+            values = CsvReadRange2D(block)
+            For r = 1 To UBound(values, 1)
+                For c = 1 To UBound(values, 2)
+                    If CsvValueHasContent(values(r, c)) Then
+                        If chunkStart + r - 1 > lastDataRow Then lastDataRow = chunkStart + r - 1
+                        If c > lastValueCol Then lastValueCol = c
+                        If chunkStart + r - 1 = 1 And c > lastHeaderCol Then lastHeaderCol = c
+                    End If
+                Next c
+            Next r
+        End If
+    Next chunkStart
+End Sub
+
+Private Function CsvValueHasContent(ByVal cellValue As Variant) As Boolean
+    If IsError(cellValue) Or IsNull(cellValue) Then
+        CsvValueHasContent = True
+    ElseIf Not IsEmpty(cellValue) Then
+        CsvValueHasContent = (Len(CStr(cellValue)) > 0)
+    End If
+End Function
+
 Private Sub CsvShowZeroCountDiagnostic( _
     ByVal ws As Worksheet, ByVal targetYearText As String, ByVal targetYearValue As Long, _
     ByVal lastRow As Long, ByVal lastCol As Long, ByVal warekiCol As Long, ByVal westernCol As Long, _
@@ -2418,6 +2477,26 @@ Private Function CsvReadRange2D(ByVal targetRange As Range) As Variant
         CsvReadRange2D = value
     End If
 End Function
+
+Rem フィルター有効時、矩形の一括代入・消去は非表示行を飛ばす場合がある。
+Rem 行を番号で指定し、非表示行を含む全行へ書く。フィルター条件には触れない。
+Private Sub CsvWriteRowsByPosition(ByVal ws As Worksheet, ByRef data As Variant, ByVal lastRow As Long, ByVal lastCol As Long)
+    Dim rowValues() As Variant, r As Long, c As Long
+    ReDim rowValues(1 To 1, 1 To lastCol)
+    For r = 1 To lastRow
+        For c = 1 To lastCol
+            rowValues(1, c) = data(r, c)
+        Next c
+        ws.Range(ws.Cells(r, 1), ws.Cells(r, lastCol)).Value2 = rowValues
+    Next r
+End Sub
+
+Private Sub CsvClearRowsByPosition(ByVal ws As Worksheet, ByVal firstRow As Long, ByVal lastRow As Long, ByVal lastCol As Long)
+    Dim r As Long
+    For r = firstRow To lastRow
+        ws.Range(ws.Cells(r, 1), ws.Cells(r, lastCol)).ClearContents
+    Next r
+End Sub
 
 Private Function CsvRangeMatches(ByVal targetRange As Range, ByRef expected As Variant) As Boolean
     Dim actual As Variant, rowNo As Long, col As Long
@@ -2543,17 +2622,30 @@ Private Function CsvRestoreImportSnapshot( _
     ByVal ws As Worksheet, ByRef backupValues As Variant, ByVal formatBackup As Object, _
     ByVal oldLastRow As Long, ByVal oldLastCol As Long, _
     ByVal attemptedLastRow As Long, ByVal attemptedLastCol As Long, _
-    ByVal hadHeader As Boolean) As Boolean
+    ByVal hadHeader As Boolean, ByVal filterWasActive As Boolean) As Boolean
     Dim clearRows As Long, clearCols As Long, expected As Variant
     On Error GoTo RestoreFailed
     If ws Is Nothing Then GoTo RestoreFailed
     clearRows = Application.Max(oldLastRow, attemptedLastRow, 1)
     clearCols = Application.Max(oldLastCol, attemptedLastCol, 1)
     CsvSetProtectedTextFormats ws, formatBackup
-    ws.Range(ws.Cells(1, 1), ws.Cells(clearRows, clearCols)).ClearContents
+    If filterWasActive Then
+        CsvClearRowsByPosition ws, 2, clearRows, clearCols
+        If hadHeader Then
+            If clearCols > oldLastCol Then ws.Range(ws.Cells(1, oldLastCol + 1), ws.Cells(1, clearCols)).ClearContents
+        Else
+            ws.Range(ws.Cells(1, 1), ws.Cells(1, clearCols)).ClearContents
+        End If
+    Else
+        ws.Range(ws.Cells(1, 1), ws.Cells(clearRows, clearCols)).ClearContents
+    End If
     If hadHeader Then
         expected = backupValues
-        ws.Range(ws.Cells(1, 1), ws.Cells(oldLastRow, oldLastCol)).Value2 = backupValues
+        If filterWasActive Then
+            CsvWriteRowsByPosition ws, backupValues, oldLastRow, oldLastCol
+        Else
+            ws.Range(ws.Cells(1, 1), ws.Cells(oldLastRow, oldLastCol)).Value2 = backupValues
+        End If
         If Not CsvRangeMatches(ws.Range(ws.Cells(1, 1), ws.Cells(oldLastRow, oldLastCol)), expected) Then GoTo RestoreFailed
     ElseIf Application.WorksheetFunction.CountA(ws.Range(ws.Cells(1, 1), ws.Cells(clearRows, clearCols))) <> 0 Then
         GoTo RestoreFailed
