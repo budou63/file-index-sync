@@ -5291,6 +5291,35 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim srcHeaderMap As Object
     Dim existingDstHeaders As Object
     Dim existingRowMap As Object
+    Dim sourceFullKeyMap As Object
+    Dim destFullKeyMap As Object
+    Dim sourceFileIdMap As Object
+    Dim destFileIdMap As Object
+    Dim sourceIdBarcodeMap As Object
+    Dim destIdBarcodeMap As Object
+    Dim sourceFileNoMap As Object
+    Dim destFileNoMap As Object
+    Dim sourceFileNoPaddingMap As Object
+    Dim destFileNoPaddingMap As Object
+    Dim sourceBarcodeMap As Object
+    Dim destBarcodeMap As Object
+    Dim destAllNameMap As Object
+    Dim holdCandidatesSummary As String
+    Dim unreportedHoldCount As Long
+    Dim allNameCandidates As Collection
+    Dim reviewedNameKeyMap As Object
+    Dim supplementalIdentityMap As Object
+    Dim sourceIdRows As Collection
+    Dim destIdRows As Collection
+    Dim sourceExactRows As Collection
+    Dim destExactRows As Collection
+    Dim sourcePairRows As Collection
+    Dim destPairRows As Collection
+    Dim sourceBarcodeRows As Collection
+    Dim destBarcodeRows As Collection
+    Dim sourceFileNoRows As Collection
+    Dim destFileNoRows As Collection
+    Dim collisionRows As Collection
     Dim sourceKeyMap As Object
     Dim touchedTargetRowMap As Object
     Dim srcCol As Long
@@ -5346,10 +5375,27 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim rowValue As Variant
     Dim ambiguityNote As String
     Dim destFileIdCol As Long
+    Dim destFileNoCol As Long
+    Dim destBarcodeCol As Long
+    Dim sourceFileIdCol As Long
+    Dim sourceFileNoCol As Long
+    Dim sourceBarcodeCol As Long
+    Dim destWarekiYearCol As Long
+    Dim destYearCol As Long
+    Dim sourceFileIdValue As String
+    Dim sourceFileNoValue As String
+    Dim sourceBarcodeValue As String
+    Dim matchedKey As String
+    Dim paddingKey As String
+    Dim supplementalSyncCount As Long
+    Dim identityHoldCount As Long
+    Dim duplicateNameReviewCount As Long
     Dim nameSyncCount As Long
     Dim ambiguousSyncCount As Long
     Dim missingNameDataCount As Long
     Dim missingNameRows As String
+    Dim missingFileIdCount As Long
+    Dim missingFileIdRows As String
     Dim hasRowDiff As Boolean
     Dim syncCol As Long
     Dim beforeSyncStatus As String
@@ -5372,6 +5418,21 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Set srcHeaderMap = CreateObject("Scripting.Dictionary")
     Set existingDstHeaders = CreateObject("Scripting.Dictionary")
     Set existingRowMap = CreateObject("Scripting.Dictionary")
+    Set sourceFullKeyMap = CreateObject("Scripting.Dictionary")
+    Set destFullKeyMap = CreateObject("Scripting.Dictionary")
+    Set sourceFileIdMap = CreateObject("Scripting.Dictionary")
+    Set destFileIdMap = CreateObject("Scripting.Dictionary")
+    Set sourceIdBarcodeMap = CreateObject("Scripting.Dictionary")
+    Set destIdBarcodeMap = CreateObject("Scripting.Dictionary")
+    Set sourceFileNoMap = CreateObject("Scripting.Dictionary")
+    Set destFileNoMap = CreateObject("Scripting.Dictionary")
+    Set sourceFileNoPaddingMap = CreateObject("Scripting.Dictionary")
+    Set destFileNoPaddingMap = CreateObject("Scripting.Dictionary")
+    Set sourceBarcodeMap = CreateObject("Scripting.Dictionary")
+    Set destBarcodeMap = CreateObject("Scripting.Dictionary")
+    Set destAllNameMap = CreateObject("Scripting.Dictionary")
+    Set supplementalIdentityMap = CreateObject("Scripting.Dictionary")
+    Set reviewedNameKeyMap = CreateObject("Scripting.Dictionary")
     Set sourceKeyMap = CreateObject("Scripting.Dictionary")
     Set touchedTargetRowMap = CreateObject("Scripting.Dictionary")
     Set visualDiffMap = CreateObject("Scripting.Dictionary")
@@ -5472,6 +5533,18 @@ Public Sub 手順2_新ファイル基準表を作成する()
     ' 高速化対応: 重複呼び出しを削除（1回のみ）
     If Not Step2ConfirmMissingSyncStatus(wsDst, dstLastRow, syncCol, targetYearValue) Then GoTo SafeExit
     BuildExistingRowMap wsDst, dstLastRow, existingRowMap, targetYearValue
+    BuildStep2IdentityIndex wsSrc, srcLastRow, srcLastCol, targetYearValue, _
+        sourceFullKeyMap, sourceFileIdMap, sourceIdBarcodeMap, sourceFileNoMap, sourceFileNoPaddingMap, sourceBarcodeMap
+    BuildStep2IdentityIndex wsDst, dstLastRow, GetLastHeaderCol(wsDst), 0, _
+        destFullKeyMap, destFileIdMap, destIdBarcodeMap, destFileNoMap, destFileNoPaddingMap, destBarcodeMap
+    BuildDestinationAllNameMap wsDst, dstLastRow, GetLastHeaderCol(wsDst), 0, destAllNameMap
+    sourceFileIdCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイルID"))
+    sourceFileNoCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイル番号"))
+    sourceBarcodeCol = FindHeaderColumn(wsSrc, srcLastCol, Array("バーコード番号"))
+    destWarekiYearCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array("年度（和暦）", "年度(和暦)"))
+    destYearCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array("年度"))
+    destFileNoCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array("ファイル番号"))
+    destBarcodeCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array("バーコード番号"))
 
     ' 前回実行時の赤塗りつぶしが残らないよう、対象年度の「通し番号」列だけ事前にクリアする
     serialCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), GetStep2HeaderCandidates("通し番号"))
@@ -5493,16 +5566,199 @@ Public Sub 手順2_新ファイル基準表を作成する()
             End If
 
             key = BuildFileKeyFromSheetRow(wsSrc, srcRow, srcHeaderMap)
+            sourceFileIdValue = GetTrimmedCell(wsSrc, srcRow, sourceFileIdCol)
+            sourceFileNoValue = GetTrimmedCell(wsSrc, srcRow, sourceFileNoCol)
+            sourceBarcodeValue = GetTrimmedCell(wsSrc, srcRow, sourceBarcodeCol)
+            nameSyncKey = BuildStep2NameSyncKey(wsSrc, srcRow, srcLastCol)
 
+            If Len(sourceFileIdValue) = 0 Then
+                missingFileIdCount = missingFileIdCount + 1
+                If missingFileIdCount <= 20 Then _
+                    missingFileIdRows = missingFileIdRows & IIf(Len(missingFileIdRows) > 0, "、", "") & CStr(srcRow)
+                If Len(nameSyncKey) = 0 Then
+                    missingNameDataCount = missingNameDataCount + 1
+                    If missingNameDataCount <= 20 Then _
+                        missingNameRows = missingNameRows & IIf(Len(missingNameRows) > 0, "、", "") & CStr(srcRow)
+                End If
+                Set sourceCandidates = New Collection
+                sourceCandidates.Add srcRow
+                Set destCandidates = New Collection
+                If Len(nameSyncKey) > 0 Then
+                    Set collisionRows = Step2MapRows(destAllNameMap, nameSyncKey)
+                    For Each rowValue In collisionRows: AddStep2UniqueRow destCandidates, CLng(rowValue): Next rowValue
+                End If
+                If Len(sourceBarcodeValue) > 0 Then
+                    Set collisionRows = Step2MapRows(destBarcodeMap, sourceBarcodeValue)
+                    For Each rowValue In collisionRows: AddStep2UniqueRow destCandidates, CLng(rowValue): Next rowValue
+                End If
+                If Len(sourceFileNoValue) > 0 Then
+                    paddingKey = Step2FileNumberPaddingKey(sourceFileNoValue)
+                    If Len(paddingKey) > 0 Then
+                        Set collisionRows = Step2MapRows(destFileNoPaddingMap, paddingKey)
+                    Else
+                        Set collisionRows = Step2MapRows(destFileNoMap, sourceFileNoValue)
+                    End If
+                    For Each rowValue In collisionRows: AddStep2UniqueRow destCandidates, CLng(rowValue): Next rowValue
+                End If
+                RecordStep2IdentityHold wsSrc, sourceCandidates, srcLastCol, wsDst, destCandidates, _
+                    GetLastHeaderCol(wsDst), "目録CSV側に正式ファイルIDがないため、自動更新・名称同期・新規追加を保留しました。", _
+                    visualDiffMap, serialCommentMap, holdCandidatesSummary, unreportedHoldCount, targetYearValue
+                If Len(nameSyncKey) > 0 Then
+                    visualDiffMap("NAME|" & nameSyncKey) = "判定困難"
+                    serialCommentMap("NAME|" & nameSyncKey) = BuildStep2AmbiguousComment( _
+                        wsSrc, sourceCandidates, srcLastCol, wsDst, destCandidates, GetLastHeaderCol(wsDst), _
+                        "目録CSV側に正式ファイルIDがありません。")
+                End If
+                identityHoldCount = identityHoldCount + 1
+                ambiguousSyncCount = ambiguousSyncCount + 1
+                If Len(key) = 0 Then skippedNoKeyCount = skippedNoKeyCount + 1
+                GoTo ContinueNextSourceRow
+            End If
             If key = "" Then
-                ' キー（ファイルID/ファイル番号/バーコード番号）不足行は更新不可のためスキップ
                 skippedNoKeyCount = skippedNoKeyCount + 1
                 GoTo ContinueNextSourceRow
             End If
 
-            ' 今回の目録CSVに存在するキーとして記録（同期状態判定で利用）
             If Not sourceKeyMap.Exists(key) Then
                 sourceKeyMap.Add key, True
+            End If
+
+            Set sourceIdRows = Step2MapRows(sourceFileIdMap, sourceFileIdValue)
+            Set destIdRows = Step2MapRows(destFileIdMap, sourceFileIdValue)
+            Set sourceExactRows = Step2MapRows(sourceFullKeyMap, key)
+            Set destExactRows = Step2MapRows(destFullKeyMap, key)
+            Set sourceBarcodeRows = Step2MapRows(sourceBarcodeMap, sourceBarcodeValue)
+            Set destBarcodeRows = Step2MapRows(destBarcodeMap, sourceBarcodeValue)
+            paddingKey = Step2FileNumberPaddingKey(sourceFileNoValue)
+            If Len(paddingKey) > 0 Then
+                Set sourceFileNoRows = Step2MapRows(sourceFileNoPaddingMap, paddingKey)
+                Set destFileNoRows = Step2MapRows(destFileNoPaddingMap, paddingKey)
+            Else
+                Set sourceFileNoRows = Step2MapRows(sourceFileNoMap, sourceFileNoValue)
+                Set destFileNoRows = Step2MapRows(destFileNoMap, sourceFileNoValue)
+            End If
+
+            If sourceIdRows.Count > 1 Or destIdRows.Count > 1 Then
+                If sourceIdRows.Count > 0 Then
+                    Set sourceCandidates = sourceIdRows
+                Else
+                    Set sourceCandidates = sourceExactRows
+                End If
+                Set destCandidates = destIdRows
+                If destCandidates.Count = 0 And Len(nameSyncKey) > 0 And destAllNameMap.Exists(nameSyncKey) Then _
+                    Set destCandidates = Step2MapRows(destAllNameMap, nameSyncKey)
+                RecordStep2IdentityHold wsSrc, sourceCandidates, srcLastCol, wsDst, destCandidates, _
+                    GetLastHeaderCol(wsDst), "正式ファイルIDがCSV側またはExcel側で複数行に存在します。行を選ばず、ID重複を確認してください。", _
+                    visualDiffMap, serialCommentMap, holdCandidatesSummary, unreportedHoldCount, targetYearValue
+                identityHoldCount = identityHoldCount + 1
+                ambiguousSyncCount = ambiguousSyncCount + 1
+                If Len(nameSyncKey) > 0 And destNameSyncMap.Exists(nameSyncKey) And Not reviewedNameKeyMap.Exists(nameSyncKey) Then
+                    If sourceNameSyncMap.Exists(nameSyncKey) Then
+                        Set sourceCandidates = sourceNameSyncMap(nameSyncKey)
+                    Else
+                        Set sourceCandidates = New Collection
+                        sourceCandidates.Add srcRow
+                    End If
+                    Set destCandidates = destNameSyncMap(nameSyncKey)
+                    RecordStep2NameDuplicateReview wsSrc, sourceCandidates, srcLastCol, wsDst, destIdRows, destCandidates, _
+                        GetLastHeaderCol(wsDst), nameSyncKey, visualDiffMap, serialCommentMap
+                    duplicateNameReviewCount = duplicateNameReviewCount + destCandidates.Count
+                    reviewedNameKeyMap.Add nameSyncKey, True
+                End If
+                GoTo ContinueNextSourceRow
+            ElseIf sourceExactRows.Count > 1 Or destExactRows.Count > 1 Then
+                Set sourceCandidates = sourceExactRows
+                Set destCandidates = destExactRows
+                If destCandidates.Count = 0 And Len(nameSyncKey) > 0 And destAllNameMap.Exists(nameSyncKey) Then _
+                    Set destCandidates = Step2MapRows(destAllNameMap, nameSyncKey)
+                RecordStep2IdentityHold wsSrc, sourceCandidates, srcLastCol, wsDst, destCandidates, _
+                    GetLastHeaderCol(wsDst), "3項目完全一致の候補が複数あります。自動更新せず、候補を確認してください。", _
+                    visualDiffMap, serialCommentMap, holdCandidatesSummary, unreportedHoldCount, targetYearValue
+                identityHoldCount = identityHoldCount + 1
+                ambiguousSyncCount = ambiguousSyncCount + 1
+                GoTo ContinueNextSourceRow
+            End If
+
+            If destExactRows.Count = 1 And (Len(sourceFileIdValue) = 0 Or Len(sourceFileNoValue) = 0 Or Len(sourceBarcodeValue) = 0 Or _
+                sourceBarcodeRows.Count <> 1 Or destBarcodeRows.Count <> 1 Or _
+                sourceFileNoRows.Count <> 1 Or destFileNoRows.Count <> 1) Then
+                Set sourceCandidates = New Collection
+                Set destCandidates = New Collection
+                For Each rowValue In sourceIdRows: AddStep2UniqueRow sourceCandidates, CLng(rowValue): Next rowValue
+                For Each rowValue In sourceExactRows: AddStep2UniqueRow sourceCandidates, CLng(rowValue): Next rowValue
+                For Each rowValue In sourceBarcodeRows: AddStep2UniqueRow sourceCandidates, CLng(rowValue): Next rowValue
+                For Each rowValue In sourceFileNoRows: AddStep2UniqueRow sourceCandidates, CLng(rowValue): Next rowValue
+                For Each rowValue In destIdRows: AddStep2UniqueRow destCandidates, CLng(rowValue): Next rowValue
+                For Each rowValue In destExactRows: AddStep2UniqueRow destCandidates, CLng(rowValue): Next rowValue
+                For Each rowValue In destBarcodeRows: AddStep2UniqueRow destCandidates, CLng(rowValue): Next rowValue
+                For Each rowValue In destFileNoRows: AddStep2UniqueRow destCandidates, CLng(rowValue): Next rowValue
+                RecordStep2IdentityHold wsSrc, sourceCandidates, srcLastCol, wsDst, destCandidates, _
+                    GetLastHeaderCol(wsDst), "完全一致候補の正式ID・ファイル番号・バーコード番号が不足またはCSV側・Excel側で一意ではありません。", _
+                    visualDiffMap, serialCommentMap, holdCandidatesSummary, unreportedHoldCount, targetYearValue
+                identityHoldCount = identityHoldCount + 1
+                ambiguousSyncCount = ambiguousSyncCount + 1
+                GoTo ContinueNextSourceRow
+            End If
+
+            If Not existingRowMap.Exists(key) And Len(sourceFileIdValue) > 0 And destIdRows.Count = 1 Then
+                targetRow = CLng(destIdRows.Item(1))
+                Set sourcePairRows = Step2MapRows(sourceIdBarcodeMap, BuildFileKey(sourceFileIdValue, "", sourceBarcodeValue))
+                Set destPairRows = Step2MapRows(destIdBarcodeMap, BuildFileKey(sourceFileIdValue, "", sourceBarcodeValue))
+                Set sourceBarcodeRows = Step2MapRows(sourceBarcodeMap, sourceBarcodeValue)
+                Set destBarcodeRows = Step2MapRows(destBarcodeMap, sourceBarcodeValue)
+                paddingKey = Step2FileNumberPaddingKey(sourceFileNoValue)
+                If Len(paddingKey) > 0 Then
+                    Set sourceFileNoRows = Step2MapRows(sourceFileNoPaddingMap, paddingKey)
+                    Set destFileNoRows = Step2MapRows(destFileNoPaddingMap, paddingKey)
+                Else
+                    Set sourceFileNoRows = Step2MapRows(sourceFileNoMap, sourceFileNoValue)
+                    Set destFileNoRows = Step2MapRows(destFileNoMap, sourceFileNoValue)
+                End If
+                Set destCandidates = New Collection
+                destCandidates.Add targetRow
+                Set sourceCandidates = sourceIdRows
+                ambiguityNote = ""
+                If GetNormalizedYearFromRow(wsDst, targetRow, destWarekiYearCol, destYearCol) <> targetYearValue Then
+                    ambiguityNote = "同じ正式IDの行が別の対象年度にあります。年度をまたいだ更新・追加は行いません。"
+                ElseIf Len(sourceBarcodeValue) = 0 Or GetTrimmedCell(wsDst, targetRow, destBarcodeCol) <> sourceBarcodeValue Then
+                    ambiguityNote = "同じファイルIDの行でバーコード番号が一致しません。"
+                ElseIf sourcePairRows.Count <> 1 Or destPairRows.Count <> 1 Then
+                    ambiguityNote = "ファイルIDとバーコード番号の組合せを双方で一意に特定できません。"
+                ElseIf CLng(destPairRows.Item(1)) <> targetRow Then
+                    ambiguityNote = "ファイルIDとバーコード番号の組合せが別の行とも一致します。"
+                ElseIf sourceBarcodeRows.Count <> 1 Or destBarcodeRows.Count <> 1 Then
+                    ambiguityNote = "バーコード番号がCSV側またはExcel側で一意ではありません。"
+                ElseIf CLng(destBarcodeRows.Item(1)) <> targetRow Then
+                    ambiguityNote = "バーコード番号が別の行とも一致します。"
+                ElseIf sourceFileNoRows.Count <> 1 Or destFileNoRows.Count <> 1 Then
+                    ambiguityNote = "ファイル番号がCSV側またはExcel側で一意ではありません。"
+                ElseIf CLng(destFileNoRows.Item(1)) <> targetRow Then
+                    ambiguityNote = "ファイル番号が別の行とも一致します。"
+                ElseIf Not Step2FileNumbersDifferOnlyByLeadingZeros(sourceFileNoValue, GetTrimmedCell(wsDst, targetRow, destFileNoCol)) Then
+                    ambiguityNote = "ファイル番号が先頭ゼロの有無だけの差ではありません。"
+                End If
+                If Len(ambiguityNote) = 0 Then
+                    beforeSyncStatus = GetSyncStatusValue(wsDst, targetRow, syncCol)
+                    If IsIgnoredBySyncStatus(beforeSyncStatus) Then
+                        ambiguityNote = "既存行が管理対象外・不明の状態です。"
+                    ElseIf beforeSyncStatus = "削除予定" Then
+                        matchedKey = BuildFileKeyFromSheetRow(wsDst, targetRow, existingDstHeaders)
+                        If Len(matchedKey) > 0 And Not sourceKeyMap.Exists(matchedKey) Then sourceKeyMap.Add matchedKey, True
+                        visualDiffMap(matchedKey) = "削除予定"
+                        serialCommentMap(matchedKey) = BuildSerialDiffComment("削除予定", "", "")
+                        GoTo ContinueNextSourceRow
+                    End If
+                End If
+                If Len(ambiguityNote) = 0 Then
+                    existingRowMap.Add key, targetRow
+                    supplementalIdentityMap.Add key, targetRow
+                Else
+                    RecordStep2IdentityHold wsSrc, sourceIdRows, srcLastCol, wsDst, destCandidates, _
+                        GetLastHeaderCol(wsDst), ambiguityNote, visualDiffMap, serialCommentMap, holdCandidatesSummary, unreportedHoldCount, targetYearValue
+                    identityHoldCount = identityHoldCount + 1
+                    ambiguousSyncCount = ambiguousSyncCount + 1
+                    GoTo ContinueNextSourceRow
+                End If
             End If
 
             If existingRowMap.Exists(key) Then
@@ -5525,7 +5781,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         serialCommentMap(key) = BuildSerialDiffComment("変更", changedHeadersText, idCompletionHeadersText)
                     End If
                 End If
-                UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap, colorDiffDetectedCount
+                UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap, colorDiffDetectedCount, True
                 If beforeSyncStatus = "登録予定" Then
                     wsDst.Cells(targetRow, syncCol).Value = "同期済"
                     visualDiffMap(key) = "登録予定現行"
@@ -5534,6 +5790,16 @@ Public Sub 手順2_新ファイル基準表を作成する()
                 Else
                     updatedCount = updatedCount + 1
                     If beforeSyncStatus = "同期済" Then currentSyncCount = currentSyncCount + 1
+                End If
+                If supplementalIdentityMap.Exists(key) Then supplementalSyncCount = supplementalSyncCount + 1
+                nameSyncKey = BuildStep2NameSyncKey(wsSrc, srcRow, srcLastCol)
+                If Len(nameSyncKey) > 0 And destNameSyncMap.Exists(nameSyncKey) And Not reviewedNameKeyMap.Exists(nameSyncKey) Then
+                    Set destCandidates = destNameSyncMap(nameSyncKey)
+                    Set sourceCandidates = sourceNameSyncMap(nameSyncKey)
+                    RecordStep2NameDuplicateReview wsSrc, sourceCandidates, srcLastCol, wsDst, destIdRows, destCandidates, _
+                        GetLastHeaderCol(wsDst), nameSyncKey, visualDiffMap, serialCommentMap
+                    duplicateNameReviewCount = duplicateNameReviewCount + destCandidates.Count
+                    reviewedNameKeyMap.Add nameSyncKey, True
                 End If
                 If Not touchedTargetRowMap.Exists(CStr(targetRow)) Then touchedTargetRowMap.Add CStr(targetRow), targetRow
 
@@ -5546,6 +5812,43 @@ Public Sub 手順2_新ファイル基準表を作成する()
                     If targetRow > updateEndRow Then updateEndRow = targetRow
                 End If
             Else
+                If Len(sourceBarcodeValue) > 0 Then
+                    Set sourceCandidates = Step2MapRows(sourceBarcodeMap, sourceBarcodeValue)
+                    If sourceCandidates.Count > 1 Then
+                        Set destCandidates = Step2MapRows(destBarcodeMap, sourceBarcodeValue)
+                        If destCandidates.Count = 0 And Len(nameSyncKey) > 0 And destAllNameMap.Exists(nameSyncKey) Then _
+                            Set destCandidates = Step2MapRows(destAllNameMap, nameSyncKey)
+                        RecordStep2IdentityHold wsSrc, sourceCandidates, srcLastCol, wsDst, destCandidates, _
+                            GetLastHeaderCol(wsDst), "目録CSV側で同じバーコード番号が複数行にあります。新規追加・名称同期を保留しました。", _
+                            visualDiffMap, serialCommentMap, holdCandidatesSummary, unreportedHoldCount, targetYearValue
+                        identityHoldCount = identityHoldCount + 1
+                        ambiguousSyncCount = ambiguousSyncCount + 1
+                        GoTo ContinueNextSourceRow
+                    End If
+                End If
+                If Len(sourceFileNoValue) > 0 Then
+                    paddingKey = Step2FileNumberPaddingKey(sourceFileNoValue)
+                    If Len(paddingKey) > 0 Then
+                        Set sourceCandidates = Step2MapRows(sourceFileNoPaddingMap, paddingKey)
+                    Else
+                        Set sourceCandidates = Step2MapRows(sourceFileNoMap, sourceFileNoValue)
+                    End If
+                    If sourceCandidates.Count > 1 Then
+                        If Len(paddingKey) > 0 Then
+                            Set destCandidates = Step2MapRows(destFileNoPaddingMap, paddingKey)
+                        Else
+                            Set destCandidates = Step2MapRows(destFileNoMap, sourceFileNoValue)
+                        End If
+                        If destCandidates.Count = 0 And Len(nameSyncKey) > 0 And destAllNameMap.Exists(nameSyncKey) Then _
+                            Set destCandidates = Step2MapRows(destAllNameMap, nameSyncKey)
+                        RecordStep2IdentityHold wsSrc, sourceCandidates, srcLastCol, wsDst, destCandidates, _
+                            GetLastHeaderCol(wsDst), "目録CSV側で同じファイル番号が複数行にあります。新規追加・名称同期を保留しました。", _
+                            visualDiffMap, serialCommentMap, holdCandidatesSummary, unreportedHoldCount, targetYearValue
+                        identityHoldCount = identityHoldCount + 1
+                        ambiguousSyncCount = ambiguousSyncCount + 1
+                        GoTo ContinueNextSourceRow
+                    End If
+                End If
                 nameSyncKey = BuildStep2NameSyncKey(wsSrc, srcRow, srcLastCol)
                 If nameSyncKey <> "" Then
                     Set destCandidates = New Collection
@@ -5581,8 +5884,34 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         beforeSyncStatus = GetSyncStatusValue(wsDst, targetRow, syncCol)
                         If beforeSyncStatus <> "登録予定" Or Len(GetTrimmedCell(wsDst, targetRow, destFileIdCol)) > 0 Then
                             ambiguityNote = "Excel側の登録予定・ファイルID未反映という条件を満たしません。"
-                        ElseIf Not Step2NameCandidateIdentityMatches(wsSrc, wsDst, srcRow, targetRow, srcLastCol, GetLastHeaderCol(wsDst)) Then
-                            ambiguityNote = "既存のファイル番号またはバーコード番号が目録CSVと異なります。"
+                        Else
+                            Set allNameCandidates = Step2MapRows(destAllNameMap, nameSyncKey)
+                            Set blockedRows = Step2RowsForTargetYear(wsDst, allNameCandidates, GetLastHeaderCol(wsDst), targetYearValue)
+                            If blockedRows.Count <> destCandidates.Count Or _
+                               Not Step2CrossYearNameCandidatesAreDistinct(wsSrc, srcRow, srcLastCol, wsDst, allNameCandidates, _
+                                   GetLastHeaderCol(wsDst), targetYearValue) Then
+                                Set destCandidates = allNameCandidates
+                                ambiguityNote = "作成年度・名称が一致する同年度候補または識別番号を分離できない年度外候補があります。"
+                            End If
+                            If Len(ambiguityNote) = 0 And Len(sourceBarcodeValue) > 0 Then
+                                Set collisionRows = Step2MapRows(destBarcodeMap, sourceBarcodeValue)
+                                If Step2HasOtherRows(collisionRows, targetRow) Then _
+                                    ambiguityNote = "バーコード番号が別の既存Excel行とも一致します。"
+                            End If
+                            If Len(ambiguityNote) = 0 And Len(sourceFileNoValue) > 0 Then
+                                paddingKey = Step2FileNumberPaddingKey(sourceFileNoValue)
+                                If Len(paddingKey) > 0 Then
+                                    Set collisionRows = Step2MapRows(destFileNoPaddingMap, paddingKey)
+                                Else
+                                    Set collisionRows = Step2MapRows(destFileNoMap, sourceFileNoValue)
+                                End If
+                                If Step2HasOtherRows(collisionRows, targetRow) Then _
+                                    ambiguityNote = "ファイル番号が別の既存Excel行とも一致します。"
+                            End If
+                            If Len(ambiguityNote) = 0 Then
+                                If Not Step2NameCandidateIdentityMatches(wsSrc, wsDst, srcRow, targetRow, srcLastCol, GetLastHeaderCol(wsDst)) Then _
+                                    ambiguityNote = "既存のファイル番号またはバーコード番号が目録CSVと異なります。"
+                            End If
                         End If
                     End If
                     If sourceCandidates.Count = 1 And destCandidates.Count = 1 And ambiguityNote = "" Then
@@ -5618,7 +5947,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         visualDiffMap("NAME|" & nameSyncKey) = "判定困難"
                         serialCommentMap("NAME|" & nameSyncKey) = BuildStep2AmbiguousComment( _
                             wsSrc, sourceCandidates, srcLastCol, wsDst, destCandidates, GetLastHeaderCol(wsDst), ambiguityNote)
-                        AppendAmbiguousNameSyncRemark wsDst, destCandidates, "名称照合の判定困難（通し番号のコメントを確認）"
+                        Set blockedRows = Step2RowsForTargetYear(wsDst, destCandidates, GetLastHeaderCol(wsDst), targetYearValue)
+                        AppendAmbiguousNameSyncRemark wsDst, blockedRows, "名称照合の判定困難（通し番号のコメントを確認）"
                     End If
                 Else
                     If nameSyncKey = "" Then
@@ -5630,6 +5960,59 @@ Public Sub 手順2_新ファイル基準表を作成する()
                             AppendAmbiguousNameSyncRemark wsDst, destCandidates, _
                                 "目録CSVの名称情報または作成年度不足で照合保留（目録CSV行" & CStr(srcRow) & "）"
                         GoTo ContinueNextSourceRow
+                    End If
+                    If Len(sourceBarcodeValue) > 0 Then
+                        Set collisionRows = Step2MapRows(destBarcodeMap, sourceBarcodeValue)
+                    Else
+                        Set collisionRows = New Collection
+                    End If
+                    If collisionRows.Count = 0 And Len(sourceFileNoValue) > 0 Then
+                        paddingKey = Step2FileNumberPaddingKey(sourceFileNoValue)
+                        If Len(paddingKey) > 0 Then
+                            Set collisionRows = Step2MapRows(destFileNoPaddingMap, paddingKey)
+                        Else
+                            Set collisionRows = Step2MapRows(destFileNoMap, sourceFileNoValue)
+                        End If
+                    End If
+                    If collisionRows.Count > 0 Then
+                        If sourceIdRows.Count > 0 Then
+                            Set sourceCandidates = sourceIdRows
+                        Else
+                            Set sourceCandidates = New Collection
+                            sourceCandidates.Add srcRow
+                        End If
+                        Set destCandidates = collisionRows
+                        RecordStep2IdentityHold wsSrc, sourceCandidates, srcLastCol, wsDst, destCandidates, _
+                            GetLastHeaderCol(wsDst), "ファイルID以外の識別番号が既存行と重なりますが、対応する正式IDを一意に確認できません。", _
+                            visualDiffMap, serialCommentMap, holdCandidatesSummary, unreportedHoldCount, targetYearValue
+                        identityHoldCount = identityHoldCount + 1
+                        ambiguousSyncCount = ambiguousSyncCount + 1
+                        GoTo ContinueNextSourceRow
+                    End If
+
+                    If Len(nameSyncKey) > 0 And destAllNameMap.Exists(nameSyncKey) Then
+                        Set destCandidates = Step2MapRows(destAllNameMap, nameSyncKey)
+                        Set blockedRows = Step2RowsForTargetYear(wsDst, destCandidates, GetLastHeaderCol(wsDst), targetYearValue)
+                        If blockedRows.Count > 0 Or _
+                           Not Step2CrossYearNameCandidatesAreDistinct(wsSrc, srcRow, srcLastCol, wsDst, destCandidates, _
+                               GetLastHeaderCol(wsDst), targetYearValue) Then
+                            If sourceNameSyncMap.Exists(nameSyncKey) Then
+                                Set sourceCandidates = sourceNameSyncMap(nameSyncKey)
+                            Else
+                                Set sourceCandidates = New Collection
+                                sourceCandidates.Add srcRow
+                            End If
+                            RecordStep2IdentityHold wsSrc, sourceCandidates, srcLastCol, wsDst, destCandidates, _
+                                GetLastHeaderCol(wsDst), "作成年度と名称が一致する同年度候補、または識別番号を分離できない年度外候補があります。新規追加を保留しました。", _
+                                visualDiffMap, serialCommentMap, holdCandidatesSummary, unreportedHoldCount, targetYearValue
+                            visualDiffMap("NAME|" & nameSyncKey) = "判定困難"
+                            serialCommentMap("NAME|" & nameSyncKey) = BuildStep2AmbiguousComment( _
+                                wsSrc, sourceCandidates, srcLastCol, wsDst, destCandidates, GetLastHeaderCol(wsDst), _
+                                "作成年度と名称が一致する候補があり、識別番号が独立した別ファイルと確認できないため新規追加を保留しました。")
+                            identityHoldCount = identityHoldCount + 1
+                            ambiguousSyncCount = ambiguousSyncCount + 1
+                            GoTo ContinueNextSourceRow
+                        End If
                     End If
                     AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
                     ' 目録CSV由来の新規行は、管理システム上に存在することを確認済みとして記録する。
@@ -5667,8 +6050,9 @@ ContinueNextSourceRow:
     ApplyStep2PostProcessToTouchedRows wsDst, touchedTargetRowMap
 
     ' 7-1) 登録予定/削除予定の残存確認と、目録CSVから消えた削除予定行の削除可候補化を行う
-    ProcessPendingSyncStatusRows wsDst, syncCol, sourceKeyMap, sourceNameSyncMap, visualDiffMap, serialCommentMap, _
-        targetYearValue, registrationPlannedCount, deletionPlannedRemainCount, deletionPlannedDeletedCount
+    ProcessPendingSyncStatusRows wsDst, syncCol, sourceKeyMap, sourceNameSyncMap, sourceFileIdMap, sourceBarcodeMap, _
+        sourceFileNoMap, sourceFileNoPaddingMap, visualDiffMap, serialCommentMap, targetYearValue, _
+        registrationPlannedCount, deletionPlannedRemainCount, deletionPlannedDeletedCount
 
     ' 7-2) 同期状態列を更新（現行 / 登録予定 / 削除予定）
     UpdateSyncStatusColumn wsDst, sourceKeyMap, targetYearValue
@@ -5710,6 +6094,9 @@ ContinueNextSourceRow:
 
     WriteProcessLog "CSV整形（新ファイル基準表作成）", SHEET_MOKUROKU_CSV, targetYearRaw, _
         appendedCount + updatedCount + nameSyncCount, "成功", "新ファイル基準表を作成"
+    If missingFileIdCount > 20 Then missingFileIdRows = missingFileIdRows & " ほか"
+    If missingFileIdCount > 0 Then MsgBox "正式ファイルID不足で自動更新・名称同期・新規追加を保留: " & _
+        CStr(missingFileIdCount) & "件（目録CSV行: " & missingFileIdRows & "）", vbExclamation
     If missingNameDataCount > 20 Then missingNameRows = missingNameRows & " ほか"
     If missingNameDataCount > 0 Then MsgBox "名称情報・作成年度不足で自動照合と新規追加を保留: " & _
         CStr(missingNameDataCount) & "件（目録CSV行: " & missingNameRows & "）" & vbCrLf & _
@@ -5726,8 +6113,13 @@ ContinueNextSourceRow:
                "新規追加件数: " & appendedCount & " 件" & vbCrLf & _
                "内容変更件数: " & changedCount & " 件" & vbCrLf & _
                "名称ベース同期件数: " & nameSyncCount & " 件" & vbCrLf & _
+               "先頭ゼロ差の補助ID照合件数: " & supplementalSyncCount & " 件" & vbCrLf & _
+               "ID/名称競合で保留: " & identityHoldCount & " 件" & vbCrLf & _
+               "正式ID付き行と同名の登録予定候補: " & duplicateNameReviewCount & " 件" & vbCrLf & _
                "判定困難件数: " & ambiguousSyncCount & " 件" & vbCrLf & _
                "名称情報不足で保留: " & missingNameDataCount & " 件" & vbCrLf & _
+               "正式ファイルID不足で保留: " & missingFileIdCount & " 件（目録CSV行: " & missingFileIdRows & "）" & vbCrLf & _
+               "対象年度内に表示できない保留候補: " & unreportedHoldCount & " 件" & vbCrLf & holdCandidatesSummary & vbCrLf & _
                "色列差異検出件数: " & colorDiffDetectedCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
@@ -5745,8 +6137,13 @@ ContinueNextSourceRow:
                "新規追加件数: " & appendedCount & " 件" & vbCrLf & _
                "内容変更件数: " & changedCount & " 件" & vbCrLf & _
                "名称ベース同期件数: " & nameSyncCount & " 件" & vbCrLf & _
+               "先頭ゼロ差の補助ID照合件数: " & supplementalSyncCount & " 件" & vbCrLf & _
+               "ID/名称競合で保留: " & identityHoldCount & " 件" & vbCrLf & _
+               "正式ID付き行と同名の登録予定候補: " & duplicateNameReviewCount & " 件" & vbCrLf & _
                "判定困難件数: " & ambiguousSyncCount & " 件" & vbCrLf & _
                "名称情報不足で保留: " & missingNameDataCount & " 件" & vbCrLf & _
+               "正式ファイルID不足で保留: " & missingFileIdCount & " 件（目録CSV行: " & missingFileIdRows & "）" & vbCrLf & _
+               "対象年度内に表示できない保留候補: " & unreportedHoldCount & " 件" & vbCrLf & holdCandidatesSummary & vbCrLf & _
                "色列差異検出件数: " & colorDiffDetectedCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
@@ -5861,6 +6258,10 @@ Private Sub ProcessPendingSyncStatusRows( _
     ByVal syncCol As Long, _
     ByVal sourceKeyMap As Object, _
     ByVal sourceNameSyncMap As Object, _
+    ByVal sourceFileIdMap As Object, _
+    ByVal sourceBarcodeMap As Object, _
+    ByVal sourceFileNoMap As Object, _
+    ByVal sourceFileNoPaddingMap As Object, _
     ByVal visualDiffMap As Object, _
     ByVal serialCommentMap As Object, _
     ByVal targetYearValue As Long, _
@@ -5881,6 +6282,10 @@ Private Sub ProcessPendingSyncStatusRows( _
     Dim existsInSource As Boolean
     Dim remarksCol As Long
     Dim serialCol As Long
+    Dim fileIdCol As Long
+    Dim fileNoCol As Long
+    Dim barcodeCol As Long
+    Dim identityHold As Boolean
     Dim markRange As Range
 
     If wsDst Is Nothing Then Exit Sub
@@ -5897,6 +6302,9 @@ Private Sub ProcessPendingSyncStatusRows( _
     westernYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度"))
     remarksCol = FindHeaderColumn(wsDst, lastCol, Array("備考"))
     serialCol = FindHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates("通し番号"))
+    fileIdCol = FindHeaderColumn(wsDst, lastCol, Array("ファイルID"))
+    fileNoCol = FindHeaderColumn(wsDst, lastCol, Array("ファイル番号"))
+    barcodeCol = FindHeaderColumn(wsDst, lastCol, Array("バーコード番号"))
 
     For rowNo = lastRow To 2 Step -1
         If targetYearValue > 0 Then
@@ -5910,7 +6318,11 @@ Private Sub ProcessPendingSyncStatusRows( _
 
         key = BuildFileKeyFromSheetRow(wsDst, rowNo, headerMap)
         nameKey = BuildStep2NameSyncKey(wsDst, rowNo, lastCol)
-        existsInSource = RowExistsInSourceByIdentityOrName(key, nameKey, sourceKeyMap, sourceNameSyncMap)
+        identityHold = False
+        existsInSource = RowExistsInSourceByIdentityOrName(key, nameKey, _
+            GetTrimmedCell(wsDst, rowNo, fileIdCol), GetTrimmedCell(wsDst, rowNo, fileNoCol), _
+            GetTrimmedCell(wsDst, rowNo, barcodeCol), sourceKeyMap, sourceNameSyncMap, sourceFileIdMap, _
+            sourceBarcodeMap, sourceFileNoMap, sourceFileNoPaddingMap, identityHold)
 
         If statusValue = "登録予定" Then
             If Not existsInSource Then
@@ -5927,8 +6339,18 @@ Private Sub ProcessPendingSyncStatusRows( _
                 wsDst.Cells(rowNo, syncCol).Value = "削除予定"
                 markKey = BuildVisualMarkerKey(key, nameKey)
                 If markKey <> "" Then
-                    visualDiffMap(markKey) = "削除予定"
-                    serialCommentMap(markKey) = BuildSerialDiffComment("削除予定", "", "")
+                    If identityHold Then
+                        visualDiffMap(markKey) = "判定困難"
+                        If Not serialCommentMap.Exists(markKey) Then _
+                            serialCommentMap(markKey) = BuildSerialDiffComment("判定困難", "", "CSV側に同一または競合する識別候補があるため、削除判定を保留")
+                        If remarksCol > 0 Then AppendRemarkOnce wsDst, rowNo, "削除判定保留（CSV側に識別候補あり。通し番号のコメントを確認）"
+                    ElseIf Not visualDiffMap.Exists(markKey) Then
+                        visualDiffMap(markKey) = "削除予定"
+                        serialCommentMap(markKey) = BuildSerialDiffComment("削除予定", "", "")
+                    ElseIf StrComp(CStr(visualDiffMap(markKey)), "判定困難", vbTextCompare) <> 0 Then
+                        visualDiffMap(markKey) = "削除予定"
+                        serialCommentMap(markKey) = BuildSerialDiffComment("削除予定", "", "")
+                    End If
                 End If
                 deletionPlannedRemainCount = deletionPlannedRemainCount + 1
             Else
@@ -5955,21 +6377,64 @@ End Sub
 Private Function RowExistsInSourceByIdentityOrName( _
     ByVal key As String, _
     ByVal nameKey As String, _
+    ByVal fileId As String, _
+    ByVal fileNo As String, _
+    ByVal barcode As String, _
     ByVal sourceKeyMap As Object, _
-    ByVal sourceNameSyncMap As Object) As Boolean
+    ByVal sourceNameSyncMap As Object, _
+    ByVal sourceFileIdMap As Object, _
+    ByVal sourceBarcodeMap As Object, _
+    ByVal sourceFileNoMap As Object, _
+    ByVal sourceFileNoPaddingMap As Object, _
+    ByRef identityHold As Boolean) As Boolean
 
-    If key <> "" Then
-        If Not sourceKeyMap Is Nothing Then
-            If sourceKeyMap.Exists(key) Then
+    Dim paddingKey As String
+    identityHold = False
+
+    If key <> "" And Not sourceKeyMap Is Nothing Then
+        If sourceKeyMap.Exists(key) Then
+            RowExistsInSourceByIdentityOrName = True
+            Exit Function
+        End If
+    End If
+
+    If Len(fileId) > 0 And Not sourceFileIdMap Is Nothing Then
+        If sourceFileIdMap.Exists(fileId) Then
+            identityHold = True
+            RowExistsInSourceByIdentityOrName = True
+            Exit Function
+        End If
+    End If
+
+    If Len(barcode) > 0 And Not sourceBarcodeMap Is Nothing Then
+        If sourceBarcodeMap.Exists(barcode) Then
+            identityHold = True
+            RowExistsInSourceByIdentityOrName = True
+            Exit Function
+        End If
+    End If
+
+    If Len(fileNo) > 0 Then
+        paddingKey = Step2FileNumberPaddingKey(fileNo)
+        If Len(paddingKey) > 0 And Not sourceFileNoPaddingMap Is Nothing Then
+            If sourceFileNoPaddingMap.Exists(paddingKey) Then
+                identityHold = True
+                RowExistsInSourceByIdentityOrName = True
+                Exit Function
+            End If
+        ElseIf Not sourceFileNoMap Is Nothing Then
+            If sourceFileNoMap.Exists(fileNo) Then
+                identityHold = True
                 RowExistsInSourceByIdentityOrName = True
                 Exit Function
             End If
         End If
     End If
 
-    If nameKey <> "" Then
-        If Not sourceNameSyncMap Is Nothing Then
-            If sourceNameSyncMap.Exists(nameKey) Then RowExistsInSourceByIdentityOrName = True
+    If Len(nameKey) > 0 And Not sourceNameSyncMap Is Nothing Then
+        If sourceNameSyncMap.Exists(nameKey) Then
+            identityHold = True
+            RowExistsInSourceByIdentityOrName = True
         End If
     End If
 
@@ -6049,6 +6514,88 @@ NextRow:
     Next r
 End Sub
 
+Private Function Step2HasOtherRows(ByVal candidateRows As Collection, ByVal allowedRow As Long) As Boolean
+    Dim rowValue As Variant
+    For Each rowValue In candidateRows
+        If CLng(rowValue) <> allowedRow Then
+            Step2HasOtherRows = True
+            Exit Function
+        End If
+    Next rowValue
+End Function
+
+Private Function Step2RowsForTargetYear( _
+    ByVal ws As Worksheet, ByVal rows As Collection, ByVal lastCol As Long, ByVal targetYearValue As Long) As Collection
+    Dim resultRows As New Collection, rowValue As Variant, warekiCol As Long, yearCol As Long
+    Set Step2RowsForTargetYear = resultRows
+    If ws Is Nothing Or rows Is Nothing Then Exit Function
+    If targetYearValue <= 0 Then
+        For Each rowValue In rows: AddStep2UniqueRow resultRows, CLng(rowValue): Next rowValue
+        Exit Function
+    End If
+    warekiCol = FindHeaderColumn(ws, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    yearCol = FindHeaderColumn(ws, lastCol, Array("年度"))
+    For Each rowValue In rows
+        If GetNormalizedYearFromRow(ws, CLng(rowValue), warekiCol, yearCol) = targetYearValue Then _
+            AddStep2UniqueRow resultRows, CLng(rowValue)
+    Next rowValue
+End Function
+
+Private Function Step2CrossYearNameCandidatesAreDistinct( _
+    ByVal wsSrc As Worksheet, ByVal srcRow As Long, ByVal srcLastCol As Long, _
+    ByVal wsDst As Worksheet, ByVal destinationRows As Collection, ByVal dstLastCol As Long, _
+    ByVal targetYearValue As Long) As Boolean
+    Dim srcIdCol As Long, srcFileNoCol As Long, srcBarcodeCol As Long
+    Dim dstIdCol As Long, dstFileNoCol As Long, dstBarcodeCol As Long
+    Dim dstWarekiCol As Long, dstYearCol As Long, rowValue As Variant, dstRow As Long, dstYearValue As Long
+    Dim sourceId As String, sourceFileNo As String, sourceBarcode As String
+    Dim destId As String, destFileNo As String, destBarcode As String
+    Dim sourceFileNoKey As String, destFileNoKey As String, foundCrossYear As Boolean
+    Step2CrossYearNameCandidatesAreDistinct = True
+    If destinationRows Is Nothing Then Exit Function
+    If destinationRows.Count = 0 Then Exit Function
+    srcIdCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイルID"))
+    srcFileNoCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイル番号"))
+    srcBarcodeCol = FindHeaderColumn(wsSrc, srcLastCol, Array("バーコード番号"))
+    dstIdCol = FindHeaderColumn(wsDst, dstLastCol, Array("ファイルID"))
+    dstFileNoCol = FindHeaderColumn(wsDst, dstLastCol, Array("ファイル番号"))
+    dstBarcodeCol = FindHeaderColumn(wsDst, dstLastCol, Array("バーコード番号"))
+    dstWarekiCol = FindHeaderColumn(wsDst, dstLastCol, Array("年度（和暦）", "年度(和暦)"))
+    dstYearCol = FindHeaderColumn(wsDst, dstLastCol, Array("年度"))
+    sourceId = GetTrimmedCell(wsSrc, srcRow, srcIdCol)
+    sourceFileNo = GetTrimmedCell(wsSrc, srcRow, srcFileNoCol)
+    sourceBarcode = GetTrimmedCell(wsSrc, srcRow, srcBarcodeCol)
+    sourceFileNoKey = Step2FileNumberPaddingKey(sourceFileNo)
+    For Each rowValue In destinationRows
+        dstRow = CLng(rowValue)
+        dstYearValue = GetNormalizedYearFromRow(wsDst, dstRow, dstWarekiCol, dstYearCol)
+        If dstYearValue = targetYearValue Then GoTo ContinueNextCrossYearCandidate
+        If dstYearValue <= 0 Then
+            Step2CrossYearNameCandidatesAreDistinct = False
+            Exit Function
+        End If
+        foundCrossYear = True
+        destId = GetTrimmedCell(wsDst, dstRow, dstIdCol)
+        destFileNo = GetTrimmedCell(wsDst, dstRow, dstFileNoCol)
+        destBarcode = GetTrimmedCell(wsDst, dstRow, dstBarcodeCol)
+        destFileNoKey = Step2FileNumberPaddingKey(destFileNo)
+        If Len(sourceId) = 0 Or Len(sourceFileNo) = 0 Or Len(sourceBarcode) = 0 Or _
+           Len(destId) = 0 Or Len(destFileNo) = 0 Or Len(destBarcode) = 0 Then
+            Step2CrossYearNameCandidatesAreDistinct = False
+            Exit Function
+        End If
+        If StrComp(sourceId, destId, vbBinaryCompare) = 0 Or _
+           StrComp(sourceBarcode, destBarcode, vbBinaryCompare) = 0 Or _
+           StrComp(sourceFileNo, destFileNo, vbBinaryCompare) = 0 Or _
+           (Len(sourceFileNoKey) > 0 And Len(destFileNoKey) > 0 And StrComp(sourceFileNoKey, destFileNoKey, vbBinaryCompare) = 0) Then
+            Step2CrossYearNameCandidatesAreDistinct = False
+            Exit Function
+        End If
+ContinueNextCrossYearCandidate:
+    Next rowValue
+    If Not foundCrossYear Then Step2CrossYearNameCandidatesAreDistinct = True
+End Function
+
 Private Function Step2MapRows(ByVal rowsByKey As Object, ByVal key As String) As Collection
     Dim emptyRows As New Collection
     If key <> "" Then
@@ -6086,14 +6633,24 @@ End Function
 Private Function Step2CandidateDetails(ByVal ws As Worksheet, ByVal rows As Collection, _
     ByVal lastCol As Long, ByVal isExcel As Boolean) As String
     Dim idCol As Long, titleCol As Long, syncCol As Long, rowNo As Long, i As Long, label As String
+    Dim warekiYearCol As Long, westernYearCol As Long, yearText As String
     idCol = FindHeaderColumn(ws, lastCol, Array("ファイルID"))
     titleCol = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("タイトル"))
-    If isExcel Then syncCol = FindHeaderColumn(ws, lastCol, Array("同期状態"))
+    If isExcel Then
+        syncCol = FindHeaderColumn(ws, lastCol, Array("同期状態"))
+        warekiYearCol = FindHeaderColumn(ws, lastCol, Array("年度（和暦）", "年度(和暦)"))
+        westernYearCol = FindHeaderColumn(ws, lastCol, Array("年度"))
+    End If
     For i = 1 To Application.Min(rows.Count, 3)
         rowNo = CLng(rows.Item(i))
         label = Step2ShortText(GetTrimmedCell(ws, rowNo, titleCol), 60)
+        If isExcel Then
+            yearText = CStr(GetNormalizedYearFromRow(ws, rowNo, warekiYearCol, westernYearCol))
+            If yearText = "0" Then yearText = "判定不可"
+        End If
         Step2CandidateDetails = Step2CandidateDetails & vbCrLf & "  行" & CStr(rowNo) & _
             " / ID=" & Step2ShortText(GetTrimmedCell(ws, rowNo, idCol), 60) & _
+            IIf(isExcel, " / 年度=" & yearText, "") & _
             IIf(isExcel, " / 状態=" & Step2ShortText(GetTrimmedCell(ws, rowNo, syncCol), 30), "") & _
             " / フォルダー=" & label
     Next i
@@ -6105,6 +6662,7 @@ Private Function BuildStep2AmbiguousComment( _
     ByVal wsDst As Worksheet, ByVal dstRows As Collection, ByVal dstLastCol As Long, _
     ByVal issue As String) As String
     Dim r As Long, reason As String, createdCol As Long, c2 As Long, c3 As Long, titleCol As Long
+    Dim createdYearText As String, normalizedCreatedYear As String
     r = CLng(srcRows.Item(1))
     If srcRows.Count > 1 And dstRows.Count > 1 Then
         reason = "目録CSV側・Excel側の双方が複数"
@@ -6120,9 +6678,16 @@ Private Function BuildStep2AmbiguousComment( _
     c2 = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名２"))
     c3 = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名３"))
     titleCol = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("タイトル"))
+    If createdCol > 0 Then
+        createdYearText = Step2ShortText(GetTrimmedCell(wsSrc, r, createdCol), 50)
+        normalizedCreatedYear = CStr(NormalizeYearValue(wsSrc.Cells(r, createdCol).Value))
+    Else
+        createdYearText = "（列なし）"
+        normalizedCreatedYear = "判定不可"
+    End If
     BuildStep2AmbiguousComment = "【判定困難】" & vbCrLf & "競合理由: " & reason & vbCrLf & _
-        "照合: 作成年度（和暦）=" & Step2ShortText(GetTrimmedCell(wsSrc, r, createdCol), 50) & _
-        "（正規化=" & CStr(NormalizeYearValue(wsSrc.Cells(r, createdCol).Value)) & "）" & _
+        "照合: 作成年度（和暦）=" & createdYearText & _
+        "（正規化=" & normalizedCreatedYear & "）" & _
         " / 第1ガイド=" & Step2ShortText(GetTrimmedCell(wsSrc, r, c2), 80) & _
         " / 第2ガイド=" & Step2ShortText(GetTrimmedCell(wsSrc, r, c3), 80) & _
         " / 個別フォルダー=" & Step2ShortText(GetTrimmedCell(wsSrc, r, titleCol), 80) & vbCrLf & _
@@ -7365,6 +7930,156 @@ Private Function IsUserManagedHeader( _
 
 End Function
 
+Private Function Step2FileNumberPaddingKey(ByVal valueText As String) As String
+    Dim normalized As String, i As Long, ch As String
+    normalized = Trim$(valueText)
+    If Len(normalized) = 0 Then Exit Function
+    For i = 1 To Len(normalized)
+        ch = Mid$(normalized, i, 1)
+        If ch < "0" Or ch > "9" Then Exit Function
+    Next i
+    Do While Len(normalized) > 1 And Left$(normalized, 1) = "0"
+        normalized = Mid$(normalized, 2)
+    Loop
+    Step2FileNumberPaddingKey = normalized
+End Function
+
+Private Function Step2FileNumbersDifferOnlyByLeadingZeros(ByVal sourceValue As String, ByVal destinationValue As String) As Boolean
+    Dim sourceKey As String, destinationKey As String
+    If StrComp(sourceValue, destinationValue, vbBinaryCompare) = 0 Then Exit Function
+    sourceKey = Step2FileNumberPaddingKey(sourceValue)
+    destinationKey = Step2FileNumberPaddingKey(destinationValue)
+    If Len(sourceKey) = 0 Or Len(destinationKey) = 0 Then Exit Function
+    Step2FileNumbersDifferOnlyByLeadingZeros = (StrComp(sourceKey, destinationKey, vbBinaryCompare) = 0)
+End Function
+
+Private Sub BuildStep2IdentityIndex( _
+    ByVal ws As Worksheet, ByVal lastRow As Long, ByVal lastCol As Long, ByVal targetYearValue As Long, _
+    ByVal fullKeyMap As Object, ByVal fileIdMap As Object, ByVal idBarcodeMap As Object, _
+    ByVal fileNoMap As Object, ByVal fileNoPaddingMap As Object, ByVal barcodeMap As Object)
+    Dim headerMap As Object, rowNo As Long, key As String, fileId As String
+    Dim fileNo As String, barcode As String, fileIdCol As Long, fileNoCol As Long, barcodeCol As Long
+    Dim warekiCol As Long, yearCol As Long
+    Set headerMap = CreateObject("Scripting.Dictionary")
+    fullKeyMap.RemoveAll: fileIdMap.RemoveAll: idBarcodeMap.RemoveAll
+    fileNoMap.RemoveAll: fileNoPaddingMap.RemoveAll: barcodeMap.RemoveAll
+    If ws Is Nothing Or lastRow < 2 Or lastCol < 1 Then Exit Sub
+    BuildSourceHeaderMap ws, lastCol, headerMap
+    fileIdCol = FindHeaderColumn(ws, lastCol, Array("ファイルID"))
+    fileNoCol = FindHeaderColumn(ws, lastCol, Array("ファイル番号"))
+    barcodeCol = FindHeaderColumn(ws, lastCol, Array("バーコード番号"))
+    warekiCol = FindHeaderColumn(ws, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    yearCol = FindHeaderColumn(ws, lastCol, Array("年度"))
+    If fileIdCol <= 0 Or fileNoCol <= 0 Or barcodeCol <= 0 Then _
+        Err.Raise vbObjectError + 2613, , "ID照合用のファイルID・ファイル番号・バーコード番号列が不足しています。"
+    For rowNo = 2 To lastRow
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(ws, rowNo, warekiCol, yearCol) <> targetYearValue Then GoTo ContinueNextIdentityRow
+        End If
+        key = BuildFileKeyFromSheetRow(ws, rowNo, headerMap)
+        fileId = GetTrimmedCell(ws, rowNo, fileIdCol)
+        fileNo = GetTrimmedCell(ws, rowNo, fileNoCol)
+        barcode = GetTrimmedCell(ws, rowNo, barcodeCol)
+        If Len(key) > 0 Then AddRowToMultiValueMap fullKeyMap, key, rowNo
+        If Len(fileId) > 0 Then AddRowToMultiValueMap fileIdMap, fileId, rowNo
+        If Len(fileId) > 0 And Len(barcode) > 0 Then _
+            AddRowToMultiValueMap idBarcodeMap, BuildFileKey(fileId, "", barcode), rowNo
+        If Len(fileNo) > 0 Then
+            AddRowToMultiValueMap fileNoMap, fileNo, rowNo
+            key = Step2FileNumberPaddingKey(fileNo)
+            If Len(key) > 0 Then AddRowToMultiValueMap fileNoPaddingMap, key, rowNo
+        End If
+        If Len(barcode) > 0 Then AddRowToMultiValueMap barcodeMap, barcode, rowNo
+ContinueNextIdentityRow:
+    Next rowNo
+End Sub
+
+Private Sub BuildDestinationAllNameMap( _
+    ByVal wsDst As Worksheet, ByVal dstLastRow As Long, ByVal dstLastCol As Long, _
+    ByVal targetYearValue As Long, ByVal nameMap As Object)
+    Dim rowNo As Long, fiscalCol As Long, westernCol As Long, nameKey As String
+    nameMap.RemoveAll
+    If wsDst Is Nothing Or dstLastRow < 2 Then Exit Sub
+    fiscalCol = FindHeaderColumn(wsDst, dstLastCol, Array("年度（和暦）", "年度(和暦)"))
+    westernCol = FindHeaderColumn(wsDst, dstLastCol, Array("年度"))
+    For rowNo = 2 To dstLastRow
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(wsDst, rowNo, fiscalCol, westernCol) <> targetYearValue Then GoTo ContinueNextNameRow
+        End If
+        nameKey = BuildStep2NameSyncKey(wsDst, rowNo, dstLastCol)
+        If Len(nameKey) > 0 Then AddRowToMultiValueMap nameMap, nameKey, rowNo
+ContinueNextNameRow:
+    Next rowNo
+End Sub
+
+Private Sub AddStep2UniqueRow(ByVal rows As Collection, ByVal rowNo As Long)
+    Dim existingRow As Variant
+    If rows Is Nothing Then Exit Sub
+    For Each existingRow In rows
+        If CLng(existingRow) = rowNo Then Exit Sub
+    Next existingRow
+    rows.Add rowNo
+End Sub
+
+Private Sub RecordStep2IdentityHold( _
+    ByVal wsSrc As Worksheet, ByVal sourceRows As Collection, ByVal srcLastCol As Long, _
+    ByVal wsDst As Worksheet, ByVal destinationRows As Collection, ByVal dstLastCol As Long, _
+    ByVal issue As String, ByVal visualDiffMap As Object, ByVal serialCommentMap As Object, _
+    ByRef unreportedSummary As String, ByRef unreportedCount As Long, Optional ByVal targetYearValue As Long = 0)
+    Dim commentText As String, rowValue As Variant, key As String, nameKey As String
+    Dim headerMap As Object, warekiYearCol As Long, westernYearCol As Long
+    Dim eligibleDestinationCount As Long
+    Set headerMap = CreateObject("Scripting.Dictionary")
+    BuildSourceHeaderMap wsDst, dstLastCol, headerMap
+    warekiYearCol = FindHeaderColumn(wsDst, dstLastCol, Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(wsDst, dstLastCol, Array("年度"))
+    commentText = BuildStep2AmbiguousComment(wsSrc, sourceRows, srcLastCol, wsDst, destinationRows, dstLastCol, issue)
+    For Each rowValue In destinationRows
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(wsDst, CLng(rowValue), warekiYearCol, westernYearCol) <> targetYearValue Then GoTo ContinueNextIdentityHoldRow
+        End If
+        eligibleDestinationCount = eligibleDestinationCount + 1
+        key = BuildFileKeyFromSheetRow(wsDst, CLng(rowValue), headerMap)
+        If Len(key) > 0 Then
+            visualDiffMap(key) = "判定困難"
+            serialCommentMap(key) = commentText
+        Else
+            nameKey = BuildStep2NameSyncKey(wsDst, CLng(rowValue), dstLastCol)
+            If Len(nameKey) > 0 Then
+                visualDiffMap("NAME|" & nameKey) = "判定困難"
+                serialCommentMap("NAME|" & nameKey) = commentText
+            End If
+        End If
+        AppendRemarkOnce wsDst, CLng(rowValue), "CSV整形のID照合を保留（通し番号のコメントを確認）"
+ContinueNextIdentityHoldRow:
+    Next rowValue
+    If eligibleDestinationCount = 0 Then
+        unreportedCount = unreportedCount + 1
+        If unreportedCount <= 3 Then
+            If Len(unreportedSummary) > 0 Then unreportedSummary = unreportedSummary & vbCrLf
+            unreportedSummary = unreportedSummary & "保留候補" & CStr(unreportedCount) & ": " & Step2ShortText(commentText, 900)
+        End If
+    End If
+End Sub
+
+Private Sub RecordStep2NameDuplicateReview( _
+    ByVal wsSrc As Worksheet, ByVal sourceRows As Collection, ByVal srcLastCol As Long, _
+    ByVal wsDst As Worksheet, ByVal idMatchedRows As Collection, ByVal plannedRows As Collection, ByVal dstLastCol As Long, _
+    ByVal nameKey As String, ByVal visualDiffMap As Object, ByVal serialCommentMap As Object)
+    Dim commentText As String, candidateRows As New Collection, rowValue As Variant
+    For Each rowValue In idMatchedRows
+        candidateRows.Add rowValue
+    Next rowValue
+    For Each rowValue In plannedRows
+        candidateRows.Add rowValue
+    Next rowValue
+    commentText = BuildStep2AmbiguousComment(wsSrc, sourceRows, srcLastCol, wsDst, candidateRows, dstLastCol, _
+        "正式IDのある既存行をID照合で優先しました。同名の登録予定行にはIDを付与せず、重複候補として確認待ちにしました。")
+    visualDiffMap("NAME|" & nameKey) = "判定困難"
+    serialCommentMap("NAME|" & nameKey) = commentText
+    AppendAmbiguousNameSyncRemark wsDst, plannedRows, "同名の正式ID付き行を優先して照合。登録予定行へのID付与は保留（通し番号のコメントを確認）"
+End Sub
+
 Private Sub BuildExistingRowMap( _
     ByVal wsDst As Worksheet, _
     ByVal dstLastRow As Long, _
@@ -7788,7 +8503,8 @@ Private Sub UpdateRowFromSourceByHeader( _
     ByVal dstRow As Long, _
     ByVal srcHeaderMap As Object, _
     ByVal srcToDstMap As Object, _
-    Optional ByRef colorDiffDetectedCount As Long = 0)
+    Optional ByRef colorDiffDetectedCount As Long = 0, _
+    Optional ByVal preserveExactIdentity As Boolean = False)
 
     Dim srcCol As Long
     Dim dstCol As Long
@@ -7806,6 +8522,8 @@ Private Sub UpdateRowFromSourceByHeader( _
             srcCol = CLng(srcHeaderMap(CStr(key)))
             dstCol = CLng(srcToDstMap(CStr(key)))
             If IsStep2UpdateExcludedHeader(CStr(key)) Then GoTo ContinueNextUpdateHeader
+            If preserveExactIdentity And (CStr(key) = CanonicalHeaderName("ファイルID") Or _
+                CStr(key) = CanonicalHeaderName("バーコード番号")) Then GoTo ContinueNextUpdateHeader
 
             Set targetCell = wsDst.Cells(dstRow, dstCol)
             beforeValue = targetCell.Value
@@ -7815,7 +8533,7 @@ Private Sub UpdateRowFromSourceByHeader( _
             ' （毎年度利用区分は 1/2 と 毎年作成/単年のみ を同値として扱う）
             beforeCompare = NormalizeValueForUpdateCompare(CStr(key), beforeValue)
             afterCompare = NormalizeValueForUpdateCompare(CStr(key), afterValue)
-            targetCell.Value = afterValue
+            WriteStep2SourceValue targetCell, CStr(key), afterValue
 
             If StrComp(beforeCompare, afterCompare, vbTextCompare) <> 0 Then
                 ' CSV整形で今回変更されたセルだけ常に太字化する
@@ -7846,6 +8564,15 @@ Private Function IsStep2UpdateExcludedHeader(ByVal headerName As String) As Bool
 
 End Function
 
+Private Sub WriteStep2SourceValue(ByVal targetCell As Range, ByVal headerName As String, ByVal sourceValue As Variant)
+    If CanonicalHeaderName(headerName) = CanonicalHeaderName("ファイル番号") Then
+        targetCell.NumberFormat = "@"
+        targetCell.Value2 = CStr(sourceValue)
+    Else
+        targetCell.Value = sourceValue
+    End If
+End Sub
+
 Private Sub AppendRowFromSourceByHeader( _
     ByVal wsSrc As Worksheet, _
     ByVal wsDst As Worksheet, _
@@ -7864,7 +8591,7 @@ Private Sub AppendRowFromSourceByHeader( _
             If IsStep2UpdateExcludedHeader(CStr(key)) Then GoTo ContinueNextAppendHeader
             srcCol = CLng(srcHeaderMap(CStr(key)))
             dstCol = CLng(srcToDstMap(CStr(key)))
-            wsDst.Cells(dstRow, dstCol).Value = wsSrc.Cells(srcRow, srcCol).Value
+            WriteStep2SourceValue wsDst.Cells(dstRow, dstCol), CStr(key), wsSrc.Cells(srcRow, srcCol).Value
         End If
 ContinueNextAppendHeader:
     Next key
