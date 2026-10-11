@@ -5364,6 +5364,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim serialCol As Long
     Dim sourceNameSyncMap As Object
     Dim destNameSyncMap As Object
+    Dim suspectGuideMap As Object
     Dim destThreeNameMap As Object
     Dim destMissingYearMap As Object
     Dim destBlankStatusMap As Object
@@ -5439,6 +5440,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Set serialCommentMap = CreateObject("Scripting.Dictionary")
     Set sourceNameSyncMap = CreateObject("Scripting.Dictionary")
     Set destNameSyncMap = CreateObject("Scripting.Dictionary")
+    Set suspectGuideMap = CreateObject("Scripting.Dictionary")
     Set destThreeNameMap = CreateObject("Scripting.Dictionary")
     Set destMissingYearMap = CreateObject("Scripting.Dictionary")
     Set destBlankStatusMap = CreateObject("Scripting.Dictionary")
@@ -5483,6 +5485,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     ' 主要表示列（左側に寄せる列）
     ' 差し替えポイント: 列順定義は専用関数で一元管理
+    Step2PreflightHeaderAmbiguity wsSrc, srcLastCol, srcLastRow
+    Step2PreflightHeaderAmbiguity wsDst, dstLastCol, Step2GetLastDataRow(wsDst)
+    Step2PreflightSimilarNameColumns wsSrc, srcLastRow, srcLastCol, wsDst, dstLastCol, targetYearValue
     displayHeaders = GetStep2DisplayHeadersOrder()
 
     ' ユーザー管理列（CSV上書き対象外）
@@ -5548,6 +5553,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     ' 前回実行時の赤塗りつぶしが残らないよう、対象年度の「通し番号」列だけ事前にクリアする
     serialCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), GetStep2HeaderCandidates("通し番号"))
+    BuildStep2SuspectGuideMap wsSrc, srcLastCol, wsDst, dstLastRow, targetYearValue, suspectGuideMap
     ClearSerialDiffMarksForTargetYear wsDst, serialCol, targetYearValue
 
     ' ID未登録の登録予定行のみ、作成年度＋第1ガイド＋第2ガイド＋個別フォルダーで名称照合する
@@ -6014,6 +6020,18 @@ Public Sub 手順2_新ファイル基準表を作成する()
                             GoTo ContinueNextSourceRow
                         End If
                     End If
+                    Set destCandidates = Step2SuspectPlannedRows(wsSrc, srcRow, wsDst, targetYearValue, suspectGuideMap)
+                    If destCandidates.Count > 0 Then
+                        Set sourceCandidates = New Collection
+                        sourceCandidates.Add srcRow
+                        RecordStep2IdentityHold wsSrc, sourceCandidates, srcLastCol, wsDst, destCandidates, _
+                            GetLastHeaderCol(wsDst), "作成年度と第1・第2ガイドが一致し、名称が類似する登録予定行があります。自動統合・新規追加を保留しました。", _
+                            visualDiffMap, serialCommentMap, holdCandidatesSummary, unreportedHoldCount, targetYearValue
+                        identityHoldCount = identityHoldCount + 1
+                        ambiguousSyncCount = ambiguousSyncCount + 1
+                        GoTo ContinueNextSourceRow
+                    End If
+
                     AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
                     ' 目録CSV由来の新規行は、管理システム上に存在することを確認済みとして記録する。
                     wsDst.Cells(appendRow, syncCol).Value = "同期済"
@@ -6700,6 +6718,176 @@ End Function
 Private Function Step2GetLastDataRow(ByVal ws As Worksheet) As Long
     Dim lastHeaderCol As Long, lastValueCol As Long
     CsvGetUnfilteredImportBounds ws, Step2GetLastDataRow, lastHeaderCol, lastValueCol
+End Function
+
+Private Function Step2SuspectGuideKey(ByVal ws As Worksheet, ByVal rowNo As Long, _
+    ByVal createdCol As Long, ByVal guide1Col As Long, ByVal guide2Col As Long) As String
+    Dim yearValue As Long, guide1 As String, guide2 As String
+    If createdCol = 0 Or guide1Col = 0 Or guide2Col = 0 Then Exit Function
+    yearValue = NormalizeYearValue(ws.Cells(rowNo, createdCol).Value)
+    guide1 = NormalizeForFolderNameSyncKey(ws.Cells(rowNo, guide1Col).Value)
+    guide2 = NormalizeForFolderNameSyncKey(ws.Cells(rowNo, guide2Col).Value)
+    If yearValue > 0 And Len(guide1) > 0 And Len(guide2) > 0 Then _
+        Step2SuspectGuideKey = CStr(yearValue) & "|" & guide1 & "|" & guide2
+End Function
+
+Private Sub BuildStep2SuspectGuideMap(ByVal wsSrc As Worksheet, ByVal srcLastCol As Long, _
+    ByVal wsDst As Worksheet, ByVal dstLastRow As Long, ByVal targetYear As Long, ByVal guideMap As Object)
+    Dim createdCol As Long, guide1Col As Long, guide2Col As Long, warekiCol As Long
+    Dim westernCol As Long, statusCol As Long, idCol As Long, rowNo As Long, key As String
+    If FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("作成年度（和暦）")) = 0 Or _
+        FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名２")) = 0 Or _
+        FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名３")) = 0 Or _
+        FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("タイトル")) = 0 Then Exit Sub
+    createdCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), GetStep2HeaderCandidates("作成年度（和暦）"))
+    guide1Col = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), GetStep2HeaderCandidates("分類名２"))
+    guide2Col = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), GetStep2HeaderCandidates("分類名３"))
+    warekiCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), GetStep2HeaderCandidates("年度（和暦）"))
+    westernCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array("年度"))
+    statusCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array("同期状態"))
+    idCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array("ファイルID"))
+    If createdCol = 0 Or guide1Col = 0 Or guide2Col = 0 Or statusCol = 0 Or idCol = 0 Or _
+       (warekiCol = 0 And westernCol = 0) Then _
+        Err.Raise vbObjectError + 2621, , "類似候補の見出しが不足しています。更新処理に入る前に中止しました。"
+    For rowNo = 2 To dstLastRow
+        If GetNormalizedYearFromRow(wsDst, rowNo, warekiCol, westernCol) = targetYear And _
+            GetSyncStatusValue(wsDst, rowNo, statusCol) = "登録予定" And _
+            Len(GetTrimmedCell(wsDst, rowNo, idCol)) = 0 Then
+            key = Step2SuspectGuideKey(wsDst, rowNo, createdCol, guide1Col, guide2Col)
+            If Len(key) > 0 Then AddRowToMultiValueMap guideMap, key, rowNo
+        End If
+    Next rowNo
+End Sub
+
+Private Function Step2ReviewHeaderFamily(ByVal header As String) As String
+    Step2ReviewHeaderFamily = CanonicalHeaderName(header)
+    Select Case Step2ReviewHeaderFamily
+        Case "年度(和暦)": Step2ReviewHeaderFamily = "年度（和暦）"
+        Case "作成年度(和暦)": Step2ReviewHeaderFamily = "作成年度（和暦）"
+    End Select
+End Function
+
+Private Sub Step2PreflightHeaderAmbiguity(ByVal ws As Worksheet, ByVal lastCol As Long, ByVal lastRow As Long)
+    Dim relevant As Variant, field As Variant, key As String, header As String
+    Dim seen As Object, col As Long, previousCol As Long, rowNo As Long
+    Dim preferredValue As String, alternativeValue As String
+    relevant = Array("年度（和暦）", "年度", "作成年度（和暦）", "分類名２", "分類名３", _
+        "タイトル", "ファイルID", "ファイル番号", "バーコード番号", "同期状態")
+    Set seen = CreateObject("Scripting.Dictionary")
+    For col = 1 To lastCol
+        header = Trim$(CStr(ws.Cells(1, col).Value2))
+        If Len(header) > 0 Then
+            key = Step2ReviewHeaderFamily(header)
+            For Each field In relevant
+                If StrComp(key, Step2ReviewHeaderFamily(CStr(field)), vbTextCompare) = 0 Then
+                    If seen.Exists(key) Then
+                        previousCol = CLng(seen(key))
+                        If key = "年度（和暦）" Or key = "作成年度（和暦）" Then _
+                            Err.Raise vbObjectError + 2622, , "年度列の括弧表記違いの見出しが重複しています: " & ws.Name
+                        If StrComp(header, Trim$(CStr(ws.Cells(1, previousCol).Value2)), vbTextCompare) = 0 Then _
+                            Err.Raise vbObjectError + 2622, , "同一見出しが重複しています: " & ws.Name & " / " & header
+                        For rowNo = 2 To lastRow
+                            If IsError(ws.Cells(rowNo, col).Value2) Or IsError(ws.Cells(rowNo, previousCol).Value2) Then _
+                                Err.Raise vbObjectError + 2622, , "別名見出しの値にエラーがあります。"
+                            preferredValue = Trim$(CStr(ws.Cells(rowNo, previousCol).Value2))
+                            alternativeValue = Trim$(CStr(ws.Cells(rowNo, col).Value2))
+                            If Len(alternativeValue) > 0 And (Len(preferredValue) = 0 Or _
+                                StrComp(preferredValue, alternativeValue, vbBinaryCompare) <> 0) Then _
+                                Err.Raise vbObjectError + 2622, , "別名見出しの値が異なります: " & ws.Name & " 行" & rowNo
+                        Next rowNo
+                    Else
+                        seen.Add key, col
+                    End If
+                    Exit For
+                End If
+            Next field
+        End If
+    Next col
+End Sub
+
+Private Sub Step2PreflightSimilarNameColumns(ByVal wsSrc As Worksheet, ByVal srcLastRow As Long, _
+    ByVal srcLastCol As Long, ByVal wsDst As Worksheet, ByVal dstLastCol As Long, ByVal targetYear As Long)
+    Dim required As Variant, item As Variant, srcIdCol As Long, dstIdCol As Long
+    Dim srcWarekiCol As Long, srcYearCol As Long, dstLastRow As Long, rowNo As Long
+    Dim existingIds As Object, id As String, missingNameColumn As Boolean
+    required = Array("作成年度（和暦）", "分類名２", "分類名３", "タイトル")
+    For Each item In required
+        If FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates(CStr(item))) = 0 Then _
+            missingNameColumn = True
+    Next item
+    If Not missingNameColumn Then Exit Sub
+    srcIdCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイルID"))
+    dstIdCol = FindHeaderColumn(wsDst, dstLastCol, Array("ファイルID"))
+    srcWarekiCol = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    srcYearCol = FindHeaderColumn(wsSrc, srcLastCol, Array("年度"))
+    If srcIdCol = 0 Or srcWarekiCol = 0 And srcYearCol = 0 Then _
+        Err.Raise vbObjectError + 2621, , "類似候補の事前確認に必要なファイルID・年度列がありません。"
+    Set existingIds = CreateObject("Scripting.Dictionary")
+    If dstIdCol > 0 Then
+        dstLastRow = Step2GetLastDataRow(wsDst)
+        For rowNo = 2 To dstLastRow
+            id = GetTrimmedCell(wsDst, rowNo, dstIdCol)
+            If Len(id) > 0 Then existingIds(id) = True
+        Next rowNo
+    End If
+    For rowNo = 2 To srcLastRow
+        If GetNormalizedYearFromRow(wsSrc, rowNo, srcWarekiCol, srcYearCol) = targetYear Then
+            id = GetTrimmedCell(wsSrc, rowNo, srcIdCol)
+            If Len(id) = 0 Or Not existingIds.Exists(id) Then _
+                Err.Raise vbObjectError + 2621, , _
+                    "名称列が不足し、新しいファイルの類似候補を安全に確認できません。基準表を変更する前に中止しました。"
+        End If
+    Next rowNo
+End Sub
+
+Private Function Step2SuspectPlannedRows(ByVal wsSrc As Worksheet, ByVal srcRow As Long, _
+    ByVal wsDst As Worksheet, ByVal targetYear As Long, ByVal suspectGuideMap As Object) As Collection
+    Dim result As New Collection, srcLastCol As Long, dstLastCol As Long, createdSrc As Long, createdDst As Long
+    Dim guide1Src As Long, guide2Src As Long, titleSrc As Long, guide1Dst As Long, guide2Dst As Long
+    Dim titleDst As Long, fiscalDst As Long, westernDst As Long, statusDst As Long, idDst As Long
+    Dim rowNo As Long, sourceName As String, candidateName As String, sourceCreated As Long
+    Dim groupKey As String, matchingRows As Collection, rowValue As Variant
+    Set Step2SuspectPlannedRows = result
+    srcLastCol = GetLastHeaderCol(wsSrc): dstLastCol = GetLastHeaderCol(wsDst)
+    createdSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("作成年度（和暦）"))
+    createdDst = FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("作成年度（和暦）"))
+    guide1Src = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名２"))
+    guide2Src = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("分類名３"))
+    titleSrc = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("タイトル"))
+    guide1Dst = FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("分類名２"))
+    guide2Dst = FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("分類名３"))
+    titleDst = FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("タイトル"))
+    fiscalDst = FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    westernDst = FindHeaderColumn(wsDst, dstLastCol, Array("年度"))
+    statusDst = FindHeaderColumn(wsDst, dstLastCol, Array("同期状態"))
+    idDst = FindHeaderColumn(wsDst, dstLastCol, Array("ファイルID"))
+    If createdSrc = 0 Or createdDst = 0 Or guide1Src = 0 Or guide2Src = 0 Or titleSrc = 0 Or _
+        guide1Dst = 0 Or guide2Dst = 0 Or titleDst = 0 Or statusDst = 0 Or idDst = 0 Or _
+        (fiscalDst = 0 And westernDst = 0) Then _
+        Err.Raise vbObjectError + 2621, , "類似した登録予定行の安全確認に必要な列がありません。"
+    sourceCreated = NormalizeYearValue(wsSrc.Cells(srcRow, createdSrc).Value)
+    sourceName = NormalizeForFolderNameSyncKey(wsSrc.Cells(srcRow, titleSrc).Value)
+    If sourceCreated <= 0 Or Len(sourceName) < 5 Then Exit Function
+    groupKey = Step2SuspectGuideKey(wsSrc, srcRow, createdSrc, guide1Src, guide2Src)
+    Set matchingRows = Step2MapRows(suspectGuideMap, groupKey)
+    For Each rowValue In matchingRows
+        rowNo = CLng(rowValue)
+        If GetNormalizedYearFromRow(wsDst, rowNo, fiscalDst, westernDst) <> targetYear Then GoTo NextSuspect
+        If GetSyncStatusValue(wsDst, rowNo, statusDst) <> "登録予定" Or _
+           Len(GetTrimmedCell(wsDst, rowNo, idDst)) <> 0 Then GoTo NextSuspect
+        If NormalizeYearValue(wsDst.Cells(rowNo, createdDst).Value) <> sourceCreated Or _
+           NormalizeForFolderNameSyncKey(wsSrc.Cells(srcRow, guide1Src).Value) <> _
+                NormalizeForFolderNameSyncKey(wsDst.Cells(rowNo, guide1Dst).Value) Or _
+           NormalizeForFolderNameSyncKey(wsSrc.Cells(srcRow, guide2Src).Value) <> _
+                NormalizeForFolderNameSyncKey(wsDst.Cells(rowNo, guide2Dst).Value) Then GoTo NextSuspect
+        candidateName = NormalizeForFolderNameSyncKey(wsDst.Cells(rowNo, titleDst).Value)
+        If Len(candidateName) >= 5 Then
+            If Left$(sourceName, 5) = Left$(candidateName, 5) Or _
+               InStr(1, candidateName, sourceName, vbTextCompare) > 0 Or _
+               InStr(1, sourceName, candidateName, vbTextCompare) > 0 Then result.Add rowNo
+        End If
+NextSuspect:
+    Next rowValue
 End Function
 
 Private Function BuildStep2NameSyncKey(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal lastCol As Long) As String
