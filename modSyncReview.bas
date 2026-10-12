@@ -6,17 +6,60 @@ Private Const CSV_SHEET As String = "目録CSV"
 Private Const DEST_SHEET As String = "新ファイル基準表"
 Private reviewHeaderCache As Object
 Private reviewLastCache As Object
+Private autoReviewBatchDepth As Long
+Private autoReviewPending As Boolean
+Private autoReviewPendingYear As Long
 
 Public Sub 確認候補を開く()
-    Dim rawYear As String, yearValue As Long, cases As Collection
+    Dim rawYear As String, yearValue As Long
     On Error GoTo Failed
     rawYear = Trim$(InputBox("確認する対象年度を入力してください（例：R8）。CSV整形後に実行します。", "同期候補の確認", "R8"))
     If Len(rawYear) = 0 Then Exit Sub
     yearValue = ReviewYear(rawYear)
     If yearValue < 1900 Or yearValue > 2200 Then Err.Raise vbObjectError + 6101, , "対象年度を判定できません。"
+    OpenSyncReviewForYear yearValue
+    Exit Sub
+Failed:
+    MsgBox "確認候補を開けません: " & Err.Description, vbExclamation
+End Sub
+
+Public Sub SyncReviewBeginBatch()
+    If autoReviewBatchDepth = 0 Then
+        autoReviewPending = False
+        autoReviewPendingYear = 0
+    End If
+    autoReviewBatchDepth = autoReviewBatchDepth + 1
+End Sub
+
+Public Sub SyncReviewAfterStep2Success(ByVal yearValue As Long)
+    If yearValue < 1900 Or yearValue > 2200 Then Exit Sub
+    If autoReviewBatchDepth > 0 Then
+        autoReviewPending = True
+        autoReviewPendingYear = yearValue
+    Else
+        OpenSyncReviewForYear yearValue
+    End If
+End Sub
+
+Public Sub SyncReviewEndBatch(ByVal allowOpen As Boolean)
+    Dim shouldOpen As Boolean, yearValue As Long
+    If autoReviewBatchDepth <= 0 Then Exit Sub
+    autoReviewBatchDepth = autoReviewBatchDepth - 1
+    If autoReviewBatchDepth > 0 Then Exit Sub
+    shouldOpen = (allowOpen And autoReviewPending)
+    yearValue = autoReviewPendingYear
+    autoReviewPending = False
+    autoReviewPendingYear = 0
+    If shouldOpen Then OpenSyncReviewForYear yearValue
+End Sub
+
+Private Sub OpenSyncReviewForYear(ByVal yearValue As Long)
+    Dim cases As Collection
+    On Error GoTo Failed
     Set cases = SyncReviewCandidates(yearValue)
+    If cases.Count = 0 Then Exit Sub
     frmSyncReview.LoadCases cases, yearValue
-    frmSyncReview.Show vbModeless
+    If Not frmSyncReview.Visible Then frmSyncReview.Show vbModeless
     Exit Sub
 Failed:
     MsgBox "確認候補を開けません: " & Err.Description, vbExclamation

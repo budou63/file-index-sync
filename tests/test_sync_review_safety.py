@@ -18,11 +18,42 @@ def procedure(code, start, end="End Function"):
 class SyncReviewSafetyTests(unittest.TestCase):
     def test_independent_modeless_entry_and_no_open_write(self):
         entry = procedure(MODULE, "Public Sub 確認候補を開く()", "End Sub")
-        self.assertIn("frmSyncReview.Show vbModeless", entry)
-        self.assertIn("Set cases = SyncReviewCandidates(yearValue)", entry)
+        opener = procedure(MODULE, "Private Sub OpenSyncReviewForYear(", "End Sub")
+        self.assertIn("OpenSyncReviewForYear yearValue", entry)
+        self.assertIn("frmSyncReview.Show vbModeless", opener)
+        self.assertIn("Set cases = SyncReviewCandidates(yearValue)", opener)
+        self.assertIn("If cases.Count = 0 Then Exit Sub", opener)
         self.assertNotIn("ReviewWriteAudit", entry)
         self.assertNotIn("SaveCopyAs", entry)
         self.assertIn("ShowModal = 0", FORM)
+
+    def test_step2_auto_open_inherits_year_and_batch_waits_for_restoration(self):
+        step2 = procedure(STEP2, "Public Sub 手順2_新ファイル基準表を作成する()", "End Sub")
+        batch = procedure(STEP2, "Public Sub 新ファイル基準表生成()", "End Sub")
+        auto = procedure(MODULE, "Public Sub SyncReviewAfterStep2Success(", "End Sub")
+        begin = procedure(MODULE, "Public Sub SyncReviewBeginBatch()", "End Sub")
+        finish = procedure(MODULE, "Public Sub SyncReviewEndBatch(", "End Sub")
+
+        self.assertEqual(step2.count("SyncReviewAfterStep2Success targetYearValue"), 1)
+        self.assertIn("step2Succeeded = True", step2)
+        self.assertLess(step2.index("step2Succeeded = True"), step2.index("SafeExit:"))
+        self.assertLess(step2.index("RestoreCalculationIfPossible previousCalculationMode"), step2.index("SyncReviewAfterStep2Success targetYearValue"))
+        self.assertIn("autoReviewPendingYear = yearValue", auto)
+        self.assertNotIn("InputBox", auto)
+        self.assertIn("autoReviewPending = False", begin)
+        self.assertIn("shouldOpen = (allowOpen And autoReviewPending)", finish)
+        self.assertIn("If shouldOpen Then OpenSyncReviewForYear yearValue", finish)
+
+        self.assertLess(batch.index("SyncReviewBeginBatch"), batch.index("手順2_新ファイル基準表を作成する"))
+        self.assertLess(batch.index("手順3_コード管理CSVを作成する(True)"), batch.index("Cleanup:"))
+        self.assertLess(batch.index("手順3_コード管理CSVを作成する(True)"), batch.index("batchSucceeded = True"))
+        self.assertIn("SyncReviewEndBatch batchSucceeded", batch)
+        self.assertLess(batch.index("RestoreCalculationIfPossible oldCalculation"), batch.index("SyncReviewEndBatch"))
+
+    def test_csv_import_alone_does_not_auto_open_review(self):
+        csv_import = procedure(STEP2, "Private Sub CSVImportExecute(", "End Sub")
+        self.assertNotIn("SyncReviewAfterStep2Success", csv_import)
+        self.assertNotIn("OpenSyncReviewForYear", csv_import)
 
     def test_candidates_are_derived_from_live_sheets_not_comments(self):
         build = procedure(MODULE, "Public Function SyncReviewCandidates(")

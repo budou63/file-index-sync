@@ -110,6 +110,8 @@ Public Sub 新ファイル基準表生成()
     Dim oldScreenUpdating As Boolean
     Dim oldEnableEvents As Boolean
     Dim oldCalculation As XlCalculation
+    Dim reviewBatchStarted As Boolean
+    Dim batchSucceeded As Boolean
 
     On Error GoTo ErrorHandler
 
@@ -117,6 +119,8 @@ Public Sub 新ファイル基準表生成()
     oldScreenUpdating = Application.ScreenUpdating
     oldEnableEvents = Application.EnableEvents
     oldCalculation = Application.Calculation
+    modSyncReview.SyncReviewBeginBatch
+    reviewBatchStarted = True
 
     ' 実行高速化のため一時的に設定変更
     Application.ScreenUpdating = False
@@ -128,6 +132,7 @@ Public Sub 新ファイル基準表生成()
     Call 手順3_コード管理CSVを作成する(True)
 
     MsgBox "新ファイル基準表とコード管理CSVの作成が完了しました。", vbInformation
+    batchSucceeded = True
     GoTo Cleanup
 
 ErrorHandler:
@@ -138,6 +143,7 @@ Cleanup:
     Application.ScreenUpdating = oldScreenUpdating
     Application.EnableEvents = oldEnableEvents
     RestoreCalculationIfPossible oldCalculation
+    If reviewBatchStarted Then modSyncReview.SyncReviewEndBatch batchSucceeded
 
 End Sub
 
@@ -5409,6 +5415,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim newFileStandardColumnWidths As Object
     Dim errNumber As Long
     Dim errDescription As String
+    Dim step2Succeeded As Boolean
 
     On Error GoTo ErrorHandler
 
@@ -6167,6 +6174,7 @@ ContinueNextSourceRow:
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
     End If
+    step2Succeeded = True
 
 SafeExit:
     On Error Resume Next
@@ -6186,6 +6194,7 @@ SafeExit:
     Application.ScreenUpdating = previousScreenUpdating
     Application.EnableEvents = previousEnableEvents
     RestoreCalculationIfPossible previousCalculationMode
+    If step2Succeeded Then modSyncReview.SyncReviewAfterStep2Success targetYearValue
     Exit Sub
 
 ErrorHandler:
