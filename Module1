@@ -5365,10 +5365,6 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim collisionRows As Collection
     Dim sourceKeyMap As Object
     Dim touchedTargetRowMap As Object
-    Dim srcCol As Long
-    Dim dstCol As Long
-    Dim headerText As String
-    Dim canonical As String
     Dim i As Long
     Dim leftFixedCount As Long
     Dim missingHeadersText As String
@@ -5554,20 +5550,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Next i
     syncCol = GetUniqueSyncStatusColumnOrRaise(wsDst)
 
-    ' 3) 目録CSVの見出し辞書を作成し、CSV由来列の転記マップを組み立てる
-    BuildSourceHeaderMap wsSrc, srcLastCol, srcHeaderMap
-    For srcCol = 1 To srcLastCol
-        headerText = Trim$(CStr(wsSrc.Cells(1, srcCol).Value))
-        If headerText <> "" Then
-            canonical = CanonicalHeaderName(headerText)
-            dstCol = EnsureColumnByHeader(wsDst, existingDstHeaders, headerText)
-
-            ' 目録CSVにある列は基本的に更新対象だが、ユーザー管理列は除外する
-            If Not IsUserManagedHeader(canonical, srcHeaderMap, baselineUserManagedHeaders) Then
-                srcToDstMap(canonical) = dstCol
-            End If
-        End If
-    Next srcCol
+    ' 3) 目録CSVの見出し辞書とCSV由来列の転記マップを作成する
+    BuildStep2SourceTransferMap wsSrc, wsDst, srcLastCol, srcHeaderMap, existingDstHeaders, _
+        baselineUserManagedHeaders, srcToDstMap
 
     ' 4) 既存行マップを作成し、「更新＋新規追加」で反映する
     If wsDst.FilterMode Then
@@ -8147,6 +8132,36 @@ End Sub
 '--------------------------------------------------------
 ' ファイルID / ファイル番号 / バーコード番号 がすべて空欄か
 '--------------------------------------------------------
+
+Private Sub BuildStep2SourceTransferMap( _
+    ByVal wsSrc As Worksheet, _
+    ByVal wsDst As Worksheet, _
+    ByVal srcLastCol As Long, _
+    ByVal srcHeaderMap As Object, _
+    ByVal existingDstHeaders As Object, _
+    ByVal baselineUserManagedHeaders As Variant, _
+    ByVal srcToDstMap As Object)
+
+    Dim srcCol As Long
+    Dim dstCol As Long
+    Dim headerText As String
+    Dim canonical As String
+
+    BuildSourceHeaderMap wsSrc, srcLastCol, srcHeaderMap
+    For srcCol = 1 To srcLastCol
+        headerText = Trim$(CStr(wsSrc.Cells(1, srcCol).Value))
+        If headerText <> "" Then
+            canonical = CanonicalHeaderName(headerText)
+            dstCol = EnsureColumnByHeader(wsDst, existingDstHeaders, headerText)
+
+            ' 目録CSVにある列は基本的に更新対象だが、ユーザー管理列は除外する
+            If Not IsUserManagedHeader(canonical, srcHeaderMap, baselineUserManagedHeaders) Then
+                srcToDstMap(canonical) = dstCol
+            End If
+        End If
+    Next srcCol
+
+End Sub
 
 ' BuildSourceHeaderMap の宣言/終端が壊れると以降で
 ' 「名前が適切ではありません」系エラーになりやすいため、
