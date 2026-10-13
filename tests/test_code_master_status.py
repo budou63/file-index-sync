@@ -181,7 +181,8 @@ class CodeMasterStateBehaviorTests(unittest.TestCase):
         self.assertLess(step4.index("ValidateStep4GuideCodeStates"), step4.index("新ファイル基準表_登録予定分類コード採番"))
         self.assertIn('AppendCodeMasterRecord "分類名２", codeValue, guideName, "仮採番"', allocator)
         self.assertIn('AppendCodeMasterRecord "分類名３", codeValue, guideName, "仮採番"', allocator)
-        self.assertIn('If code2ByName.Exists(guideKey) Then', allocator)
+        self.assertIn('lookupKey = BuildGuideCodeMasterNameKey("分類名２", guideKey)', allocator)
+        self.assertIn('If Not code2ByName.Exists(lookupKey) Then', allocator)
 
     def test_yellow_requires_system_state_only_for_both_guide_levels(self) -> None:
         reason = procedure("GetStep4GuideSeatCheckReason")

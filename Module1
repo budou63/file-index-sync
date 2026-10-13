@@ -10698,6 +10698,8 @@ Public Sub 新ファイル基準表_登録予定分類コード採番( _
     Dim r As Long
     Dim guideName As String
     Dim guideKey As String
+    Dim lookupKey As String
+    Dim stateIssue As String
     Dim codeValue As String
     Dim parentCodeValue As String
     Dim assignedCode As Long
@@ -10711,6 +10713,8 @@ Public Sub 新ファイル基準表_登録予定分類コード採番( _
     Dim pendingGuide2Rows As Object
     Dim pendingGuide2Names As Object
     Dim pendingGuide2Order As Collection
+    Dim plannedGuide2Codes As Object
+    Dim validatedGuide2Names As Object
     Dim guideRows As Collection
     Dim guideRow As Variant
     Dim guideKeyValue As Variant
@@ -10752,9 +10756,30 @@ Public Sub 新ファイル基準表_登録予定分類コード採番( _
     Set rowsToProcess = BuildRowsToProcess(startRow, endRow, targetRows)
     If rowsToProcess.Count = 0 Then GoTo SafeExit
 
+    ' 直接実行時も、登録予定の競合・要確認をコードの書込み前に検査する。
+    Set validatedGuide2Names = CreateObject("Scripting.Dictionary")
+    validatedGuide2Names.CompareMode = vbTextCompare
+    For Each targetRow In rowsToProcess
+        r = CLng(targetRow)
+        If ContainsMacroInsertRemark(wsEdit.Cells(r, bikoCol).Value) Then GoTo ContinuePreflightGuide2
+        If IsIgnoredBySyncStatus(CStr(wsEdit.Cells(r, syncCol).Value)) Then GoTo ContinuePreflightGuide2
+        If NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) <> NormalizeCellValue("登録予定") Then GoTo ContinuePreflightGuide2
+        guideName = Trim$(CStr(wsEdit.Cells(r, guide2Col).Value))
+        If Len(guideName) > 0 Then
+            guideKey = NormalizeClassificationGuideKey(guideName)
+            If Not validatedGuide2Names.Exists(guideKey) Then
+                stateIssue = GetStep4GuideCodeStateIssue("第1ガイド", "分類名２", guideName)
+                If Len(stateIssue) > 0 Then Err.Raise vbObjectError + 2602, , stateIssue
+                validatedGuide2Names.Add guideKey, True
+            End If
+        End If
+ContinuePreflightGuide2:
+    Next targetRow
+
     Set pendingGuide2Rows = CreateObject("Scripting.Dictionary")
     Set pendingGuide2Names = CreateObject("Scripting.Dictionary")
     Set pendingGuide2Order = New Collection
+    Set plannedGuide2Codes = CreateObject("Scripting.Dictionary")
 
     ' 分類コード２は第1ガイド名単位で処理する。同名の登録予定行には同じコードを反映する。
     For Each targetRow In rowsToProcess
@@ -10766,9 +10791,8 @@ Public Sub 新ファイル基準表_登録予定分類コード採番( _
         guideName = Trim$(CStr(wsEdit.Cells(r, guide2Col).Value))
         If Len(guideName) > 0 Then
             guideKey = NormalizeClassificationGuideKey(guideName)
-            If code2ByName.Exists(guideKey) Then
-                wsEdit.Cells(r, code2Col).Value = CStr(code2ByName(guideKey))
-            Else
+            lookupKey = BuildGuideCodeMasterNameKey("分類名２", guideKey)
+            If Not code2ByName.Exists(lookupKey) Then
                 If Not pendingGuide2Rows.Exists(guideKey) Then
                     Set guideRows = New Collection
                     pendingGuide2Rows.Add guideKey, guideRows
@@ -10784,38 +10808,61 @@ ContinueCollectGuide2:
 
     For Each guideKeyValue In pendingGuide2Order
         guideKey = CStr(guideKeyValue)
+        lookupKey = BuildGuideCodeMasterNameKey("分類名２", guideKey)
         Set guideRows = pendingGuide2Rows(guideKey)
         guideName = CStr(pendingGuide2Names(guideKey))
         firstGuideRow = CLng(guideRows(1))
         targetRowsText = CollectionToCsv(guideRows)
 
-        If code2ByName.Exists(guideKey) Then
-            codeValue = CStr(code2ByName(guideKey))
-            For Each guideRow In guideRows
-                wsEdit.Cells(CLng(guideRow), code2Col).Value = codeValue
-            Next guideRow
-        Else
-            upperCode = FindNearestClassificationCode(wsEdit, guide2Col, firstGuideRow - 1, startRow, -1, code2ByName)
-            lowerCode = FindNearestClassificationCode(wsEdit, guide2Col, firstGuideRow + 1, endRow, 1, code2ByName)
-            assignedCode = AllocateClassificationCode2(upperCode, lowerCode, usedCode2)
+        upperCode = FindNearestClassificationCode(wsEdit, guide2Col, firstGuideRow - 1, startRow, -1, code2ByName)
+        lowerCode = FindNearestClassificationCode(wsEdit, guide2Col, firstGuideRow + 1, endRow, 1, code2ByName)
+        assignedCode = AllocateClassificationCode2(upperCode, lowerCode, usedCode2)
 
-            If assignedCode <= 0 Then
-                failureText = failureText & vbCrLf & _
-                    "第1ガイド=""" & guideName & """ 対象行=" & targetRowsText & _
-                    " 上側コード=" & CodeTextForLog(upperCode) & _
-                    " 下側コード=" & CodeTextForLog(lowerCode)
-            Else
-                codeValue = CStr(assignedCode)
-                AppendCodeMasterRecord "分類名２", codeValue, guideName, "仮採番"
-                code2ByName.Add guideKey, codeValue
-                usedCode2(codeValue) = True
-                For Each guideRow In guideRows
-                    wsEdit.Cells(CLng(guideRow), code2Col).Value = codeValue
-                Next guideRow
-                Debug.Print "分類コード自動採番 / 項目名=分類名２ / 採番コード=" & codeValue & _
-                    " / 表示名=" & guideName & " / 対象行番号=" & targetRowsText
+        If assignedCode <= 0 Then
+            failureText = failureText & vbCrLf & _
+                "第1ガイド=""" & guideName & """ 対象行=" & targetRowsText & _
+                " 上側コード=" & CodeTextForLog(upperCode) & _
+                " 下側コード=" & CodeTextForLog(lowerCode)
+        Else
+            codeValue = CStr(assignedCode)
+            plannedGuide2Codes.Add lookupKey, codeValue
+            code2ByName.Add lookupKey, codeValue
+            usedCode2(codeValue) = True
+        End If
+    Next guideKeyValue
+
+    If Len(failureText) > 0 Then
+        Err.Raise vbObjectError + 2601, , "分類コード２を採番できない登録予定行があります。差分インポートCSVの作成を中断します。" & failureText
+    End If
+
+    ' 採番計画が全件成立した後にだけ、既存コードの再利用と仮採番を反映する。
+    For Each targetRow In rowsToProcess
+        r = CLng(targetRow)
+        If ContainsMacroInsertRemark(wsEdit.Cells(r, bikoCol).Value) Then GoTo ContinueReuseGuide2
+        If IsIgnoredBySyncStatus(CStr(wsEdit.Cells(r, syncCol).Value)) Then GoTo ContinueReuseGuide2
+        If NormalizeCellValue(wsEdit.Cells(r, syncCol).Value) <> NormalizeCellValue("登録予定") Then GoTo ContinueReuseGuide2
+        guideName = Trim$(CStr(wsEdit.Cells(r, guide2Col).Value))
+        If Len(guideName) > 0 Then
+            lookupKey = BuildGuideCodeMasterNameKey("分類名２", NormalizeClassificationGuideKey(guideName))
+            If Not plannedGuide2Codes.Exists(lookupKey) Then
+                wsEdit.Cells(r, code2Col).Value = CStr(code2ByName(lookupKey))
             End If
         End If
+ContinueReuseGuide2:
+    Next targetRow
+
+    For Each guideKeyValue In pendingGuide2Order
+        guideKey = CStr(guideKeyValue)
+        lookupKey = BuildGuideCodeMasterNameKey("分類名２", guideKey)
+        Set guideRows = pendingGuide2Rows(guideKey)
+        guideName = CStr(pendingGuide2Names(guideKey))
+        codeValue = CStr(plannedGuide2Codes(lookupKey))
+        AppendCodeMasterRecord "分類名２", codeValue, guideName, "仮採番"
+        For Each guideRow In guideRows
+            wsEdit.Cells(CLng(guideRow), code2Col).Value = codeValue
+        Next guideRow
+        Debug.Print "分類コード自動採番 / 項目名=分類名２ / 採番コード=" & codeValue & _
+            " / 表示名=" & guideName & " / 対象行番号=" & CollectionToCsv(guideRows)
     Next guideKeyValue
 
     For Each targetRow In rowsToProcess
@@ -10850,10 +10897,6 @@ ContinueCollectGuide2:
 
 ContinueNextRow:
     Next targetRow
-
-    If Len(failureText) > 0 Then
-        Err.Raise vbObjectError + 2601, , "分類コード２を採番できない登録予定行があります。差分インポートCSVの作成を中断します。" & failureText
-    End If
 
 SafeExit:
     Application.EnableEvents = prevEnableEvents
@@ -10953,6 +10996,7 @@ Private Function FindNearestClassificationCode( _
     Dim r As Long
     Dim guideName As String
     Dim guideKey As String
+    Dim lookupKey As String
     Dim codeValue As String
 
     If ws Is Nothing Then Exit Function
@@ -10964,8 +11008,9 @@ Private Function FindNearestClassificationCode( _
         guideName = Trim$(CStr(ws.Cells(r, guideCol).Value))
         If Len(guideName) > 0 Then
             guideKey = NormalizeClassificationGuideKey(guideName)
-            If nameCodeMap.Exists(guideKey) Then
-                codeValue = CStr(nameCodeMap(guideKey))
+            lookupKey = BuildGuideCodeMasterNameKey("分類名２", guideKey)
+            If nameCodeMap.Exists(lookupKey) Then
+                codeValue = CStr(nameCodeMap(lookupKey))
                 If IsNumeric(codeValue) Then
                     FindNearestClassificationCode = CLng(codeValue)
                     Exit Function
