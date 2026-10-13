@@ -3852,6 +3852,12 @@ Public Sub 手順4_差分インポートCSVを作成する()
     Dim macroInsertRows As Collection
     Dim pendingRegistrationMarks As Collection
     Dim conflictCount As Long
+    Dim allocationBackupBook As Workbook
+    Dim allocationMasterBackup As Worksheet
+    Dim allocationColumnBackup As Collection
+    Dim allocationInProgress As Boolean
+    Dim keepAllocationBackup As Boolean
+    Dim restoreIssue As String
 
     On Error GoTo ErrorHandler
 
@@ -4079,6 +4085,13 @@ ContinueNextEditRow:
         ' Both user decisions are read-only; do not change codes if registration confirmation is cancelled.
         syncStatusChangedCount = ConfirmAndMarkStep4NewRegistrationCandidates(wsEdit, newRegistrationRows, pendingRegistrationMarks)
         If syncStatusChangedCount < 0 Then GoTo SafeExit
+        ' 採番に失敗した場合だけ、直前の補完・競合承認・同期状態を元に戻す。
+        Set allocationColumnBackup = CaptureStep4AllocationColumns(wsEdit, editLastRow)
+        ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT).Copy
+        Set allocationBackupBook = ActiveWorkbook
+        Set allocationMasterBackup = allocationBackupBook.Worksheets(1)
+        ThisWorkbook.Activate
+        allocationInProgress = True
         If conflictPlan.Count > 0 Then ApplyStep4ConflictResolution wsEdit, conflictPlan
         ValidateStep4GuideCodeStates wsEdit, targetRows
         If conflictPlan.Count > 0 Then
@@ -4104,11 +4117,12 @@ ContinueNextEditRow:
         Next targetRow
 
         For Each targetRow In targetRows
-            新ファイル基準表_年度と原課ID再補完 wsEdit, CLng(targetRow), CLng(targetRow), True
-            新ファイル基準表_分類コード再補完 wsEdit, CLng(targetRow), CLng(targetRow)
+            新ファイル基準表_年度と原課ID再補完 wsEdit, CLng(targetRow), CLng(targetRow), True, True
+            新ファイル基準表_分類コード再補完 wsEdit, CLng(targetRow), CLng(targetRow), True
         Next targetRow
 
         新ファイル基準表_登録予定分類コード採番 wsEdit, 2, editLastRow, newRegistrationRowList
+        allocationInProgress = False
     End If
 
     For Each targetRow In macroInsertRows
@@ -4169,6 +4183,10 @@ ContinueNextEditRow:
            "件、座作成要確認" & guideSeatCheckCount & "件", vbInformation
 
 SafeExit:
+    On Error Resume Next
+    If Not allocationBackupBook Is Nothing And Not keepAllocationBackup Then allocationBackupBook.Close SaveChanges:=False
+    If Err.Number <> 0 Then MsgBox "採番検証の一時バックアップを閉じられませんでした。保存せず手動で閉じてください: " & Err.Description, vbExclamation
+    On Error GoTo 0
     Application.ScreenUpdating = True
     Application.EnableEvents = True
     Exit Sub
@@ -4176,6 +4194,25 @@ SafeExit:
 ErrorHandler:
     errNumber = Err.Number
     errDescription = Err.Description
+    If allocationInProgress Then
+        ' 書込み開始後の採番失敗に限定して復元する。出力シートはまだ触れていない。
+        On Error Resume Next
+        RestoreCodeMasterFromBackup ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT), allocationMasterBackup
+        If Err.Number <> 0 Then
+            restoreIssue = "コード管理CSV: " & Err.Description
+            Err.Clear
+        End If
+        RestoreStep4AllocationColumns wsEdit, editLastRow, allocationColumnBackup
+        If Err.Number <> 0 Then
+            restoreIssue = restoreIssue & " 対象セル: " & Err.Description
+            Err.Clear
+        End If
+        On Error GoTo 0
+        If Len(restoreIssue) > 0 Then
+            keepAllocationBackup = True
+            errDescription = errDescription & vbCrLf & "復元にも失敗しました（" & restoreIssue & "）。一時バックアップを残します。"
+        End If
+    End If
     WriteProcessLog "差分インポート抽出", SHEET_DIFF_IMPORT, "", IIf(outRow >= 2, outRow - 2, 0), "失敗", _
         "Err " & CStr(errNumber) & ": " & errDescription
     MsgBox "差分インポートCSV の作成中にエラーが発生しました: " & errDescription & vbCrLf & _
@@ -6205,8 +6242,38 @@ ErrorHandler:
     MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & errDescription, vbCritical
     Resume SafeExit
 
-
 End Sub
+
+' Step4の採番区間だけで変更される列を全行分保持する。競合解消では対象外の行も変わる。
+Private Function CaptureStep4AllocationColumns(ByVal wsEdit As Worksheet, ByVal lastRow As Long) As Collection
+    Dim headers As Variant
+    Dim header As Variant
+    Dim colNo As Long
+    Dim lastCol As Long
+    Dim snapshots As Collection
+
+    Set snapshots = New Collection
+    lastCol = GetLastHeaderCol(wsEdit)
+    headers = Array("分類コード１", "分類コード２", "分類コード３", "年度", "原課ID", "同期状態")
+    For Each header In headers
+        colNo = FindHeaderColumn(wsEdit, lastCol, Array(CStr(header)))
+        If colNo > 0 Then
+            snapshots.Add Array(colNo, wsEdit.Range(wsEdit.Cells(1, colNo), wsEdit.Cells(lastRow, colNo)).Formula)
+        End If
+    Next header
+    Set CaptureStep4AllocationColumns = snapshots
+End Function
+
+Private Sub RestoreStep4AllocationColumns(ByVal wsEdit As Worksheet, ByVal lastRow As Long, ByVal snapshots As Collection)
+    Dim snapshot As Variant
+    Dim colNo As Long
+
+    For Each snapshot In snapshots
+        colNo = CLng(snapshot(0))
+        wsEdit.Range(wsEdit.Cells(1, colNo), wsEdit.Cells(lastRow, colNo)).Formula = snapshot(1)
+    Next snapshot
+End Sub
+
 
 
 
@@ -9937,6 +10004,8 @@ Private Sub RestoreCodeMasterFromBackup(ByVal wsDst As Worksheet, ByVal wsBackup
     Dim wsUnfiltered As Worksheet
     Dim backupRange As Range
     Dim lastCol As Long
+    Dim lastRow As Long
+    Dim rowNo As Long
     Dim filterIndex As Long
     Dim filterOperator As Long
     Dim criteria1 As Variant
@@ -9956,7 +10025,18 @@ Private Sub RestoreCodeMasterFromBackup(ByVal wsDst As Worksheet, ByVal wsBackup
     End If
     backupRange.Copy Destination:=wsDst.Range(backupRange.Address)
     lastCol = backupRange.Column + backupRange.Columns.Count - 1
+    lastRow = backupRange.Row + backupRange.Rows.Count - 1
 
+    For rowNo = 1 To lastRow
+        ' フィルターで隠れた行の高さは0として取得され得るため、解除したコピーを参照する。
+        If wsBackup.FilterMode Then
+            wsDst.Rows(rowNo).RowHeight = wsUnfiltered.Rows(rowNo).RowHeight
+            wsDst.Rows(rowNo).Hidden = wsUnfiltered.Rows(rowNo).Hidden
+        Else
+            wsDst.Rows(rowNo).RowHeight = wsBackup.Rows(rowNo).RowHeight
+            wsDst.Rows(rowNo).Hidden = wsBackup.Rows(rowNo).Hidden
+        End If
+    Next rowNo
     For col = 1 To lastCol
         wsDst.Columns(col).ColumnWidth = wsBackup.Columns(col).ColumnWidth
         wsDst.Columns(col).Hidden = wsBackup.Columns(col).Hidden
@@ -10507,7 +10587,8 @@ Public Sub 新ファイル基準表_年度と原課ID再補完( _
     Optional ByVal wsEdit As Worksheet = Nothing, _
     Optional ByVal startRow As Long = 2, _
     Optional ByVal endRow As Long = 0, _
-    Optional ByVal logMissing As Boolean = False)
+    Optional ByVal logMissing As Boolean = False, _
+    Optional ByVal raiseOnError As Boolean = False)
 
     Dim lastCol As Long
     Dim lastRow As Long
@@ -10524,9 +10605,12 @@ Public Sub 新ファイル基準表_年度と原課ID再補完( _
     Dim yearVal As String
     Dim genkaId As String
     Dim missingItems As String
+    Dim trappedErrNumber As Long
+    Dim trappedErrSource As String
+    Dim trappedErrDescription As String
 
+    prevEnableEvents = Application.EnableEvents
     On Error GoTo ExitHandler
-
     If wsEdit Is Nothing Then Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     If wsEdit Is Nothing Then Exit Sub
 
@@ -10543,7 +10627,6 @@ Public Sub 新ファイル基準表_年度と原課ID再補完( _
     genkaCol = FindHeaderColumn(wsEdit, lastCol, Array("原課"))
     genkaIdCol = FindHeaderColumn(wsEdit, lastCol, Array("原課ID"))
 
-    prevEnableEvents = Application.EnableEvents
     Application.EnableEvents = False
 
     For r = startRow To endRow
@@ -10579,14 +10662,19 @@ Public Sub 新ファイル基準表_年度と原課ID再補完( _
     Next r
 
 ExitHandler:
+    trappedErrNumber = Err.Number
+    trappedErrSource = Err.Source
+    trappedErrDescription = Err.Description
     Application.EnableEvents = prevEnableEvents
+    If raiseOnError And trappedErrNumber <> 0 Then Err.Raise trappedErrNumber, trappedErrSource, trappedErrDescription
 
 End Sub
 
 Public Sub 新ファイル基準表_分類コード再補完( _
     Optional ByVal wsEdit As Worksheet = Nothing, _
     Optional ByVal startRow As Long = 2, _
-    Optional ByVal endRow As Long = 0)
+    Optional ByVal endRow As Long = 0, _
+    Optional ByVal raiseOnError As Boolean = False)
 
     Dim lastCol As Long
     Dim lastRow As Long
@@ -10602,6 +10690,9 @@ Public Sub 新ファイル基準表_分類コード再補完( _
     Dim currentCode As String
     Dim isRegistrationRow As Boolean
     Dim parentCodeValue As String
+    Dim trappedErrNumber As Long
+    Dim trappedErrSource As String
+    Dim trappedErrDescription As String
 
     prevEnableEvents = Application.EnableEvents
     On Error GoTo ExitHandler
@@ -10676,7 +10767,11 @@ ContinueNextClassificationRow:
     Next r
 
 ExitHandler:
+    trappedErrNumber = Err.Number
+    trappedErrSource = Err.Source
+    trappedErrDescription = Err.Description
     Application.EnableEvents = prevEnableEvents
+    If raiseOnError And trappedErrNumber <> 0 Then Err.Raise trappedErrNumber, trappedErrSource, trappedErrDescription
 
 End Sub
 
