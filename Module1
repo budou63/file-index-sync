@@ -5607,13 +5607,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
             nameSyncKey = BuildStep2NameSyncKey(wsSrc, srcRow, srcLastCol)
 
             If Len(sourceFileIdValue) = 0 Then
-                missingFileIdCount = missingFileIdCount + 1
-                If missingFileIdCount <= 20 Then _
-                    missingFileIdRows = missingFileIdRows & IIf(Len(missingFileIdRows) > 0, "、", "") & CStr(srcRow)
+                RecordStep2MissingSourceRow missingFileIdCount, missingFileIdRows, srcRow
                 If Len(nameSyncKey) = 0 Then
-                    missingNameDataCount = missingNameDataCount + 1
-                    If missingNameDataCount <= 20 Then _
-                        missingNameRows = missingNameRows & IIf(Len(missingNameRows) > 0, "、", "") & CStr(srcRow)
+                    RecordStep2MissingSourceRow missingNameDataCount, missingNameRows, srcRow
                 End If
                 Set sourceCandidates = New Collection
                 sourceCandidates.Add srcRow
@@ -5987,9 +5983,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                     End If
                 Else
                     If nameSyncKey = "" Then
-                        missingNameDataCount = missingNameDataCount + 1
-                        If missingNameDataCount <= 20 Then _
-                            missingNameRows = missingNameRows & IIf(Len(missingNameRows) > 0, "、", "") & CStr(srcRow)
+                        RecordStep2MissingSourceRow missingNameDataCount, missingNameRows, srcRow
                         Set destCandidates = Step2MapRows(destThreeNameMap, Step2ThreeNameKey(wsSrc, srcRow, srcLastCol))
                         If destCandidates.Count > 0 Then _
                             AppendAmbiguousNameSyncRemark wsDst, destCandidates, _
@@ -6222,6 +6216,13 @@ ErrorHandler:
     MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & errDescription, vbCritical
     Resume SafeExit
 
+End Sub
+
+' 診断対象の件数は全件数え、警告に表示する行番号だけ先頭20件に絞る。
+Private Sub RecordStep2MissingSourceRow(ByRef rowCount As Long, ByRef rowList As String, ByVal rowNo As Long)
+    rowCount = rowCount + 1
+    If rowCount <= 20 Then _
+        rowList = rowList & IIf(Len(rowList) > 0, "、", "") & CStr(rowNo)
 End Sub
 
 ' 通知の順番と「ほか」を付けた行一覧を、後続の完了サマリーでもそのまま使う。

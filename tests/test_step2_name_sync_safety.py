@@ -270,9 +270,9 @@ class Step2NameSyncSafetyTests(unittest.TestCase):
         leave = step2.index("GoTo ContinueNextSourceRow", guard)
         branch = step2[guard:leave]
         self.assertIn("If Len(nameSyncKey) = 0 Then", branch)
-        self.assertIn("missingNameDataCount = missingNameDataCount + 1", branch)
-        self.assertIn("CStr(srcRow)", branch)
-        self.assertIn("missingNameRows", branch)
+        self.assertIn("RecordStep2MissingSourceRow missingNameDataCount, missingNameRows, srcRow", branch)
+        self.assertLess(branch.index("RecordStep2MissingSourceRow missingNameDataCount"), branch.index("RecordStep2IdentityHold"))
+        self.assertIn("CStr(rowNo)", body("RecordStep2MissingSourceRow"))
 
     def test_missing_created_year_header_is_reported_without_column_zero_access(self):
         code = body("BuildStep2AmbiguousComment")
@@ -336,16 +336,15 @@ class Step2NameSyncSafetyTests(unittest.TestCase):
         self.assertLess(no_key, source_map)
         self.assertLess(source_map, update)
         for required in (
-            "missingFileIdCount = missingFileIdCount + 1",
-            "missingFileIdRows = missingFileIdRows",
+            "RecordStep2MissingSourceRow missingFileIdCount, missingFileIdRows, srcRow",
             "If Len(nameSyncKey) = 0 Then",
-            "missingNameDataCount = missingNameDataCount + 1",
+            "RecordStep2MissingSourceRow missingNameDataCount, missingNameRows, srcRow",
             "RecordStep2IdentityHold wsSrc, sourceCandidates",
             "If Len(key) = 0 Then skippedNoKeyCount = skippedNoKeyCount + 1",
             "GoTo ContinueNextSourceRow",
         ):
             self.assertIn(required, branch)
-        self.assertLess(branch.index("missingFileIdCount = missingFileIdCount + 1"), branch.index("GoTo ContinueNextSourceRow"))
+        self.assertLess(branch.index("RecordStep2MissingSourceRow missingFileIdCount"), branch.index("GoTo ContinueNextSourceRow"))
         self.assertIn("目録CSV行: " , step2)
         self.assertIn("正式ファイルID不足で保留: ", step2)
 
