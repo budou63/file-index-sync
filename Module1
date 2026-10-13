@@ -6141,13 +6141,8 @@ ContinueNextSourceRow:
 
     WriteProcessLog "CSV整形（新ファイル基準表作成）", SHEET_MOKUROKU_CSV, targetYearRaw, _
         appendedCount + updatedCount + nameSyncCount, "成功", "新ファイル基準表を作成"
-    If missingFileIdCount > 20 Then missingFileIdRows = missingFileIdRows & " ほか"
-    If missingFileIdCount > 0 Then MsgBox "正式ファイルID不足で自動更新・名称同期・新規追加を保留: " & _
-        CStr(missingFileIdCount) & "件（目録CSV行: " & missingFileIdRows & "）", vbExclamation
-    If missingNameDataCount > 20 Then missingNameRows = missingNameRows & " ほか"
-    If missingNameDataCount > 0 Then MsgBox "名称情報・作成年度不足で自動照合と新規追加を保留: " & _
-        CStr(missingNameDataCount) & "件（目録CSV行: " & missingNameRows & "）" & vbCrLf & _
-        "目録CSVと登録予定行を確認してください。", vbExclamation
+    ShowStep2MissingSourceWarnings missingFileIdCount, missingFileIdRows, _
+        missingNameDataCount, missingNameRows
 
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
@@ -6226,6 +6221,23 @@ ErrorHandler:
         appendedCount + updatedCount + nameSyncCount, "失敗", "Err " & CStr(errNumber) & ": " & errDescription
     MsgBox "新ファイル基準表の作成中にエラーが発生しました: " & errDescription, vbCritical
     Resume SafeExit
+
+End Sub
+
+' 通知の順番と「ほか」を付けた行一覧を、後続の完了サマリーでもそのまま使う。
+Private Sub ShowStep2MissingSourceWarnings( _
+    ByVal missingFileIdCount As Long, _
+    ByRef missingFileIdRows As String, _
+    ByVal missingNameDataCount As Long, _
+    ByRef missingNameRows As String)
+
+    If missingFileIdCount > 20 Then missingFileIdRows = missingFileIdRows & " ほか"
+    If missingFileIdCount > 0 Then MsgBox "正式ファイルID不足で自動更新・名称同期・新規追加を保留: " & _
+        CStr(missingFileIdCount) & "件（目録CSV行: " & missingFileIdRows & "）", vbExclamation
+    If missingNameDataCount > 20 Then missingNameRows = missingNameRows & " ほか"
+    If missingNameDataCount > 0 Then MsgBox "名称情報・作成年度不足で自動照合と新規追加を保留: " & _
+        CStr(missingNameDataCount) & "件（目録CSV行: " & missingNameRows & "）" & vbCrLf & _
+        "目録CSVと登録予定行を確認してください。", vbExclamation
 
 End Sub
 
