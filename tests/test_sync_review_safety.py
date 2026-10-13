@@ -109,8 +109,7 @@ class SyncReviewSafetyTests(unittest.TestCase):
 
     def test_form_buttons_and_multi_selection(self):
         for control in ("cboCategory", "lstCases", "lstRows", "txtDetails", "chkDelete", "lblCounts", "cmdApprove", "cmdOther", "cmdHold", "cmdNext", "cmdGoTo", "cmdDelete", "cmdRefresh", "cmdFinish"):
-            self.assertIn("Begin VB.", FORM)
-            self.assertTrue(any(line.startswith("   Begin VB.") and line.endswith(" " + control) for line in FORM.splitlines()))
+            self.assertIn(f'EnsureControl("{control}", "Forms.', FORM)
         self.assertIn("SyncReviewDeleteBatch(selected)", FORM)
         self.assertIn("SyncReviewDecide(item, decision)", FORM)
         self.assertIn("SyncReviewApprove(item, SelectedRow())", FORM)
@@ -133,12 +132,12 @@ class SyncReviewSafetyTests(unittest.TestCase):
 
 
     def test_decided_delete_candidates_cannot_be_selected_or_executed(self):
-        check = procedure(FORM, "Private Sub chkDelete_Click()", "End Sub")
+        check = procedure(FORM, "Private Sub mChkDelete_Click()", "End Sub")
         record = procedure(FORM, "Private Sub RecordChoice(", "End Sub")
         batch = procedure(MODULE, "Public Function SyncReviewDeleteBatch(")
         self.assertIn("SyncReviewDecision(item)", check)
         self.assertIn("deletionSelection.Remove", record)
-        self.assertIn("chkDelete.Value = False", record)
+        self.assertIn("mChkDelete.Value = False", record)
         self.assertGreaterEqual(batch.count("SyncReviewDecision(item)"), 3)
         self.assertLess(batch.index("backup = ReviewBackup()"), batch.index("dst.Rows(rowNo).Delete"))
         self.assertIn("approvedKeys.Exists", batch)

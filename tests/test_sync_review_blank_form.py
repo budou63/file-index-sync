@@ -1,0 +1,91 @@
+"""Static checks for blank-form paste deployment and native export consistency."""
+import re
+import subprocess
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+CANONICAL = ROOT / "frmSyncReview.frm"
+PASTE = ROOT / "frmSyncReview_FormCode.txt"
+NATIVE = ROOT / "frmSyncReview-native.frm"
+FRX = ROOT / "frmSyncReview-native.frx"
+
+CONTROLS = {
+    "lblCounts": "Label", "cboCategory": "ComboBox", "lblCase": "Label",
+    "lstCases": "ListBox", "lblRows": "Label", "lstRows": "ListBox",
+    "txtDetails": "TextBox", "chkDelete": "CheckBox", "lblStatus": "Label",
+    "cmdGoTo": "CommandButton", "cmdApprove": "CommandButton",
+    "cmdOther": "CommandButton", "cmdHold": "CommandButton",
+    "cmdNext": "CommandButton", "cmdDelete": "CommandButton",
+    "cmdRefresh": "CommandButton", "cmdFinish": "CommandButton",
+}
+EVENTS = {"cboCategory", "lstCases", "chkDelete"} | {n for n in CONTROLS if n.startswith("cmd")}
+
+
+class BlankFormTests(unittest.TestCase):
+    def test_independent_paste_only_code_and_typed_controls(self):
+        source = PASTE.read_text(encoding="utf-8")
+        self.assertTrue(source.startswith("Option Explicit\n"))
+        self.assertNotIn("Attribute VB_", source)
+        self.assertNotIn("VERSION 5.00", source)
+        self.assertNotIn("Begin VB.", source)
+        for name, kind in CONTROLS.items():
+            modifier = "WithEvents " if name in EVENTS else ""
+            field = "m" + name[0].upper() + name[1:]
+            self.assertRegex(source, rf"(?m)^Private {modifier}{field} As MSForms\.{kind}$")
+            self.assertIn(f'Set {field} = EnsureControl("{name}", "Forms.{kind}.1")', source)
+            self.assertNotRegex(source, rf"(?m)^Private (?:WithEvents )?{name} As ")
+            if name in EVENTS:
+                suffix = "Change" if name == "cboCategory" else "Click"
+                self.assertIn(f"Private Sub {field}_{suffix}()", source)
+        self.assertEqual(source.count('EnsureControl("'), len(CONTROLS))
+        self.assertIn("Me.Controls.Add(progId, controlName, True)", source)
+        self.assertIn('If existing.Name = controlName Then', source)
+        self.assertIn('If TypeName(existing) <> expectedType Then Err.Raise', source)
+        self.assertIn('rendering = True\n    BuildControls', source)
+        self.assertIn('mCboCategory.ListIndex = 0\n    rendering = False', source)
+        self.assertLess(source.index('Set mCboCategory = EnsureControl'), source.index('mCboCategory.AddItem "A'))
+        self.assertLess(source.index('If mLstCases.ListCount > 0 Then mLstCases.ListIndex = 0'), source.index('    rendering = False\n    ShowCurrent'))
+        self.assertIn("Me.Width = 605", source)
+        self.assertIn("Me.Height = 410", source)
+        self.assertIn("mTxtDetails.MultiLine = True", source)
+        self.assertIn("mTxtDetails.ScrollBars = fmScrollBarsVertical", source)
+        self.assertIn("mTxtDetails.Locked = True", source)
+        self.assertIn('mChkDelete.Caption = "この削除可候補を一括削除の選択に加える"', source)
+        self.assertIn("SyncReviewDeleteBatch(selected)", source)
+        self.assertIn("SyncReviewApprove(item, SelectedRow())", source)
+
+    def test_opener_loads_before_show_and_form_initializes_before_data_render(self):
+        module = (ROOT / 'modSyncReview.bas').read_text(encoding='utf-8')
+        opener = module[module.index('Private Sub OpenSyncReviewForYear('):]
+        opener = opener[:opener.index('End Sub')]
+        self.assertLess(opener.index('frmSyncReview.LoadCases cases, yearValue'),
+                        opener.index('frmSyncReview.Show vbModeless'))
+        source = PASTE.read_text(encoding='utf-8')
+        initialization = source[source.index('Private Sub UserForm_Initialize()'):]
+        initialization = initialization[:initialization.index('End Sub')]
+        self.assertIn('BuildControls', initialization)
+        self.assertLess(source.index('Private Sub UserForm_Initialize()'), source.index('Public Sub LoadCases('))
+        self.assertIn('ShowCategory', source[source.index('Public Sub LoadCases('):source.index('End Sub', source.index('Public Sub LoadCases('))])
+
+    def test_both_exports_share_exact_paste_code_and_native_metadata(self):
+        paste = PASTE.read_text(encoding="utf-8")
+        canonical = CANONICAL.read_text(encoding="utf-8")
+        raw = NATIVE.read_bytes()
+        native = raw.decode("cp932")
+        self.assertIn(b"\r\n", raw)
+        self.assertEqual(raw.count(b"\n"), raw.count(b"\r\n"))
+        self.assertEqual(raw, native.encode("cp932"))
+        self.assertEqual(canonical[canonical.index("Option Explicit"):], paste)
+        self.assertEqual(native[native.index("Option Explicit"):].replace("\r\n", "\n"), paste)
+        self.assertIn('OleObjectBlob   =   "frmSyncReview-native.frx":0000', native)
+        baseline = subprocess.check_output(['git', 'show', 'HEAD:frmSyncReview-native.frm'], cwd=ROOT)
+        designer = lambda data: data[:data.index(b'Option Explicit')].replace(b'\r\n', b'\n')
+        self.assertEqual(designer(raw), designer(baseline))
+        self.assertIn('Attribute VB_PredeclaredId = True', native)
+        self.assertIn('ShowModal       =   0', native)
+        self.assertGreater(FRX.stat().st_size, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
