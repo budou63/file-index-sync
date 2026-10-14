@@ -80,6 +80,8 @@ class CopyIdCandidateTests(unittest.TestCase):
         copy = dict(src, row=3, status="登録予定", folder="Other")
         self.assertEqual(detect([src, dict(src, row=4)], [keeper, copy], 2026), [])
         self.assertEqual(detect([src], [keeper, copy, dict(copy, row=5, folder="Third")], 2026), [3, 5])
+        self.assertEqual(detect([src], [keeper, dict(copy, number="12")], 2026), [3])
+        self.assertEqual(detect([src], [keeper, dict(keeper, row=7), copy], 2026), [])
         self.assertEqual(detect([src], [dict(keeper, folder="Wrong"), copy], 2026), [])
         self.assertEqual(detect([src], [keeper, dict(copy, created=2021)], 2026), [3])
         self.assertEqual(detect([src], [keeper, dict(copy, g1="OtherProject")], 2026), [3])
