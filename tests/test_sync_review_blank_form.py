@@ -17,9 +17,9 @@ CONTROLS = {
     "cmdGoTo": "CommandButton", "cmdApprove": "CommandButton",
     "cmdOther": "CommandButton", "cmdHold": "CommandButton",
     "cmdNext": "CommandButton", "cmdDelete": "CommandButton",
-    "cmdRefresh": "CommandButton", "cmdFinish": "CommandButton",
+    "cmdClear": "CommandButton", "cmdRefresh": "CommandButton", "cmdFinish": "CommandButton",
 }
-EVENTS = {"cboCategory", "lstCases", "chkDelete"} | {n for n in CONTROLS if n.startswith("cmd")}
+EVENTS = {"cboCategory", "lstCases", "lstRows", "chkDelete"} | {n for n in CONTROLS if n.startswith("cmd")}
 
 
 class BlankFormTests(unittest.TestCase):

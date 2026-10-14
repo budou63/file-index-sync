@@ -54,15 +54,19 @@ Public Sub SyncReviewEndBatch(ByVal allowOpen As Boolean)
 End Sub
 
 Private Sub OpenSyncReviewForYear(ByVal yearValue As Long)
-    Dim cases As Collection
+    Dim cases As Collection, copyCases As Collection, copyItem As Object
     On Error GoTo Failed
     Set cases = SyncReviewCandidates(yearValue)
+    Set copyCases = SyncReviewCopyIdCandidates(yearValue)
+    For Each copyItem In copyCases
+        cases.Add copyItem
+    Next copyItem
     If cases.Count = 0 Then Exit Sub
     frmSyncReview.LoadCases cases, yearValue
     If Not frmSyncReview.Visible Then frmSyncReview.Show vbModeless
     Exit Sub
 Failed:
-    MsgBox "確認候補を開けません: " & Err.Description, vbExclamation
+    MsgBox "確認候補を開けません。候補抽出を中止しました: " & Err.Description, vbExclamation
 End Sub
 
 Private Function ReviewCol(ByVal ws As Worksheet, ParamArray aliases() As Variant) As Long
@@ -638,6 +642,7 @@ Public Function SyncReviewClearCopyIdentifiers(ByVal item As Object, ByVal selec
     Dim oldFormulas(1 To 3) As String, wasFormula(1 To 3) As Boolean, oldFormats(1 To 3) As String
     Dim i As Long, backup As String, details As String, failureText As String
     Dim prevEvents As Boolean, eventsCaptured As Boolean, changing As Boolean, restored As Boolean
+    Dim criticalFailure As Boolean
     On Error GoTo Failed
     If item Is Nothing Then Err.Raise vbObjectError + 6143, , "D候補を指定してください。"
     If CStr(item("category")) <> "D" Or CLng(item("sourceRow")) < 2 Then _
@@ -712,14 +717,20 @@ Failed:
         On Error Resume Next
         Application.EnableEvents = False
         restored = ReviewRestoreCopyIdCells(dst, selectedRow, cols, oldValues, oldFormulas, wasFormula, oldFormats)
-        If Not restored Then failureText = failureText & " / 変更前の値・数式・書式を完全に復元できませんでした。"
+        If Not restored Then
+            failureText = failureText & " / 変更前の値・数式・書式を完全に復元できませんでした。"
+            criticalFailure = True
+        End If
         On Error GoTo 0
     End If
     If eventsCaptured Then
         On Error Resume Next
         Err.Clear
         Application.EnableEvents = prevEvents
-        If Err.Number <> 0 Then failureText = failureText & " / Excelイベント状態も復元できませんでした: " & Err.Description
+        If Err.Number <> 0 Then
+            failureText = failureText & " / Excelイベント状態も復元できませんでした: " & Err.Description
+            criticalFailure = True
+        End If
         On Error GoTo 0
     End If
     If Len(backup) > 0 Then
@@ -729,10 +740,17 @@ Failed:
         If Err.Number <> 0 Then failureText = failureText & " / 失敗履歴も記録できませんでした: " & Err.Description
         On Error GoTo 0
     End If
+    If criticalFailure Then
+        failureText = failureText & " ブックを保存せず終了し、事前バックアップを保全してください。"
+        MsgBox "重大な復元失敗です: " & failureText & vbCrLf & _
+            "事前バックアップ: " & backup & vbCrLf & _
+            "ブックを保存せず終了してください。", vbCritical
+        Err.Raise vbObjectError + 6155, "SyncReviewClearCopyIdentifiers", _
+            failureText & " / 事前バックアップ: " & backup
+    End If
     MsgBox "番号クリアを完了できません: " & failureText & vbCrLf & _
         "事前バックアップ: " & backup & vbCrLf & _
-        IIf(restored Or Not changing, "対象セルを確認し、未保存の変更がないことを確認してください。", _
-            "復元状態を確認できません。ブックを保存せず終了し、バックアップを保全してください。"), vbCritical
+        "対象セルを確認し、未保存の変更がないことを確認してください。", vbCritical
 End Function
 
 Private Function ReviewDigest(ByVal text As String) As String
