@@ -492,8 +492,7 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
                 If ReviewField(dst, dRow, "同期状態") <> "登録予定" Then valid = False
                 If Len(ReviewName(dst, dRow, False, True)) = 0 Or _
                    Len(ReviewName(dst, dRow, False, False)) = 0 Then valid = False
-                If ReviewTextKey(ReviewValue(dst, dRow, ReviewCol(dst, "個別フォルダー", "個別フォルダ", "タイトル"))) = _
-                   ReviewTextKey(ReviewValue(src, sRow, ReviewCol(src, "タイトル", "個別フォルダー", "個別フォルダ"))) Then valid = False
+                If ReviewName(dst, dRow, False, True) = sourceName Then valid = False
                 For otherRow = 2 To srcLast
                     If otherRow <> sRow Then
                         If (Len(ReviewField(dst, dRow, "ファイルID")) > 0 And _

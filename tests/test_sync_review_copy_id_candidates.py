@@ -40,7 +40,9 @@ def detect(csv_rows, excel_rows, target_year):
             continue
         if keeper.get("status") not in {"登録予定", "同期済"}:
             continue
-        if any(r.get("folder") == keeper.get("folder") for r in colliders):
+        if any((r.get("created"), r.get("g1"), r.get("g2"), r.get("folder")) ==
+               (source.get("created"), source.get("g1"), source.get("g2"), source.get("folder"))
+               for r in colliders):
             continue
         output.extend(r["row"] for r in colliders)
     return output
@@ -82,6 +84,18 @@ class CopyIdCandidateTests(unittest.TestCase):
         self.assertEqual(detect([src], [keeper, copy, dict(copy, row=5, folder="Third")], 2026), [3, 5])
         self.assertEqual(detect([src], [keeper, dict(copy, number="12")], 2026), [3])
         self.assertEqual(detect([src], [keeper, dict(keeper, row=7), copy], 2026), [])
+        self.assertEqual(detect([src], [keeper, dict(copy, created=2021, folder="F")], 2026), [3])
+        self.assertEqual(detect([src], [keeper, dict(copy, g2="OtherProject", folder="F")], 2026), [3])
+        common_name = dict(src, folder="起工設計書")
+        common_keeper = dict(common_name, row=12, status="登録予定")
+        self.assertEqual(detect([common_name], [common_keeper,
+                                                dict(common_name, row=13, status="登録予定", created=2021)], 2026), [13])
+        self.assertEqual(detect([common_name], [common_keeper,
+                                                dict(common_name, row=14, status="登録予定", g2="別工事")], 2026), [14])
+        self.assertEqual(detect([common_name], [common_keeper,
+                                                dict(common_name, row=15, status="登録予定")], 2026), [])
+        self.assertEqual(detect([src], [keeper, dict(copy, folder="F")], 2026), [])
+        self.assertEqual(detect([src], [keeper, dict(copy, year=2025, folder="F")], 2026), [])
         self.assertEqual(detect([src], [dict(keeper, folder="Wrong"), copy], 2026), [])
         self.assertEqual(detect([src], [keeper, dict(copy, created=2021)], 2026), [3])
         self.assertEqual(detect([src], [keeper, dict(copy, g1="OtherProject")], 2026), [3])
@@ -92,6 +106,13 @@ class CopyIdCandidateTests(unittest.TestCase):
         self.assertEqual(detect([src, dict(src, row=8, id="Other", number="77", barcode="B")],
                                 [keeper, copy], 2026), [])
         self.assertEqual(detect([src], [keeper, dict(copy, number="0012", folder="Other")], 2025), [])
+
+    def test_vba_uses_complete_folder_identity_not_folder_name_alone(self):
+        detector = procedure(MODULE, "Public Function SyncReviewCopyIdCandidates(")
+        self.assertIn("If ReviewName(dst, dRow, False, True) = sourceName Then valid = False", detector)
+        self.assertNotIn('ReviewTextKey(ReviewValue(dst, dRow, ReviewCol(dst, "個別フォルダー"', detector)
+        self.assertIn("ReviewName(dst, rowNo, False, False) <> ReviewName(src, sRow, True, False)", detector)
+        self.assertIn("ReviewFiscal(dst, dRow) = yearValue", detector)
 
     def test_matching_and_global_collision_checks_are_explicit(self):
         detector = procedure(MODULE, "Public Function SyncReviewCopyIdCandidates(")
