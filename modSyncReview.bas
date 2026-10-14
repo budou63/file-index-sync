@@ -422,7 +422,7 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
     Dim fid As String, fileNo As String, barcode As String, sourceName As String
     Dim keeperRows As New Collection, collisionRows As New Collection, candidates As New Collection
     Dim v As Variant, rowNo As Long, valid As Boolean, reason As String
-    Dim allRows As Collection
+    Dim allRows As Collection, copyCase As Object, datasetSignature As String
 
     If yearValue < 1900 Or yearValue > 2200 Then Err.Raise vbObjectError + 6140, , "対象年度が不正です。"
     Set reviewHeaderCache = CreateObject("Scripting.Dictionary")
@@ -445,6 +445,7 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
         Err.Raise vbObjectError + 6141, , "D候補判定に必要な見出しが不足または曖昧です。"
 
     srcLast = ReviewLast(src): dstLast = ReviewLast(dst)
+    datasetSignature = ReviewCopyDatasetSignature(src, dst)
     For sRow = 2 To srcLast
         If ReviewFiscal(src, sRow) <> yearValue Then GoTo NextCopySource
         fid = ReviewField(src, sRow, "ファイルID")
@@ -515,10 +516,223 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
         Set allRows = New Collection
         allRows.Add rowNo
         For Each v In candidates: allRows.Add CLng(v): Next v
-        cases.Add NewCase("D", yearValue, src, sRow, dst, allRows, reason)
+        Set copyCase = NewCase("D", yearValue, src, sRow, dst, allRows, reason)
+        copyCase.Add "copyKeeperRow", rowNo
+        copyCase.Add "copyCandidateRows", candidates
+        copyCase.Add "copyDatasetSignature", datasetSignature
+        cases.Add copyCase
 NextCopySource:
     Next sRow
     Set SyncReviewCopyIdCandidates = cases
+End Function
+
+Private Function ReviewCopySheetSignature(ByVal ws As Worksheet) As String
+    Dim lastRow As Long, lastCol As Long, col As Long, rowNo As Long
+    Dim headerText As String, valueText As String, parts() As String
+    lastRow = ReviewLast(ws)
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For col = 1 To lastCol
+        If IsError(ws.Cells(1, col).Value2) Then Err.Raise vbObjectError + 6142, , "見出しにエラー値があります。"
+        valueText = TypeName(ws.Cells(1, col).Value2) & ":" & CStr(ws.Cells(1, col).Value2)
+        If ws.Cells(1, col).HasFormula Then valueText = valueText & "#" & CStr(ws.Cells(1, col).Formula)
+        headerText = headerText & CStr(Len(valueText)) & ":" & valueText
+    Next col
+    ReDim parts(0 To lastRow - 1)
+    parts(0) = ws.Name & "|" & ReviewDigest(headerText)
+    For rowNo = 2 To lastRow
+        parts(rowNo - 1) = ReviewDigest(ReviewSignature(ws, rowNo))
+    Next rowNo
+    ReviewCopySheetSignature = ReviewDigest(Join(parts, "|"))
+End Function
+
+Private Function ReviewCopyDatasetSignature(ByVal src As Worksheet, ByVal dst As Worksheet) As String
+    ReviewCopyDatasetSignature = ReviewDigest(ReviewCopySheetSignature(src) & "|" & ReviewCopySheetSignature(dst))
+End Function
+
+Private Function ReviewCopyCollectionHasRow(ByVal rows As Collection, ByVal rowNo As Long) As Boolean
+    Dim value As Variant
+    If rows Is Nothing Then Exit Function
+    For Each value In rows
+        If CLng(value) = rowNo Then ReviewCopyCollectionHasRow = True: Exit Function
+    Next value
+End Function
+
+Private Function ReviewCopyCaseCurrent(ByVal expected As Object, ByVal selectedRow As Long) As Boolean
+    Dim current As Collection, item As Object, i As Long
+    If expected Is Nothing Then Exit Function
+    If Not expected.Exists("copyKeeperRow") Or Not expected.Exists("copyCandidateRows") Or _
+       Not expected.Exists("copyDatasetSignature") Then Exit Function
+    If CLng(expected("copyKeeperRow")) = selectedRow Then Exit Function
+    If Not ReviewCopyCollectionHasRow(expected("copyCandidateRows"), selectedRow) Then Exit Function
+    Set current = SyncReviewCopyIdCandidates(CLng(expected("year")))
+    For i = 1 To current.Count
+        Set item = current(i)
+        If CStr(item("key")) = CStr(expected("key")) And _
+           CStr(item("sourceSignature")) = CStr(expected("sourceSignature")) And _
+           CStr(item("destinationSignature")) = CStr(expected("destinationSignature")) And _
+           CLng(item("copyKeeperRow")) = CLng(expected("copyKeeperRow")) And _
+           CStr(item("copyDatasetSignature")) = CStr(expected("copyDatasetSignature")) And _
+           ReviewCopyCollectionHasRow(item("copyCandidateRows"), selectedRow) Then
+            ReviewCopyCaseCurrent = True
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Sub ReviewWriteCopyClearAudit(ByVal item As Object, ByVal decision As String, _
+    ByVal detail As String, ByVal backup As String)
+    Dim ws As Worksheet, r As Long
+    Set ws = ReviewAudit(True)
+    r = ReviewLast(ws) + 1
+    ws.Cells(r, 1).Value2 = Now
+    ws.Cells(r, 2).Value2 = CLng(item("year"))
+    ws.Cells(r, 3).Value2 = "D"
+    ws.Cells(r, 4).NumberFormat = "@"
+    ws.Cells(r, 9).NumberFormat = "@": ws.Cells(r, 10).NumberFormat = "@"
+    ws.Cells(r, 4).Value2 = CStr(item("key"))
+    ws.Cells(r, 6).Value2 = CLng(item("sourceRow"))
+    ws.Cells(r, 7).Value2 = CStr(item("copyKeeperRow")) & ";" & CStr(item("rows"))
+    ws.Cells(r, 8).Value2 = CStr(item("reason"))
+    ws.Cells(r, 9).Value2 = ReviewDigest(CStr(item("sourceSignature")))
+    ws.Cells(r, 10).Value2 = ReviewDigest(CStr(item("destinationSignature")))
+    ws.Cells(r, 11).Value2 = detail
+    ws.Cells(r, 12).Value2 = backup
+    ws.Cells(r, 5).Value2 = decision
+End Sub
+
+Private Function ReviewRestoreCopyIdCells(ByVal ws As Worksheet, ByVal rowNo As Long, _
+    ByRef cols() As Long, ByRef oldValues() As Variant, ByRef oldFormulas() As String, _
+    ByRef wasFormula() As Boolean, ByRef oldFormats() As String) As Boolean
+    Dim i As Long, restoreOk As Boolean
+    restoreOk = True
+    On Error Resume Next
+    For i = 1 To 3
+        Err.Clear
+        If wasFormula(i) Then
+            ws.Cells(rowNo, cols(i)).Formula = oldFormulas(i)
+        Else
+            ws.Cells(rowNo, cols(i)).Value2 = oldValues(i)
+        End If
+        If Err.Number <> 0 Then restoreOk = False
+        Err.Clear
+        ws.Cells(rowNo, cols(i)).NumberFormat = oldFormats(i)
+        If Err.Number <> 0 Then restoreOk = False
+        Err.Clear
+        If ws.Cells(rowNo, cols(i)).HasFormula <> wasFormula(i) Then restoreOk = False
+        If wasFormula(i) Then
+            If CStr(ws.Cells(rowNo, cols(i)).Formula) <> oldFormulas(i) Then restoreOk = False
+        ElseIf IsEmpty(oldValues(i)) Then
+            If Not IsEmpty(ws.Cells(rowNo, cols(i)).Value2) Then restoreOk = False
+        Else
+            If CStr(ws.Cells(rowNo, cols(i)).Value2) <> CStr(oldValues(i)) Then restoreOk = False
+        End If
+        If CStr(ws.Cells(rowNo, cols(i)).NumberFormat) <> oldFormats(i) Then restoreOk = False
+    Next i
+    On Error GoTo 0
+    ReviewRestoreCopyIdCells = restoreOk
+End Function
+
+Public Function SyncReviewClearCopyIdentifiers(ByVal item As Object, ByVal selectedRow As Long) As Boolean
+    Dim src As Worksheet, dst As Worksheet, sRow As Long, keeperRow As Long
+    Dim candidateRows As Collection, cols(1 To 3) As Long, oldValues(1 To 3) As Variant
+    Dim oldFormulas(1 To 3) As String, wasFormula(1 To 3) As Boolean, oldFormats(1 To 3) As String
+    Dim i As Long, backup As String, details As String, failureText As String
+    Dim prevEvents As Boolean, eventsCaptured As Boolean, changing As Boolean, restored As Boolean
+    On Error GoTo Failed
+    If item Is Nothing Then Err.Raise vbObjectError + 6143, , "D候補を指定してください。"
+    If CStr(item("category")) <> "D" Or CLng(item("sourceRow")) < 2 Then _
+        Err.Raise vbObjectError + 6144, , "D候補以外は番号クリアできません。"
+    If Not item.Exists("copyKeeperRow") Or Not item.Exists("copyCandidateRows") Or _
+       Not item.Exists("copyDatasetSignature") Then Err.Raise vbObjectError + 6145, , "保持行と候補行の区分情報がありません。"
+    keeperRow = CLng(item("copyKeeperRow"))
+    Set candidateRows = item("copyCandidateRows")
+    If selectedRow < 2 Or selectedRow = keeperRow Or _
+       Not ReviewCopyCollectionHasRow(candidateRows, selectedRow) Then _
+        Err.Raise vbObjectError + 6146, , "選択行はこのD案件のクリア候補ではありません。"
+    Set src = ThisWorkbook.Worksheets(CSV_SHEET): Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
+    If ReviewField(dst, selectedRow, "同期状態") <> "登録予定" Then _
+        Err.Raise vbObjectError + 6147, , "登録予定以外の行はクリアできません。"
+    If ThisWorkbook.ReadOnly Or dst.ProtectContents Then _
+        Err.Raise vbObjectError + 6148, , "ブックが読み取り専用またはシートが保護されています。"
+    If Not ReviewCopyCaseCurrent(item, selectedRow) Then _
+        Err.Raise vbObjectError + 6149, , "D候補・保持行・CSVまたはExcelデータが変わりました。再読み込みしてください。"
+
+    sRow = CLng(item("sourceRow"))
+    details = "CSVの正対応行:" & vbCrLf & ReviewDescription(src, sRow, True) & vbCrLf & _
+        "保持するExcel行:" & vbCrLf & ReviewDescription(dst, keeperRow, False) & vbCrLf & _
+        "クリア候補のExcel行:" & vbCrLf & ReviewDescription(dst, selectedRow, False)
+    If MsgBox(details & vbCrLf & vbCrLf & _
+        "管理システムで、このクリア候補のフォルダーが未登録であることを確認してください。確認できましたか？", _
+        vbYesNo + vbQuestion + vbDefaultButton2, "システム登録状況の確認") <> vbYes Then Exit Function
+    If Not ReviewCopyCaseCurrent(item, selectedRow) Then _
+        Err.Raise vbObjectError + 6150, , "確認中にCSVまたはExcelデータが変わりました。"
+    If MsgBox(details & vbCrLf & vbCrLf & _
+        "選択したExcel行のファイルID・ファイル番号・バーコード番号だけを空欄にします。" & vbCrLf & _
+        "同期状態・名称・作成年度・ガイド・書式・他セル・行自体は変更しません。" & vbCrLf & _
+        "この操作はStep2の正式同期ではありません。バックアップを作成して実行しますか？", _
+        vbYesNo + vbExclamation + vbDefaultButton2, "番号クリアの最終確認") <> vbYes Then Exit Function
+    If Not ReviewCopyCaseCurrent(item, selectedRow) Then _
+        Err.Raise vbObjectError + 6151, , "最終確認中にCSVまたはExcelデータが変わりました。"
+
+    cols(1) = ReviewCol(dst, "ファイルID")
+    cols(2) = ReviewCol(dst, "ファイル番号")
+    cols(3) = ReviewCol(dst, "バーコード番号")
+    For i = 1 To 3
+        oldValues(i) = dst.Cells(selectedRow, cols(i)).Value2
+        wasFormula(i) = dst.Cells(selectedRow, cols(i)).HasFormula
+        If wasFormula(i) Then oldFormulas(i) = CStr(dst.Cells(selectedRow, cols(i)).Formula)
+        oldFormats(i) = CStr(dst.Cells(selectedRow, cols(i)).NumberFormat)
+    Next i
+    backup = ReviewBackup("番号クリア前")
+    If Not ReviewCopyCaseCurrent(item, selectedRow) Then _
+        Err.Raise vbObjectError + 6152, , "バックアップ作成中にCSVまたはExcelデータが変わりました。"
+
+    prevEvents = Application.EnableEvents
+    eventsCaptured = True
+    Application.EnableEvents = False
+    changing = True
+    For i = 1 To 3: dst.Cells(selectedRow, cols(i)).ClearContents: Next i
+    For i = 1 To 3
+        If dst.Cells(selectedRow, cols(i)).HasFormula Or Len(CStr(dst.Cells(selectedRow, cols(i)).Value2)) > 0 Then _
+            Err.Raise vbObjectError + 6153, , "識別番号セルのクリア結果を検証できません。"
+        If CStr(dst.Cells(selectedRow, cols(i)).NumberFormat) <> oldFormats(i) Then _
+            Err.Raise vbObjectError + 6154, , "クリア時に識別番号セルの書式が変化しました。"
+    Next i
+    Application.EnableEvents = prevEvents
+    details = "Excel行" & selectedRow & "のファイルID・ファイル番号・バーコード番号を空欄化。" & _
+        "保持行Excel" & keeperRow & "および同期状態・他セルは変更していません。"
+    ReviewWriteCopyClearAudit item, "番号クリア完了", details, backup
+    changing = False
+    eventsCaptured = False
+    SyncReviewClearCopyIdentifiers = True
+    Exit Function
+Failed:
+    failureText = Err.Description
+    If changing Then
+        On Error Resume Next
+        Application.EnableEvents = False
+        restored = ReviewRestoreCopyIdCells(dst, selectedRow, cols, oldValues, oldFormulas, wasFormula, oldFormats)
+        If Not restored Then failureText = failureText & " / 変更前の値・数式・書式を完全に復元できませんでした。"
+        On Error GoTo 0
+    End If
+    If eventsCaptured Then
+        On Error Resume Next
+        Err.Clear
+        Application.EnableEvents = prevEvents
+        If Err.Number <> 0 Then failureText = failureText & " / Excelイベント状態も復元できませんでした: " & Err.Description
+        On Error GoTo 0
+    End If
+    If Len(backup) > 0 Then
+        On Error Resume Next
+        Err.Clear
+        ReviewWriteCopyClearAudit item, "番号クリア失敗", failureText, backup
+        If Err.Number <> 0 Then failureText = failureText & " / 失敗履歴も記録できませんでした: " & Err.Description
+        On Error GoTo 0
+    End If
+    MsgBox "番号クリアを完了できません: " & failureText & vbCrLf & _
+        "事前バックアップ: " & backup & vbCrLf & _
+        IIf(restored Or Not changing, "対象セルを確認し、未保存の変更がないことを確認してください。", _
+            "復元状態を確認できません。ブックを保存せず終了し、バックアップを保全してください。"), vbCritical
 End Function
 
 Private Function ReviewDigest(ByVal text As String) As String
@@ -726,7 +940,7 @@ Failed:
         "編集済みなら保存前に対象行と履歴を確認してください。", vbCritical
 End Function
 
-Private Function ReviewBackup() As String
+Private Function ReviewBackup(Optional ByVal backupPurpose As String = "削除前") As String
     Dim original As String, base As String, ext As String, target As String, suffix As Long, dotPos As Long
     original = ThisWorkbook.FullName
     If Len(ThisWorkbook.Path) = 0 Or ThisWorkbook.ReadOnly Then _
@@ -734,10 +948,10 @@ Private Function ReviewBackup() As String
     dotPos = InStrRev(original, ".")
     If dotPos = 0 Then Err.Raise vbObjectError + 6123, , "バックアップの拡張子を判断できません。"
     base = Left$(original, dotPos - 1): ext = Mid$(original, dotPos)
-    target = base & "_同期候補削除前_" & Format$(Now, "yyyymmdd_hhnnss") & ext
+    target = base & "_同期候補" & backupPurpose & "_" & Format$(Now, "yyyymmdd_hhnnss") & ext
     Do While Len(Dir$(target)) > 0
         suffix = suffix + 1
-        target = base & "_同期候補削除前_" & Format$(Now, "yyyymmdd_hhnnss") & "_" & suffix & ext
+        target = base & "_同期候補" & backupPurpose & "_" & Format$(Now, "yyyymmdd_hhnnss") & "_" & suffix & ext
     Loop
     ThisWorkbook.SaveCopyAs target
     If Len(Dir$(target)) = 0 Then Err.Raise vbObjectError + 6124, , "バックアップを作成できませんでした。"
