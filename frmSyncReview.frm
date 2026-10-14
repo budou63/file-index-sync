@@ -137,6 +137,7 @@ Private WithEvents mLstRows As MSForms.ListBox
 Private mTxtDetails As MSForms.TextBox
 Private WithEvents mChkDelete As MSForms.CheckBox
 Private mLblStatus As MSForms.Label
+Private mLblDWarning As MSForms.Label
 Private WithEvents mCmdGoTo As MSForms.CommandButton
 Private WithEvents mCmdApprove As MSForms.CommandButton
 Private WithEvents mCmdOther As MSForms.CommandButton
@@ -152,6 +153,7 @@ Private shown As Collection
 Private deletionSelection As Object
 Private targetYear As Long
 Private rendering As Boolean
+Private mDUnavailableReason As String
 
 Private Function EnsureControl(ByVal controlName As String, ByVal progId As String) As MSForms.Control
     Dim existing As MSForms.Control
@@ -179,7 +181,7 @@ End Sub
 Private Sub BuildControls()
     Me.Caption = "同期候補の確認"
     Me.Width = 605
-    Me.Height = 410
+    Me.Height = Me.Height + (440 - Me.InsideHeight)
     Set mLblCounts = EnsureControl("lblCounts", "Forms.Label.1")
     PlaceControl mLblCounts, 9, 6, 580, 19
     mLblCounts.Caption = "候補を読み込みます"
@@ -203,32 +205,35 @@ Private Sub BuildControls()
     Set mLblStatus = EnsureControl("lblStatus", "Forms.Label.1")
     PlaceControl mLblStatus, 9, 323.5, 580, 23
     mLblStatus.Caption = "フォームを開いただけでは変更しません。"
+    Set mLblDWarning = EnsureControl("lblDWarning", "Forms.Label.1")
+    PlaceControl mLblDWarning, 9, 348, 580, 23
+    mLblDWarning.Visible = False
     Set mCmdGoTo = EnsureControl("cmdGoTo", "Forms.CommandButton.1")
-    PlaceControl mCmdGoTo, 9, 354.5, 70, 21
+    PlaceControl mCmdGoTo, 9, 379.5, 70, 21
     mCmdGoTo.Caption = "対象行へ移動"
     Set mCmdApprove = EnsureControl("cmdApprove", "Forms.CommandButton.1")
-    PlaceControl mCmdApprove, 84, 354.5, 78, 21
+    PlaceControl mCmdApprove, 84, 379.5, 78, 21
     mCmdApprove.Caption = "同一として処理"
     Set mCmdOther = EnsureControl("cmdOther", "Forms.CommandButton.1")
-    PlaceControl mCmdOther, 167, 354.5, 50, 21
+    PlaceControl mCmdOther, 167, 379.5, 50, 21
     mCmdOther.Caption = "別物"
     Set mCmdHold = EnsureControl("cmdHold", "Forms.CommandButton.1")
-    PlaceControl mCmdHold, 222, 354.5, 50, 21
+    PlaceControl mCmdHold, 222, 379.5, 50, 21
     mCmdHold.Caption = "保留"
     Set mCmdNext = EnsureControl("cmdNext", "Forms.CommandButton.1")
-    PlaceControl mCmdNext, 277, 354.5, 60, 21
+    PlaceControl mCmdNext, 277, 379.5, 60, 21
     mCmdNext.Caption = "次の候補"
     Set mCmdDelete = EnsureControl("cmdDelete", "Forms.CommandButton.1")
-    PlaceControl mCmdDelete, 342, 354.5, 85.5, 21
+    PlaceControl mCmdDelete, 342, 379.5, 85.5, 21
     mCmdDelete.Caption = "選択行を一括削除"
     Set mCmdClear = EnsureControl("cmdClear", "Forms.CommandButton.1")
-    PlaceControl mCmdClear, 433, 354.5, 125, 21
+    PlaceControl mCmdClear, 433, 379.5, 125, 21
     mCmdClear.Caption = "選択行の番号をクリア"
     Set mCmdRefresh = EnsureControl("cmdRefresh", "Forms.CommandButton.1")
-    PlaceControl mCmdRefresh, 9, 382, 70, 21
+    PlaceControl mCmdRefresh, 9, 407, 70, 21
     mCmdRefresh.Caption = "再読み込み"
     Set mCmdFinish = EnsureControl("cmdFinish", "Forms.CommandButton.1")
-    PlaceControl mCmdFinish, 508, 382, 82, 21
+    PlaceControl mCmdFinish, 508, 407, 82, 21
     mCmdFinish.Caption = "確認終了"
     mTxtDetails.MultiLine = True
     mTxtDetails.ScrollBars = fmScrollBarsVertical
@@ -247,16 +252,36 @@ Private Sub UserForm_Initialize()
     rendering = False
 End Sub
 
-Public Sub LoadCases(ByVal loaded As Collection, ByVal yearValue As Long)
+Public Sub LoadCases(ByVal loaded As Collection, ByVal yearValue As Long, _
+                     Optional ByVal unavailableReason As String = "")
     Set cases = loaded
     targetYear = yearValue
+    mDUnavailableReason = unavailableReason
     Set deletionSelection = CreateObject("Scripting.Dictionary")
+    UpdateDWarning
+    If Len(mDUnavailableReason) > 0 And mCboCategory.ListIndex = 3 Then
+        rendering = True: mCboCategory.ListIndex = 0: rendering = False
+    End If
     SelectDWhenOnlyCategory
     ShowCategory
+    If Len(mDUnavailableReason) > 0 Then MsgBox "D候補を利用できません: " & mDUnavailableReason, vbExclamation
+End Sub
+
+Private Sub UpdateDWarning()
+    mLblDWarning.Caption = "警告：D利用不可: " & mDUnavailableReason
+    mLblDWarning.ControlTipText = mDUnavailableReason
+    mLblDWarning.Visible = (Len(mDUnavailableReason) > 0)
+    rendering = True
+    If mLblDWarning.Visible Then
+        mCboCategory.List(3) = "D：利用不可（必要な見出しなし）"
+    Else
+        mCboCategory.List(3) = "D：コピー識別番号のクリア候補"
+    End If
+    rendering = False
 End Sub
 
 Private Sub SelectDWhenOnlyCategory()
-    If Not HasReviewCategory("A") And Not HasReviewCategory("B") And _
+    If Len(mDUnavailableReason) = 0 And Not HasReviewCategory("A") And Not HasReviewCategory("B") And _
        Not HasReviewCategory("C") And HasReviewCategory("D") Then
         rendering = True: mCboCategory.ListIndex = 3: rendering = False
     End If
@@ -375,6 +400,7 @@ Private Sub ShowCurrent()
     mCmdHold.Enabled = (category <> "D")
     mCmdDelete.Enabled = (category <> "D")
     mCmdClear.Enabled = IsCopyCandidate(item, rowNo)
+    If Len(mDUnavailableReason) > 0 Then mCmdClear.Enabled = False
     mChkDelete.Visible = (category = "C")
     If mChkDelete.Visible Then mChkDelete.Value = (Len(decision) = 0 And deletionSelection.Exists(CStr(item("key"))))
     If category = "D" Then
@@ -396,7 +422,13 @@ Private Function IsCopyCandidate(ByVal item As Object, ByVal rowNo As Long) As B
 End Function
 
 Private Sub mCboCategory_Change()
-    If Not rendering Then ShowCategory
+    If rendering Then Exit Sub
+    If Len(mDUnavailableReason) > 0 Then
+        If mCboCategory.ListIndex = 3 Then
+            rendering = True: mCboCategory.ListIndex = 0: rendering = False
+        End If
+    End If
+    ShowCategory
 End Sub
 Private Sub mLstCases_Click()
     If Not rendering Then ShowCurrent
@@ -412,6 +444,7 @@ Private Sub ShowCurrentSelection()
     If CStr(item("category")) <> "D" Then Exit Sub
     rowNo = SelectedRow()
     mCmdClear.Enabled = IsCopyCandidate(item, rowNo)
+    If Len(mDUnavailableReason) > 0 Then mCmdClear.Enabled = False
     If rowNo = CLng(item("copyKeeperRow")) Then
         mLblStatus.Caption = "この行はCSVと一致する番号保持行です。クリアできません。"
     ElseIf mCmdClear.Enabled Then
@@ -426,6 +459,7 @@ Private Sub mCmdClear_Click()
     On Error GoTo Failed
     Set item = SelectedCase()
     If item Is Nothing Then Exit Sub
+    If Len(mDUnavailableReason) > 0 Then Exit Sub
     If Not IsCopyCandidate(item, SelectedRow()) Then
         mLblStatus.Caption = "保持行または候補外の行です。番号クリアを中止しました。"
         Exit Sub
@@ -585,19 +619,69 @@ Private Sub mCmdDelete_Click()
     mCmdRefresh_Click
 End Sub
 Private Sub mCmdRefresh_Click()
-    Dim copyCases As Collection, copyItem As Object
+    Dim refreshed As Collection, copyCases As Collection, copyItem As Object, previousCases As Collection
+    Dim unavailableReason As String, detectorNumber As Long
+    Dim detectorDescription As String, detectorSource As String, newSelection As Object
+    Dim previousSelection As Object, previousReason As String, failureText As String
+    Dim previousCategory As Long, committed As Boolean
     On Error GoTo Failed
-    Set cases = SyncReviewCandidates(targetYear)
+    Set refreshed = SyncReviewCandidates(targetYear)
+    Err.Clear
+    On Error Resume Next
     Set copyCases = SyncReviewCopyIdCandidates(targetYear)
-    For Each copyItem In copyCases
-        cases.Add copyItem
+    detectorNumber = Err.Number
+    detectorDescription = Err.Description
+    detectorSource = Err.Source
+    Err.Clear
+    On Error GoTo Failed
+    If detectorNumber <> 0 Then
+        If detectorNumber <> vbObjectError + 6141 Then Err.Raise detectorNumber, detectorSource, detectorDescription
+        unavailableReason = detectorDescription
+    Else
+        For Each copyItem In copyCases
+            refreshed.Add copyItem
+        Next copyItem
+    End If
+    For Each copyItem In refreshed
+        If CStr(copyItem("category")) <> "D" Then detectorDescription = SyncReviewDecision(copyItem)
     Next copyItem
-    Set deletionSelection = CreateObject("Scripting.Dictionary")
+    Set newSelection = CreateObject("Scripting.Dictionary")
+    Set previousCases = cases
+    Set previousSelection = deletionSelection
+    previousReason = mDUnavailableReason
+    previousCategory = mCboCategory.ListIndex
+    committed = True
+    Set cases = refreshed
+    Set deletionSelection = newSelection
+    mDUnavailableReason = unavailableReason
+    UpdateDWarning
+    If Len(mDUnavailableReason) > 0 And mCboCategory.ListIndex = 3 Then
+        rendering = True: mCboCategory.ListIndex = 0: rendering = False
+    End If
     SelectDWhenOnlyCategory
     ShowCategory
+    If Len(mDUnavailableReason) > 0 Then MsgBox "D候補を利用できません: " & mDUnavailableReason, vbExclamation
     Exit Sub
 Failed:
-    MsgBox "再読み込みに失敗: " & Err.Description, vbExclamation
+    failureText = Err.Description
+    If committed Then
+        On Error Resume Next
+        Err.Clear
+        Set cases = previousCases
+        Set deletionSelection = previousSelection
+        mDUnavailableReason = previousReason
+        rendering = True: mCboCategory.ListIndex = previousCategory: rendering = False
+        UpdateDWarning
+        ShowCategory
+        If Err.Number <> 0 Then
+            Unload Me
+            MsgBox "再読み込みと旧表示の復元に失敗しました。フォームを閉じて再度開いてください: " & failureText, vbCritical
+            Exit Sub
+        End If
+        On Error GoTo 0
+    End If
+    Unload Me
+    MsgBox "再読み込みを安全に中止し、フォームを閉じました。再度開いてください: " & failureText, vbExclamation
 End Sub
 Private Sub mCmdFinish_Click()
     Unload Me

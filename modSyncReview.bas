@@ -54,15 +54,28 @@ Public Sub SyncReviewEndBatch(ByVal allowOpen As Boolean)
 End Sub
 
 Private Sub OpenSyncReviewForYear(ByVal yearValue As Long)
-    Dim cases As Collection, copyCases As Collection, copyItem As Object
+    Dim cases As Collection, copyCases As Collection, copyItem As Object, unavailableReason As String
     On Error GoTo Failed
     Set cases = SyncReviewCandidates(yearValue)
+    On Error GoTo DUnavailable
     Set copyCases = SyncReviewCopyIdCandidates(yearValue)
+    On Error GoTo Failed
     For Each copyItem In copyCases
         cases.Add copyItem
     Next copyItem
-    If cases.Count = 0 Then Exit Sub
-    frmSyncReview.LoadCases cases, yearValue
+    GoTo DisplayCases
+DUnavailable:
+    If Err.Number <> vbObjectError + 6141 Then GoTo Failed
+    unavailableReason = Err.Description
+    Resume WithoutD
+WithoutD:
+    On Error GoTo Failed
+DisplayCases:
+    If cases.Count = 0 Then
+        If Len(unavailableReason) > 0 Then MsgBox "D候補を利用できません: " & unavailableReason, vbExclamation
+        Exit Sub
+    End If
+    frmSyncReview.LoadCases cases, yearValue, unavailableReason
     If Not frmSyncReview.Visible Then frmSyncReview.Show vbModeless
     Exit Sub
 Failed:
@@ -420,13 +433,52 @@ NextDestination:
     Set SyncReviewCandidates = cases
 End Function
 
+Private Function ReviewOtherRowsMatch(ByVal index As Object, ByVal key As String, ByVal excludedRow As Long) As Boolean
+    Dim rows As Collection
+    If Len(key) = 0 Then Exit Function
+    Set rows = ReviewRows(index, key)
+    If rows.Count = 0 Then Exit Function
+    ReviewOtherRowsMatch = (rows.Count > 1 Or CLng(rows(1)) <> excludedRow)
+End Function
+
+' The three index lists are already in worksheet order. Merge them without
+' re-scanning the worksheet, retaining one copy of each matching row.
+Private Function ReviewMatchingRows(ByVal ids As Object, ByVal bars As Object, ByVal numbers As Object, _
+    ByVal fid As String, ByVal barcode As String, ByVal fileNo As String) As Collection
+    Dim lists(0 To 2) As Collection, positions(0 To 2) As Long
+    Dim result As New Collection, i As Long, nextRow As Long, candidate As Long
+    Set lists(0) = ReviewRows(ids, fid)
+    Set lists(1) = ReviewRows(bars, barcode)
+    Set lists(2) = ReviewRows(numbers, fileNo)
+    For i = 0 To 2: positions(i) = 1: Next i
+    Do
+        nextRow = 0
+        For i = 0 To 2
+            If positions(i) <= lists(i).Count Then
+                candidate = CLng(lists(i)(positions(i)))
+                If nextRow = 0 Or candidate < nextRow Then nextRow = candidate
+            End If
+        Next i
+        If nextRow = 0 Then Exit Do
+        result.Add nextRow
+        For i = 0 To 2
+            If positions(i) <= lists(i).Count Then
+                If CLng(lists(i)(positions(i))) = nextRow Then positions(i) = positions(i) + 1
+            End If
+        Next i
+    Loop
+    Set ReviewMatchingRows = result
+End Function
+
 Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collection
     Dim src As Worksheet, dst As Worksheet, cases As New Collection
-    Dim sRow As Long, dRow As Long, otherRow As Long, srcLast As Long, dstLast As Long
+    Dim sRow As Long, dRow As Long, srcLast As Long, dstLast As Long
     Dim fid As String, fileNo As String, barcode As String, sourceName As String
-    Dim keeperRows As New Collection, collisionRows As New Collection, candidates As New Collection
+    Dim keeperRows As Collection, collisionRows As Collection, candidates As Collection
     Dim v As Variant, rowNo As Long, valid As Boolean, reason As String
     Dim allRows As Collection, copyCase As Object, datasetSignature As String
+    Dim csvIds As Object, csvBars As Object, csvNumbers As Object
+    Dim dstIds As Object, dstBars As Object, dstNumbers As Object
 
     If yearValue < 1900 Or yearValue > 2200 Then Err.Raise vbObjectError + 6140, , "対象年度が不正です。"
     Set reviewHeaderCache = CreateObject("Scripting.Dictionary")
@@ -450,6 +502,23 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
 
     srcLast = ReviewLast(src): dstLast = ReviewLast(dst)
     datasetSignature = ReviewCopyDatasetSignature(src, dst)
+    Set csvIds = CreateObject("Scripting.Dictionary")
+    Set csvBars = CreateObject("Scripting.Dictionary")
+    Set csvNumbers = CreateObject("Scripting.Dictionary")
+    Set dstIds = CreateObject("Scripting.Dictionary")
+    Set dstBars = CreateObject("Scripting.Dictionary")
+    Set dstNumbers = CreateObject("Scripting.Dictionary")
+    ' Include every fiscal year: IDs and numbers are globally unique safeguards.
+    For sRow = 2 To srcLast
+        ReviewMapAdd csvIds, ReviewField(src, sRow, "ファイルID"), sRow
+        ReviewMapAdd csvBars, ReviewField(src, sRow, "バーコード番号"), sRow
+        ReviewMapAdd csvNumbers, ReviewPadding(ReviewField(src, sRow, "ファイル番号")), sRow
+    Next sRow
+    For dRow = 2 To dstLast
+        ReviewMapAdd dstIds, ReviewField(dst, dRow, "ファイルID"), dRow
+        ReviewMapAdd dstBars, ReviewField(dst, dRow, "バーコード番号"), dRow
+        ReviewMapAdd dstNumbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), dRow
+    Next dRow
     For sRow = 2 To srcLast
         If ReviewFiscal(src, sRow) <> yearValue Then GoTo NextCopySource
         fid = ReviewField(src, sRow, "ファイルID")
@@ -458,39 +527,27 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
         sourceName = ReviewName(src, sRow, True, True)
         If Len(fid) = 0 Or Len(fileNo) = 0 Or Len(barcode) = 0 Or Len(sourceName) = 0 Then GoTo NextCopySource
 
-        valid = True
-        For otherRow = 2 To srcLast
-            If otherRow <> sRow Then
-                If ReviewField(src, otherRow, "ファイルID") = fid Or _
-                   ReviewField(src, otherRow, "バーコード番号") = barcode Or _
-                   (Len(ReviewPadding(ReviewField(src, otherRow, "ファイル番号"))) > 0 And _
-                    ReviewPadding(ReviewField(src, otherRow, "ファイル番号")) = fileNo) Then
-                    valid = False: Exit For
-                End If
-            End If
-        Next otherRow
-        If Not valid Then GoTo NextCopySource
+        If ReviewOtherRowsMatch(csvIds, fid, sRow) Or _
+           ReviewOtherRowsMatch(csvBars, barcode, sRow) Or _
+           ReviewOtherRowsMatch(csvNumbers, fileNo, sRow) Then GoTo NextCopySource
 
-        Set keeperRows = New Collection: Set collisionRows = New Collection: Set candidates = New Collection
-        For dRow = 2 To dstLast
-            If ReviewField(dst, dRow, "ファイルID") = fid Or _
-               ReviewField(dst, dRow, "バーコード番号") = barcode Or _
-               (Len(ReviewPadding(ReviewField(dst, dRow, "ファイル番号"))) > 0 And _
-                ReviewPadding(ReviewField(dst, dRow, "ファイル番号")) = fileNo) Then
-                collisionRows.Add dRow
-                If ReviewField(dst, dRow, "ファイルID") = fid And _
-                   ReviewPadding(ReviewField(dst, dRow, "ファイル番号")) = fileNo And _
-                   ReviewField(dst, dRow, "バーコード番号") = barcode And _
-                   ReviewFiscal(dst, dRow) = yearValue And _
-                   ReviewName(dst, dRow, False, True) = sourceName Then keeperRows.Add dRow
-            End If
-        Next dRow
+        Set keeperRows = New Collection: Set candidates = New Collection
+        Set collisionRows = ReviewMatchingRows(dstIds, dstBars, dstNumbers, fid, barcode, fileNo)
+        For Each v In collisionRows
+            dRow = CLng(v)
+            If ReviewField(dst, dRow, "ファイルID") = fid And _
+               ReviewPadding(ReviewField(dst, dRow, "ファイル番号")) = fileNo And _
+               ReviewField(dst, dRow, "バーコード番号") = barcode And _
+               ReviewFiscal(dst, dRow) = yearValue And _
+               ReviewName(dst, dRow, False, True) = sourceName Then keeperRows.Add dRow
+        Next v
         If keeperRows.Count <> 1 Then GoTo NextCopySource
         rowNo = CLng(keeperRows(1))
         If ReviewField(dst, rowNo, "同期状態") <> "登録予定" And _
            ReviewField(dst, rowNo, "同期状態") <> "同期済" Then GoTo NextCopySource
         If ReviewName(dst, rowNo, False, False) <> ReviewName(src, sRow, True, False) Then GoTo NextCopySource
 
+        valid = True
         For Each v In collisionRows
             dRow = CLng(v)
             If dRow <> rowNo Then
@@ -498,17 +555,9 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
                 If Len(ReviewName(dst, dRow, False, True)) = 0 Or _
                    Len(ReviewName(dst, dRow, False, False)) = 0 Then valid = False
                 If ReviewName(dst, dRow, False, True) = sourceName Then valid = False
-                For otherRow = 2 To srcLast
-                    If otherRow <> sRow Then
-                        If (Len(ReviewField(dst, dRow, "ファイルID")) > 0 And _
-                            ReviewField(dst, dRow, "ファイルID") = ReviewField(src, otherRow, "ファイルID")) Or _
-                           (Len(ReviewField(dst, dRow, "バーコード番号")) > 0 And _
-                            ReviewField(dst, dRow, "バーコード番号") = ReviewField(src, otherRow, "バーコード番号")) Or _
-                           (Len(ReviewPadding(ReviewField(dst, dRow, "ファイル番号"))) > 0 And _
-                            ReviewPadding(ReviewField(dst, dRow, "ファイル番号")) = _
-                            ReviewPadding(ReviewField(src, otherRow, "ファイル番号"))) Then valid = False
-                    End If
-                Next otherRow
+                If ReviewOtherRowsMatch(csvIds, ReviewField(dst, dRow, "ファイルID"), sRow) Or _
+                   ReviewOtherRowsMatch(csvBars, ReviewField(dst, dRow, "バーコード番号"), sRow) Or _
+                   ReviewOtherRowsMatch(csvNumbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), sRow) Then valid = False
                 candidates.Add dRow
             End If
         Next v
@@ -583,11 +632,38 @@ Private Function ReviewCopyCaseCurrent(ByVal expected As Object, ByVal selectedR
     Next i
 End Function
 
+Private Function ReviewCopyAuditNextRow(ByVal ws As Worksheet) As Long
+    Dim lastCell As Range
+    Set lastCell = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+        LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious, SearchFormat:=False)
+    If lastCell Is Nothing Then
+        ReviewCopyAuditNextRow = 2
+    Else
+        ReviewCopyAuditNextRow = Application.Max(2, lastCell.Row + 1)
+    End If
+End Function
+
+Private Sub ReviewPreflightCopyAudit()
+    Dim ws As Worksheet, r As Long, col As Long
+    If ThisWorkbook.ReadOnly Then Err.Raise vbObjectError + 6156, , "監査履歴を書けません: ブックが読み取り専用です。"
+    Set ws = ReviewAudit(False)
+    If ws Is Nothing Then Err.Raise vbObjectError + 6156, , _
+        "同期候補確認履歴シートがありません。先に安全なコピーで履歴シートを準備してください。番号クリアは中止します。"
+    If ws.ProtectContents Then Err.Raise vbObjectError + 6156, , "監査履歴シートが保護されています。番号クリアは中止します。"
+    r = ReviewCopyAuditNextRow(ws)
+    If r > ws.Rows.Count Then Err.Raise vbObjectError + 6156, , "監査履歴シートに追記する行がありません。"
+    For col = 1 To 12
+        If ws.Cells(r, col).MergeCells Then _
+            Err.Raise vbObjectError + 6156, , "監査履歴の追記先に結合セルがあります。番号クリアは中止します。"
+    Next col
+End Sub
+
 Private Sub ReviewWriteCopyClearAudit(ByVal item As Object, ByVal decision As String, _
     ByVal detail As String, ByVal backup As String)
     Dim ws As Worksheet, r As Long
-    Set ws = ReviewAudit(True)
-    r = ReviewLast(ws) + 1
+    Set ws = ReviewAudit(False)
+    If ws Is Nothing Then Err.Raise vbObjectError + 6156, , "監査履歴シートがありません。"
+    r = ReviewCopyAuditNextRow(ws)
     ws.Cells(r, 1).Value2 = Now
     ws.Cells(r, 2).Value2 = CLng(item("year"))
     ws.Cells(r, 3).Value2 = "D"
@@ -595,7 +671,7 @@ Private Sub ReviewWriteCopyClearAudit(ByVal item As Object, ByVal decision As St
     ws.Cells(r, 9).NumberFormat = "@": ws.Cells(r, 10).NumberFormat = "@"
     ws.Cells(r, 4).Value2 = CStr(item("key"))
     ws.Cells(r, 6).Value2 = CLng(item("sourceRow"))
-    ws.Cells(r, 7).Value2 = CStr(item("copyKeeperRow")) & ";" & CStr(item("rows"))
+    ws.Cells(r, 7).Value2 = CStr(item("rows"))
     ws.Cells(r, 8).Value2 = CStr(item("reason"))
     ws.Cells(r, 9).Value2 = ReviewDigest(CStr(item("sourceSignature")))
     ws.Cells(r, 10).Value2 = ReviewDigest(CStr(item("destinationSignature")))
@@ -642,7 +718,7 @@ Public Function SyncReviewClearCopyIdentifiers(ByVal item As Object, ByVal selec
     Dim oldFormulas(1 To 3) As String, wasFormula(1 To 3) As Boolean, oldFormats(1 To 3) As String
     Dim i As Long, backup As String, details As String, failureText As String
     Dim prevEvents As Boolean, eventsCaptured As Boolean, changing As Boolean, restored As Boolean
-    Dim criticalFailure As Boolean
+    Dim criticalFailure As Boolean, auditStarted As Boolean
     On Error GoTo Failed
     If item Is Nothing Then Err.Raise vbObjectError + 6143, , "D候補を指定してください。"
     If CStr(item("category")) <> "D" Or CLng(item("sourceRow")) < 2 Then _
@@ -688,9 +764,13 @@ Public Function SyncReviewClearCopyIdentifiers(ByVal item As Object, ByVal selec
         If wasFormula(i) Then oldFormulas(i) = CStr(dst.Cells(selectedRow, cols(i)).Formula)
         oldFormats(i) = CStr(dst.Cells(selectedRow, cols(i)).NumberFormat)
     Next i
+    ReviewPreflightCopyAudit
     backup = ReviewBackup("番号クリア前")
     If Not ReviewCopyCaseCurrent(item, selectedRow) Then _
         Err.Raise vbObjectError + 6152, , "バックアップ作成中にCSVまたはExcelデータが変わりました。"
+    ReviewPreflightCopyAudit
+    If Not ReviewCopyCaseCurrent(item, selectedRow) Then _
+        Err.Raise vbObjectError + 6152, , "監査履歴の確認中にCSVまたはExcelデータが変わりました。"
 
     prevEvents = Application.EnableEvents
     eventsCaptured = True
@@ -703,16 +783,21 @@ Public Function SyncReviewClearCopyIdentifiers(ByVal item As Object, ByVal selec
         If CStr(dst.Cells(selectedRow, cols(i)).NumberFormat) <> oldFormats(i) Then _
             Err.Raise vbObjectError + 6154, , "クリア時に識別番号セルの書式が変化しました。"
     Next i
-    Application.EnableEvents = prevEvents
     details = "Excel行" & selectedRow & "のファイルID・ファイル番号・バーコード番号を空欄化。" & _
         "保持行Excel" & keeperRow & "および同期状態・他セルは変更していません。"
+    auditStarted = True
     ReviewWriteCopyClearAudit item, "番号クリア完了", details, backup
+    Application.EnableEvents = prevEvents
     changing = False
     eventsCaptured = False
     SyncReviewClearCopyIdentifiers = True
     Exit Function
 Failed:
     failureText = Err.Description
+    If auditStarted Then
+        failureText = failureText & " / 完了履歴の追記に失敗し、履歴が一部だけ残った可能性があります。"
+        criticalFailure = True
+    End If
     If changing Then
         On Error Resume Next
         Application.EnableEvents = False
@@ -720,6 +805,30 @@ Failed:
         If Not restored Then
             failureText = failureText & " / 変更前の値・数式・書式を完全に復元できませんでした。"
             criticalFailure = True
+        End If
+        On Error GoTo 0
+    End If
+    If Len(backup) > 0 Then
+        On Error Resume Next
+        Err.Clear
+        If Not eventsCaptured Then
+            prevEvents = Application.EnableEvents
+            eventsCaptured = (Err.Number = 0)
+        End If
+        If eventsCaptured Then
+            Err.Clear
+            Application.EnableEvents = False
+        End If
+        If Not eventsCaptured Or Err.Number <> 0 Then
+            failureText = failureText & " / 監査時のExcelイベント抑止に失敗しました。"
+            criticalFailure = True
+        Else
+            Err.Clear
+            ReviewWriteCopyClearAudit item, "番号クリア失敗", failureText, backup
+            If Err.Number <> 0 Then
+                failureText = failureText & " / 失敗履歴も記録できませんでした: " & Err.Description
+                criticalFailure = True
+            End If
         End If
         On Error GoTo 0
     End If
@@ -733,16 +842,9 @@ Failed:
         End If
         On Error GoTo 0
     End If
-    If Len(backup) > 0 Then
-        On Error Resume Next
-        Err.Clear
-        ReviewWriteCopyClearAudit item, "番号クリア失敗", failureText, backup
-        If Err.Number <> 0 Then failureText = failureText & " / 失敗履歴も記録できませんでした: " & Err.Description
-        On Error GoTo 0
-    End If
     If criticalFailure Then
         failureText = failureText & " ブックを保存せず終了し、事前バックアップを保全してください。"
-        MsgBox "重大な復元失敗です: " & failureText & vbCrLf & _
+        MsgBox "重大な復元・監査履歴失敗です: " & failureText & vbCrLf & _
             "事前バックアップ: " & backup & vbCrLf & _
             "ブックを保存せず終了してください。", vbCritical
         Err.Raise vbObjectError + 6155, "SyncReviewClearCopyIdentifiers", _

@@ -18,8 +18,8 @@ class SyncReviewDFormTests(unittest.TestCase):
         opener = proc(src, "OpenSyncReviewForYear")
         self.assertIn("SyncReviewCandidates(yearValue)", opener)
         self.assertIn("SyncReviewCopyIdCandidates(yearValue)", opener)
-        self.assertIn("If cases.Count = 0 Then Exit Sub", opener)
-        self.assertLess(opener.index("cases.Add copyItem"), opener.index("If cases.Count = 0 Then Exit Sub"))
+        self.assertIn("If cases.Count = 0 Then", opener)
+        self.assertLess(opener.index("cases.Add copyItem"), opener.index("If cases.Count = 0 Then"))
 
     def test_four_category_counts_and_category_does_not_call_abc_decisions(self):
         src = FORM.read_text(encoding="utf-8")
@@ -85,6 +85,63 @@ class SyncReviewDFormTests(unittest.TestCase):
         self.assertIn("SelectDWhenOnlyCategory", refresh)
         self.assertIn("Private Sub SelectDWhenOnlyCategory()", src)
         self.assertIn("mCboCategory.ListIndex = 3", src)
+
+    def test_missing_d_header_disables_d_and_warning_survives_selection(self):
+        src = FORM.read_text(encoding="utf-8")
+        load = src[src.index("Public Sub LoadCases("):src.index("End Sub", src.index("Public Sub LoadCases("))]
+        self.assertIn("Optional ByVal unavailableReason As String", load)
+        self.assertIn("mDUnavailableReason = unavailableReason", load)
+        self.assertIn('EnsureControl("lblDWarning", "Forms.Label.1")', src)
+        self.assertIn("mLblDWarning.Caption =", src)
+        self.assertIn("mLblDWarning.Visible =", src)
+        self.assertIn("If Len(mDUnavailableReason) > 0 Then", proc(src, "mCboCategory_Change"))
+        self.assertIn("mCmdClear.Enabled = False", proc(src, "ShowCurrent"))
+
+    def test_reopening_loaded_form_falls_back_from_unavailable_d(self):
+        src = FORM.read_text(encoding="utf-8")
+        load = src[src.index("Public Sub LoadCases("):src.index("End Sub", src.index("Public Sub LoadCases("))]
+        self.assertIn('If Len(mDUnavailableReason) > 0 And mCboCategory.ListIndex = 3 Then', load)
+        self.assertIn('rendering = True: mCboCategory.ListIndex = 0: rendering = False', load)
+        self.assertLess(load.index('mCboCategory.ListIndex = 0'), load.index('ShowCategory'))
+
+    def test_refresh_stages_candidates_and_only_recovers_missing_d_header(self):
+        src = FORM.read_text(encoding="utf-8")
+        refresh = proc(src, "mCmdRefresh_Click")
+        self.assertIn("Set refreshed = SyncReviewCandidates(targetYear)", refresh)
+        self.assertIn("Set copyCases = SyncReviewCopyIdCandidates(targetYear)", refresh)
+        self.assertIn("vbObjectError + 6141", refresh)
+        self.assertIn("Err.Raise detectorNumber", refresh)
+        self.assertIn("refreshed.Add copyItem", refresh)
+        self.assertLess(refresh.index("refreshed.Add copyItem"), refresh.index("Set cases = refreshed"))
+        self.assertLess(refresh.index("If detectorNumber <> 0 Then"), refresh.index("Set cases = refreshed"))
+        self.assertNotIn("cases.Add copyItem", refresh)
+        self.assertLess(refresh.index("Set cases = refreshed"), refresh.index("ShowCategory"))
+        self.assertIn("mDUnavailableReason = unavailableReason", refresh)
+        self.assertIn("UpdateDWarning", refresh)
+        self.assertIn('mCboCategory.List(3) = "D：コピー識別番号のクリア候補"', src)
+        self.assertIn('mLblDWarning.Caption = "警告：D利用不可: " & mDUnavailableReason', src)
+        self.assertIn('MsgBox "D候補を利用できません: " & mDUnavailableReason', src)
+        self.assertIn("Set newSelection = CreateObject", refresh)
+        self.assertLess(refresh.index("Set newSelection = CreateObject"), refresh.index("Set cases = refreshed"))
+        self.assertLess(refresh.index("Err.Raise detectorNumber"), refresh.index("Set cases = refreshed"))
+        self.assertIn("Set previousCases = cases", refresh)
+        self.assertIn("Set previousSelection = deletionSelection", refresh)
+        self.assertIn("previousReason = mDUnavailableReason", refresh)
+        self.assertIn("If committed Then", refresh)
+        self.assertIn("Set cases = previousCases", refresh)
+        self.assertIn("Set deletionSelection = previousSelection", refresh)
+        self.assertIn("mDUnavailableReason = previousReason", refresh)
+
+    def test_bottom_controls_are_inside_client_area_with_margin(self):
+        src = FORM.read_text(encoding="utf-8")
+        build = proc(src, "BuildControls")
+        self.assertIn("Me.Height = Me.Height + (440 - Me.InsideHeight)", build)
+        self.assertNotIn("Me.InsideHeight =", build)
+        inner = 440.0
+        bottom = max(float(y) + float(h) for y, h in
+                     re.findall(r"PlaceControl mCmd(?:Refresh|Finish), [\d.]+, ([\d.]+), [\d.]+, ([\d.]+)", build))
+        self.assertGreater(inner - bottom, 8)
+        self.assertGreater(bottom, 403)
 
     def test_critical_rollback_failure_is_propagated_to_form_status(self):
         api_text = (ROOT / "modSyncReview.bas").read_text(encoding="utf-8")

@@ -14,6 +14,7 @@ CONTROLS = {
     "lblCounts": "Label", "cboCategory": "ComboBox", "lblCase": "Label",
     "lstCases": "ListBox", "lblRows": "Label", "lstRows": "ListBox",
     "txtDetails": "TextBox", "chkDelete": "CheckBox", "lblStatus": "Label",
+    "lblDWarning": "Label",
     "cmdGoTo": "CommandButton", "cmdApprove": "CommandButton",
     "cmdOther": "CommandButton", "cmdHold": "CommandButton",
     "cmdNext": "CommandButton", "cmdDelete": "CommandButton",
@@ -47,7 +48,8 @@ class BlankFormTests(unittest.TestCase):
         self.assertLess(source.index('Set mCboCategory = EnsureControl'), source.index('mCboCategory.AddItem "A'))
         self.assertLess(source.index('If mLstCases.ListCount > 0 Then mLstCases.ListIndex = 0'), source.index('    rendering = False\n    ShowCurrent'))
         self.assertIn("Me.Width = 605", source)
-        self.assertIn("Me.Height = 410", source)
+        self.assertIn("Me.Height = Me.Height + (440 - Me.InsideHeight)", source)
+        self.assertNotIn("Me.InsideHeight =", source)
         self.assertIn("mTxtDetails.MultiLine = True", source)
         self.assertIn("mTxtDetails.ScrollBars = fmScrollBarsVertical", source)
         self.assertIn("mTxtDetails.Locked = True", source)
