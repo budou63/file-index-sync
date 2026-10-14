@@ -6,7 +6,7 @@ import re
 import unittest
 from pathlib import Path
 
-MODULE = (Path(__file__).resolve().parents[1] / "modSyncReview.bas").read_text(encoding="utf-8")
+MODULE = (Path(__file__).resolve().parents[1] / "vba/modSyncReview.txt").read_text(encoding="utf-8")
 
 
 def year(raw):

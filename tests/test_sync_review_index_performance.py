@@ -142,7 +142,7 @@ if __name__ == "__main__":
         old, new = benchmark(size)
         print(f"Python model {size} CSV + {size} destination: nested={old:.3f}s indexed={new:.3f}s ratio={old/new:.1f}x")
 
-SOURCE = Path(__file__).resolve().parents[1] / "modSyncReview.bas"
+SOURCE = Path(__file__).resolve().parents[1] / "vba/modSyncReview.txt"
 
 
 def procedure(name):

@@ -58,7 +58,7 @@ class BlankFormTests(unittest.TestCase):
         self.assertIn("SyncReviewApprove(item, SelectedRow())", source)
 
     def test_opener_loads_before_show_and_form_initializes_before_data_render(self):
-        module = (ROOT / 'modSyncReview.bas').read_text(encoding='utf-8')
+        module = (ROOT / 'vba/modSyncReview.txt').read_text(encoding='utf-8')
         opener = module[module.index('Private Sub OpenSyncReviewForYear('):]
         opener = opener[:opener.index('End Sub')]
         self.assertLess(opener.index('frmSyncReview.LoadCases cases, yearValue'),

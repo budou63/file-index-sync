@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class DOpenerFallbackTests(unittest.TestCase):
     def test_only_missing_d_headers_are_recoverable_and_abc_candidates_survive(self):
-        src = (ROOT / 'modSyncReview.bas').read_text(encoding='utf-8')
+        src = (ROOT / 'vba/modSyncReview.txt').read_text(encoding='utf-8')
         m = re.search(r'(?ms)^Private Sub OpenSyncReviewForYear\(.*?^End Sub', src)
         self.assertIsNotNone(m)
         opener = m.group()

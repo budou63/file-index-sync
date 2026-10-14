@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FORM = ROOT / "frmSyncReview_FormCode.txt"
-MODULE = ROOT / "modSyncReview.bas"
+MODULE = ROOT / "vba/modSyncReview.txt"
 
 
 def proc(text, name):
@@ -144,7 +144,7 @@ class SyncReviewDFormTests(unittest.TestCase):
         self.assertGreater(bottom, 403)
 
     def test_critical_rollback_failure_is_propagated_to_form_status(self):
-        api_text = (ROOT / "modSyncReview.bas").read_text(encoding="utf-8")
+        api_text = (ROOT / "vba/modSyncReview.txt").read_text(encoding="utf-8")
         api_start = api_text.index("Public Function SyncReviewClearCopyIdentifiers(")
         api = api_text[api_start:api_text.index("End Function", api_start) + len("End Function")]
         click = proc(FORM.read_text(encoding="utf-8"), "mCmdClear_Click")

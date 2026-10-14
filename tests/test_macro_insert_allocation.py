@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 import unittest
 
-MODULE = Path(__file__).resolve().parents[1] / "Module1"
+MODULE = Path(__file__).resolve().parents[1] / "vba/Module1.txt"
 SOURCE = MODULE.read_text(encoding="utf-8")
 
 

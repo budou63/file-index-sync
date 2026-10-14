@@ -5,6 +5,8 @@
 - GitHub `main` is the canonical source of truth for VBA and documentation.
 - Files under `サンプルデータ` are reference data for headers/layout/verification and are not implementation targets unless explicitly requested.
 - Do not treat a local workbook copy as the canonical implementation when it differs from `main`.
+- The six standard modules have one paste-ready source each at `vba/<VBA module name>.txt`, beginning with `Option Explicit` and omitting export-only `Attribute VB_Name`. Update their paths in tests and instructions if moved; do not create competing `.bas` exports as a second source of truth.
+- Form code, native `.frm`/`.frx` pairs, `frmSeal_`, the event class, and the sheet module stay in their existing root locations. Preserve `frmSeal`, `frmSealNew`, and `frmSyncReview` as separate components; standard-module relocation is not permission to alter their designer or event behavior.
 
 ## Operational manual synchronization rule
 

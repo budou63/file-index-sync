@@ -3,7 +3,7 @@ import re
 import unittest
 from pathlib import Path
 
-MODULE = Path(__file__).resolve().parents[1] / "modSyncReview.bas"
+MODULE = Path(__file__).resolve().parents[1] / "vba/modSyncReview.txt"
 
 
 def proc(name, end="End Function"):

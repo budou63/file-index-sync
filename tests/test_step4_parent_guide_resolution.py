@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 import unittest
 
-SOURCE = (Path(__file__).resolve().parents[1] / "Module1").read_text(encoding="utf-8")
+SOURCE = (Path(__file__).resolve().parents[1] / "vba/Module1.txt").read_text(encoding="utf-8")
 
 
 def resolve_level3(rows: list[dict[str, str]], parent_code: str, display_name: str) -> str:

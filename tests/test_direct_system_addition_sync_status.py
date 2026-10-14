@@ -5,7 +5,7 @@ import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = (ROOT / "Module1").read_text(encoding="utf-8")
+SOURCE = (ROOT / "vba/Module1.txt").read_text(encoding="utf-8")
 MANUAL = (ROOT / "新ファイル基準表.md").read_text(encoding="utf-8")
 
 

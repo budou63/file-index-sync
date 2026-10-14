@@ -3,9 +3,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE = (ROOT / "modSyncReview.bas").read_text(encoding="utf-8")
+MODULE = (ROOT / "vba/modSyncReview.txt").read_text(encoding="utf-8")
 FORM = (ROOT / "frmSyncReview.frm").read_text(encoding="utf-8")
-STEP2 = (ROOT / "Module1").read_text(encoding="utf-8")
+STEP2 = (ROOT / "vba/Module1.txt").read_text(encoding="utf-8")
 
 
 def procedure(code, start, end="End Function"):

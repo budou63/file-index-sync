@@ -4,10 +4,10 @@ import re
 import unittest
 ROOT = Path(__file__).resolve().parents[1]
 FORM = (ROOT / "frmSealNew_FormCode.txt").read_text(encoding="utf-8")
-LAYOUT = (ROOT / "modFrmSealNewLayout_Code.txt").read_text(encoding="utf-8")
+LAYOUT = (ROOT / "vba/modFrmSealNewLayout.txt").read_text(encoding="utf-8")
 EVENT_CLASS = (ROOT / "clsFrmSealNewEvent_Code.txt").read_text(encoding="utf-8")
 def project_source() -> str:
-    return "\n".join((ROOT / name).read_text(encoding="utf-8-sig", errors="replace") for name in ("Module1", "frmSeal_", "固定印刷設定.bas"))
+    return "\n".join((ROOT / name).read_text(encoding="utf-8-sig", errors="replace") for name in ("vba/Module1.txt", "frmSeal_", "vba/固定印刷設定.txt"))
 class FrmSealNewStaticTests(unittest.TestCase):
     def test_existing_click_handlers_match_dispatch_exactly(self):
         existing = set(re.findall(r"(?im)^Private Sub (\w+)_Click\(", (ROOT / "frmSeal_").read_text(encoding="utf-8")))
@@ -53,17 +53,17 @@ class FrmSealNewStaticTests(unittest.TestCase):
         self.assertIn("Private Sub Worksheet_SelectionChange", sheet)
         self.assertIn("行移動_移動先クリックで確定", sheet)
     def test_codepage_sensitive_symbols_use_chrW(self):
-        module = (ROOT / "Module1").read_text(encoding="utf-8")
+        module = (ROOT / "vba/Module1.txt").read_text(encoding="utf-8")
         for literal in ("ChrW(&H2212)", "ChrW(&H2713)", "ChrW(&HB7)", "ChrW(&H2011)", "ChrW(&H2013)", "ChrW(&H2014)"):
             self.assertIn(literal, module)
         for symbol in ("−", "✓", "·", "‑", "–", "—"):
             self.assertNotIn(chr(34) + symbol + chr(34), module)
     def test_shared_seal_helpers_match_legacy_and_are_used_without_form_instantiation(self):
         legacy = (ROOT / "frmSeal_").read_text(encoding="utf-8-sig")
-        shared = (ROOT / "modSealShared_Code.txt").read_text(encoding="utf-8")
+        shared = (ROOT / "vba/modSealShared.txt").read_text(encoding="utf-8")
         start = "Public Sub BuildIndexes_NewSpec("
         self.assertEqual(shared[shared.index(start):], legacy[legacy.index(start):])
-        module = (ROOT / "Module1").read_text(encoding="utf-8")
+        module = (ROOT / "vba/Module1.txt").read_text(encoding="utf-8")
         self.assertEqual(re.findall(r"\bfrmSeal\.(\w+)", module), ["Show"])
         for name in ("BuildIndexes_NewSpec", "WriteOneSeal_NewSpec", "ExtractWarekiNumber", "SaveTermToKei"):
             with self.subTest(helper=name):

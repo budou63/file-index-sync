@@ -1,4 +1,3 @@
-Attribute VB_Name = "modDummyExport"
 Option Explicit
 
 Private Const DUMMY_PROCESS_NAME As String = "ダミーブック出力"

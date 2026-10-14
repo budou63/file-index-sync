@@ -1,4 +1,3 @@
-Attribute VB_Name = "modSyncReview"
 Option Explicit
 
 Private Const REVIEW_SHEET As String = "同期候補確認履歴"
