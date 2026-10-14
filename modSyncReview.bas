@@ -416,6 +416,112 @@ NextDestination:
     Set SyncReviewCandidates = cases
 End Function
 
+Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collection
+    Dim src As Worksheet, dst As Worksheet, cases As New Collection
+    Dim sRow As Long, dRow As Long, otherRow As Long, srcLast As Long, dstLast As Long
+    Dim fid As String, fileNo As String, barcode As String, sourceName As String
+    Dim keeperRows As New Collection, collisionRows As New Collection, candidates As New Collection
+    Dim v As Variant, rowNo As Long, valid As Boolean, reason As String
+    Dim allRows As Collection
+
+    If yearValue < 1900 Or yearValue > 2200 Then Err.Raise vbObjectError + 6140, , "対象年度が不正です。"
+    Set reviewHeaderCache = CreateObject("Scripting.Dictionary")
+    Set reviewLastCache = CreateObject("Scripting.Dictionary")
+    Set src = ThisWorkbook.Worksheets(CSV_SHEET)
+    Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
+    If ReviewCol(src, "ファイルID") = 0 Or ReviewCol(src, "ファイル番号") = 0 Or _
+       ReviewCol(src, "バーコード番号") = 0 Or ReviewCol(src, "年度（和暦）", "年度(和暦)", "年度") = 0 Or _
+       ReviewCol(src, "作成年度（和暦）", "作成年度(和暦)", "作成年度") = 0 Or _
+       ReviewCol(src, "分類名２", "分類名2", "第1ガイド", "第１ガイド") = 0 Or _
+       ReviewCol(src, "分類名３", "分類名3", "第2ガイド", "第２ガイド") = 0 Or _
+       ReviewCol(src, "タイトル", "個別フォルダー", "個別フォルダ") = 0 Or _
+       ReviewCol(dst, "ファイルID") = 0 Or ReviewCol(dst, "ファイル番号") = 0 Or _
+       ReviewCol(dst, "バーコード番号") = 0 Or ReviewCol(dst, "同期状態") = 0 Or _
+       ReviewCol(dst, "年度（和暦）", "年度(和暦)", "年度") = 0 Or _
+       ReviewCol(dst, "作成年度（和暦）", "作成年度(和暦)", "作成年度") = 0 Or _
+       ReviewCol(dst, "第1ガイド", "第１ガイド", "分類名２") = 0 Or _
+       ReviewCol(dst, "第2ガイド", "第２ガイド", "分類名３") = 0 Or _
+       ReviewCol(dst, "個別フォルダー", "個別フォルダ", "タイトル") = 0 Then _
+        Err.Raise vbObjectError + 6141, , "D候補判定に必要な見出しが不足または曖昧です。"
+
+    srcLast = ReviewLast(src): dstLast = ReviewLast(dst)
+    For sRow = 2 To srcLast
+        If ReviewFiscal(src, sRow) <> yearValue Then GoTo NextCopySource
+        fid = ReviewField(src, sRow, "ファイルID")
+        fileNo = ReviewPadding(ReviewField(src, sRow, "ファイル番号"))
+        barcode = ReviewField(src, sRow, "バーコード番号")
+        sourceName = ReviewName(src, sRow, True, True)
+        If Len(fid) = 0 Or Len(fileNo) = 0 Or Len(barcode) = 0 Or Len(sourceName) = 0 Then GoTo NextCopySource
+
+        valid = True
+        For otherRow = 2 To srcLast
+            If otherRow <> sRow Then
+                If ReviewField(src, otherRow, "ファイルID") = fid Or _
+                   ReviewField(src, otherRow, "バーコード番号") = barcode Or _
+                   (Len(ReviewPadding(ReviewField(src, otherRow, "ファイル番号"))) > 0 And _
+                    ReviewPadding(ReviewField(src, otherRow, "ファイル番号")) = fileNo) Then
+                    valid = False: Exit For
+                End If
+            End If
+        Next otherRow
+        If Not valid Then GoTo NextCopySource
+
+        Set keeperRows = New Collection: Set collisionRows = New Collection: Set candidates = New Collection
+        For dRow = 2 To dstLast
+            If ReviewField(dst, dRow, "ファイルID") = fid Or _
+               ReviewField(dst, dRow, "バーコード番号") = barcode Or _
+               (Len(ReviewPadding(ReviewField(dst, dRow, "ファイル番号"))) > 0 And _
+                ReviewPadding(ReviewField(dst, dRow, "ファイル番号")) = fileNo) Then
+                collisionRows.Add dRow
+                If ReviewField(dst, dRow, "ファイルID") = fid And _
+                   ReviewPadding(ReviewField(dst, dRow, "ファイル番号")) = fileNo And _
+                   ReviewField(dst, dRow, "バーコード番号") = barcode And _
+                   ReviewFiscal(dst, dRow) = yearValue And _
+                   ReviewName(dst, dRow, False, True) = sourceName Then keeperRows.Add dRow
+            End If
+        Next dRow
+        If keeperRows.Count <> 1 Then GoTo NextCopySource
+        rowNo = CLng(keeperRows(1))
+        If ReviewField(dst, rowNo, "同期状態") <> "登録予定" And _
+           ReviewField(dst, rowNo, "同期状態") <> "同期済" Then GoTo NextCopySource
+        If ReviewName(dst, rowNo, False, False) <> ReviewName(src, sRow, True, False) Then GoTo NextCopySource
+
+        For Each v In collisionRows
+            dRow = CLng(v)
+            If dRow <> rowNo Then
+                If ReviewField(dst, dRow, "同期状態") <> "登録予定" Then valid = False
+                If Len(ReviewName(dst, dRow, False, True)) = 0 Or _
+                   Len(ReviewName(dst, dRow, False, False)) = 0 Then valid = False
+                If ReviewTextKey(ReviewValue(dst, dRow, ReviewCol(dst, "個別フォルダー", "個別フォルダ", "タイトル"))) = _
+                   ReviewTextKey(ReviewValue(src, sRow, ReviewCol(src, "タイトル", "個別フォルダー", "個別フォルダ"))) Then valid = False
+                For otherRow = 2 To srcLast
+                    If otherRow <> sRow Then
+                        If (Len(ReviewField(dst, dRow, "ファイルID")) > 0 And _
+                            ReviewField(dst, dRow, "ファイルID") = ReviewField(src, otherRow, "ファイルID")) Or _
+                           (Len(ReviewField(dst, dRow, "バーコード番号")) > 0 And _
+                            ReviewField(dst, dRow, "バーコード番号") = ReviewField(src, otherRow, "バーコード番号")) Or _
+                           (Len(ReviewPadding(ReviewField(dst, dRow, "ファイル番号"))) > 0 And _
+                            ReviewPadding(ReviewField(dst, dRow, "ファイル番号")) = _
+                            ReviewPadding(ReviewField(src, otherRow, "ファイル番号"))) Then valid = False
+                    End If
+                Next otherRow
+                candidates.Add dRow
+            End If
+        Next v
+        If Not valid Or candidates.Count = 0 Then GoTo NextCopySource
+
+        reason = "CSVと正式番号・作成年度・第1/第2ガイド・個別フォルダー名が一致するExcel行" & _
+            rowNo & "を保持対象として一意に確認。別の登録予定行は番号競合候補です。" & _
+            "削除・クリアは行わず、管理システムの登録状況を人が確認してください。"
+        Set allRows = New Collection
+        allRows.Add rowNo
+        For Each v In candidates: allRows.Add CLng(v): Next v
+        cases.Add NewCase("D", yearValue, src, sRow, dst, allRows, reason)
+NextCopySource:
+    Next sRow
+    Set SyncReviewCopyIdCandidates = cases
+End Function
+
 Private Function ReviewDigest(ByVal text As String) As String
     Dim h1 As Double, h2 As Double, i As Long, n As Long
     h1 = 7#: h2 = 11#
