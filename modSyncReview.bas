@@ -82,12 +82,41 @@ Failed:
     MsgBox "確認候補を開けません。候補抽出を中止しました: " & Err.Description, vbExclamation
 End Sub
 
+Private Function ReviewYearAliasGroup(ByVal aliasName As String) As Long
+    Select Case aliasName
+        Case "年度（和暦）", "年度(和暦)", "年度": ReviewYearAliasGroup = 1
+        Case "作成年度（和暦）", "作成年度(和暦)", "作成年度": ReviewYearAliasGroup = 2
+    End Select
+End Function
+
+Private Function ReviewStrictAliasYear(ByVal raw As String) As Long
+    Dim text As String, c As String, i As Long
+    text = UCase$(Trim$(raw))
+    text = Replace(text, "令和", "R")
+    text = Replace(text, "年度", "")
+    text = Replace(text, "年", "")
+    If Left$(text, 1) = "R" Then text = Mid$(text, 2)
+    If Len(text) = 0 Or Len(text) > 10 Then Exit Function
+    For i = 1 To Len(text)
+        c = Mid$(text, i, 1)
+        If AscW(c) < 48 Or AscW(c) > 57 Then Exit Function
+    Next i
+    ReviewStrictAliasYear = ReviewYear(raw)
+End Function
+
 Private Function ReviewCol(ByVal ws As Worksheet, ParamArray aliases() As Variant) As Long
     Dim col As Long, a As Variant, h As String, found As Long, chosen As Long
     Dim cacheKey As String, rowNo As Long, selectedText As String, otherText As String
+    Dim yearAliasGroup As Long, selectedYear As Long, otherYear As Long
     If reviewHeaderCache Is Nothing Then Set reviewHeaderCache = CreateObject("Scripting.Dictionary")
     cacheKey = ws.Name
-    For Each a In aliases: cacheKey = cacheKey & Chr$(30) & CStr(a): Next a
+    ' Only D's three-name alias lookup includes the Western-year column.
+    ' Keep the two-name lookups used by A/B/C unchanged.
+    If UBound(aliases) = 2 Then yearAliasGroup = ReviewYearAliasGroup(CStr(aliases(0)))
+    For Each a In aliases
+        cacheKey = cacheKey & Chr$(30) & CStr(a)
+        If yearAliasGroup <> ReviewYearAliasGroup(CStr(a)) Then yearAliasGroup = 0
+    Next a
     If reviewHeaderCache.Exists(cacheKey) Then ReviewCol = CLng(reviewHeaderCache(cacheKey)): Exit Function
     For Each a In aliases
         found = 0
@@ -107,9 +136,15 @@ Private Function ReviewCol(ByVal ws As Worksheet, ParamArray aliases() As Varian
                         Err.Raise vbObjectError + 6103, , "別名見出しの値にエラーがあります。"
                     selectedText = Trim$(CStr(ws.Cells(rowNo, chosen).Value2))
                     otherText = Trim$(CStr(ws.Cells(rowNo, found).Value2))
-                    If Len(otherText) > 0 And (Len(selectedText) = 0 Or _
-                        StrComp(selectedText, otherText, vbBinaryCompare) <> 0) Then _
+                    If yearAliasGroup <> 0 Then
+                        selectedYear = ReviewStrictAliasYear(selectedText)
+                        otherYear = ReviewStrictAliasYear(otherText)
+                        If selectedYear = 0 Or otherYear = 0 Or selectedYear <> otherYear Then _
+                            Err.Raise vbObjectError + 6102, , "別名見出しの内容が一致しません: " & ws.Name & " 行" & rowNo
+                    ElseIf Len(otherText) > 0 And (Len(selectedText) = 0 Or _
+                        StrComp(selectedText, otherText, vbBinaryCompare) <> 0) Then
                         Err.Raise vbObjectError + 6102, , "別名見出しの内容が一致しません: " & ws.Name & " 行" & rowNo
+                    End If
                 Next rowNo
             End If
         End If
