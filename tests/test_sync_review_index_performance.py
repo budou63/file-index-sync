@@ -29,18 +29,19 @@ def detect(csv, dest, year, indexed):
         dest_indexes = {k: defaultdict(list) for k in keys}
         for i, row in enumerate(csv):
             for k in keys:
-                if value(row, k):
+                if value(row, k) and (k != "no" or row["year"] == year):
                     source_indexes[k][value(row, k)].append(i)
         for i, row in enumerate(dest):
             for k in keys:
-                if value(row, k):
+                if value(row, k) and (k != "no" or row["year"] == year):
                     dest_indexes[k][value(row, k)].append(i)
 
     def other_match(row, source_index):
         if indexed:
             return any(any(i != source_index for i in source_indexes[k].get(value(row, k), ()))
                        for k in keys if value(row, k))
-        return any(i != source_index and any(value(other, k) == value(row, k) and value(row, k)
+        return any(i != source_index and any(value(other, k) == value(row, k) and value(row, k) and
+                                             (k != "no" or other["year"] == year)
                                              for k in keys)
                    for i, other in enumerate(csv))
 
@@ -54,13 +55,16 @@ def detect(csv, dest, year, indexed):
             matches = sorted({i for k in keys for i in dest_indexes[k].get(value(source, k), ())})
         else:
             matches = [i for i, row in enumerate(dest)
-                       if any(value(row, k) == value(source, k) for k in keys)]
+                       if any(value(row, k) == value(source, k) and
+                              (k != "no" or row["year"] == year) for k in keys)]
         keepers = [i for i in matches if all(value(dest[i], k) == value(source, k) for k in keys)
                    and dest[i]["year"] == year and name(dest[i]) == name(source)]
         if len(keepers) != 1 or dest[keepers[0]]["status"] not in ("登録予定", "同期済"):
             continue
         keeper = keepers[0]
         candidates = [i for i in matches if i != keeper]
+        if any(dest[i]["year"] != year for i in candidates):
+            continue
         if not candidates or any(dest[i]["status"] != "登録予定" or not name(dest[i])
                                  or name(dest[i]) == name(source) or other_match(dest[i], s)
                                  for i in candidates):
@@ -95,12 +99,18 @@ def test_d_oracle_cross_year_duplicates_and_candidate_safeguards():
     dest = [row("ID", "42", "barcode", "Folder"),
             row("ID", "00042", "barcode", "Another")]
     assert detect(csv, dest, 2026, False) == [(0, 0, (1,))]
+    # Global ID/barcode collisions remain unsafe; a cross-year number-only duplicate does not veto.
     for conflicting in (row("ID", "44", "unrelated", "Foreign", year=2025),
-                        row("unrelated", "00042", "unrelated", "Foreign", year=2025),
                         row("unrelated", "44", "barcode", "Foreign", year=2025)):
         changed = csv + [conflicting]
         assert detect(changed, dest, 2026, False) == []
         assert detect(changed, dest, 2026, True) == []
+    number_only_cross_year = csv + [row("unrelated", "00042", "unrelated", "Foreign", year=2025)]
+    assert detect(number_only_cross_year, dest, 2026, False) == [(0, 0, (1,))]
+    assert detect(number_only_cross_year, dest, 2026, True) == [(0, 0, (1,))]
+    cross_year_destination = dest + [row("R7", "00042", "old-barcode", "OldFolder", year=2025)]
+    assert detect(csv, cross_year_destination, 2026, False) == [(0, 0, (1,))]
+    assert detect(csv, cross_year_destination, 2026, True) == [(0, 0, (1,))]
     # A different CSV source claiming a candidate identifier vetoes the D case.
     changed = csv + [row("OTHER2", "55", "other2", "Foreign"),
                      row("OTHER3", "56", "other3", "Foreign", year=2025)]
@@ -159,16 +169,23 @@ def test_d_detector_uses_indexes_not_nested_sheet_scans():
     assert 'ReviewMapAdd csvIds, ReviewField(src, sRow, "ファイルID"), sRow' in body
     assert 'ReviewMapAdd dstIds, ReviewField(dst, dRow, "ファイルID"), dRow' in body
     assert 'ReviewOtherRowsMatch(csvIds, fid, sRow)' in body
-    assert 'ReviewMatchingRows(dstIds, dstBars, dstNumbers, fid, barcode, fileNo)' in body
+    assert 'ReviewMatchingRows(dstIds, dstBars, dstTargetNumbers, fid, barcode, fileNo)' in body
     assert 'ReviewOtherRowsMatch(csvIds, ReviewField(dst, dRow, "ファイルID"), sRow)' in body
     assert "For otherRow = 2 To srcLast" not in body
     assert body.count("For dRow = 2 To dstLast") == 1  # one-time index construction only
     assert body.index("datasetSignature = ReviewCopyDatasetSignature") < body.index('Set csvIds = CreateObject')
     assert body.index('ReviewMapAdd csvIds') < body.index('If ReviewFiscal(src, sRow) <> yearValue')
-    assert 'ReviewMapAdd csvNumbers, ReviewPadding(ReviewField(src, sRow, "ファイル番号"))' in body
-    assert 'ReviewMapAdd dstNumbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号"))' in body
-    assert 'ReviewOtherRowsMatch(csvBars, ReviewField(dst, dRow, "バーコード番号"), sRow)' in body
-    assert 'ReviewOtherRowsMatch(csvNumbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), sRow)' in body
+    assert 'Set csvTargetNumbers = CreateObject("Scripting.Dictionary")' in body
+    assert 'Set dstTargetNumbers = CreateObject("Scripting.Dictionary")' in body
+    assert 'If ReviewFiscal(src, sRow) = yearValue Then ReviewMapAdd csvTargetNumbers' in body
+    assert 'If ReviewFiscal(dst, dRow) = yearValue Then ReviewMapAdd dstTargetNumbers' in body
+    assert 'ReviewOtherRowsMatch(csvTargetNumbers, fileNo, sRow)' in body
+    assert 'ReviewMatchingRows(dstIds, dstBars, dstTargetNumbers, fid, barcode, fileNo)' in body
+    assert 'ReviewOtherRowsMatch(csvTargetNumbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), sRow)' in body
+    assert 'If ReviewFiscal(dst, dRow) <> yearValue Then' in body
+    assert 'valid = False' in body
+    assert 'ReviewOtherRowsMatch(csvNumbers' not in body
+    assert 'ReviewMapAdd dstNumbers' not in body
     assert 'If keeperRows.Count <> 1 Then GoTo NextCopySource' in body
     assert 'If Not valid Or candidates.Count = 0 Then GoTo NextCopySource' in body
     assert 'copyCase.Add "copyDatasetSignature", datasetSignature' in body

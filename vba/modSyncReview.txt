@@ -541,8 +541,8 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
     Dim keeperRows As Collection, collisionRows As Collection, candidates As Collection
     Dim v As Variant, rowNo As Long, valid As Boolean, reason As String
     Dim allRows As Collection, copyCase As Object, datasetSignature As String
-    Dim csvIds As Object, csvBars As Object, csvNumbers As Object
-    Dim dstIds As Object, dstBars As Object, dstNumbers As Object
+    Dim csvIds As Object, csvBars As Object, csvTargetNumbers As Object
+    Dim dstIds As Object, dstBars As Object, dstTargetNumbers As Object
 
     If yearValue < 1900 Or yearValue > 2200 Then Err.Raise vbObjectError + 6140, , "対象年度が不正です。"
     Set reviewHeaderCache = CreateObject("Scripting.Dictionary")
@@ -568,20 +568,20 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
     datasetSignature = ReviewCopyDatasetSignature(src, dst)
     Set csvIds = CreateObject("Scripting.Dictionary")
     Set csvBars = CreateObject("Scripting.Dictionary")
-    Set csvNumbers = CreateObject("Scripting.Dictionary")
+    Set csvTargetNumbers = CreateObject("Scripting.Dictionary")
     Set dstIds = CreateObject("Scripting.Dictionary")
     Set dstBars = CreateObject("Scripting.Dictionary")
-    Set dstNumbers = CreateObject("Scripting.Dictionary")
-    ' Include every fiscal year: IDs and numbers are globally unique safeguards.
+    Set dstTargetNumbers = CreateObject("Scripting.Dictionary")
+    ' IDs and barcodes remain global safety keys; file numbers are scoped to the selected fiscal year.
     For sRow = 2 To srcLast
         ReviewMapAdd csvIds, ReviewField(src, sRow, "ファイルID"), sRow
         ReviewMapAdd csvBars, ReviewField(src, sRow, "バーコード番号"), sRow
-        ReviewMapAdd csvNumbers, ReviewPadding(ReviewField(src, sRow, "ファイル番号")), sRow
+        If ReviewFiscal(src, sRow) = yearValue Then ReviewMapAdd csvTargetNumbers, ReviewPadding(ReviewField(src, sRow, "ファイル番号")), sRow
     Next sRow
     For dRow = 2 To dstLast
         ReviewMapAdd dstIds, ReviewField(dst, dRow, "ファイルID"), dRow
         ReviewMapAdd dstBars, ReviewField(dst, dRow, "バーコード番号"), dRow
-        ReviewMapAdd dstNumbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), dRow
+        If ReviewFiscal(dst, dRow) = yearValue Then ReviewMapAdd dstTargetNumbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), dRow
     Next dRow
     For sRow = 2 To srcLast
         If ReviewFiscal(src, sRow) <> yearValue Then GoTo NextCopySource
@@ -593,10 +593,10 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
 
         If ReviewOtherRowsMatch(csvIds, fid, sRow) Or _
            ReviewOtherRowsMatch(csvBars, barcode, sRow) Or _
-           ReviewOtherRowsMatch(csvNumbers, fileNo, sRow) Then GoTo NextCopySource
+           ReviewOtherRowsMatch(csvTargetNumbers, fileNo, sRow) Then GoTo NextCopySource
 
         Set keeperRows = New Collection: Set candidates = New Collection
-        Set collisionRows = ReviewMatchingRows(dstIds, dstBars, dstNumbers, fid, barcode, fileNo)
+        Set collisionRows = ReviewMatchingRows(dstIds, dstBars, dstTargetNumbers, fid, barcode, fileNo)
         For Each v In collisionRows
             dRow = CLng(v)
             If ReviewField(dst, dRow, "ファイルID") = fid And _
@@ -615,14 +615,18 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
         For Each v In collisionRows
             dRow = CLng(v)
             If dRow <> rowNo Then
-                If ReviewField(dst, dRow, "同期状態") <> "登録予定" Then valid = False
-                If Len(ReviewName(dst, dRow, False, True)) = 0 Or _
-                   Len(ReviewName(dst, dRow, False, False)) = 0 Then valid = False
-                If ReviewName(dst, dRow, False, True) = sourceName Then valid = False
-                If ReviewOtherRowsMatch(csvIds, ReviewField(dst, dRow, "ファイルID"), sRow) Or _
-                   ReviewOtherRowsMatch(csvBars, ReviewField(dst, dRow, "バーコード番号"), sRow) Or _
-                   ReviewOtherRowsMatch(csvNumbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), sRow) Then valid = False
-                candidates.Add dRow
+                If ReviewFiscal(dst, dRow) <> yearValue Then
+                    valid = False
+                Else
+                    If ReviewField(dst, dRow, "同期状態") <> "登録予定" Then valid = False
+                    If Len(ReviewName(dst, dRow, False, True)) = 0 Or _
+                       Len(ReviewName(dst, dRow, False, False)) = 0 Then valid = False
+                    If ReviewName(dst, dRow, False, True) = sourceName Then valid = False
+                    If ReviewOtherRowsMatch(csvIds, ReviewField(dst, dRow, "ファイルID"), sRow) Or _
+                       ReviewOtherRowsMatch(csvBars, ReviewField(dst, dRow, "バーコード番号"), sRow) Or _
+                       ReviewOtherRowsMatch(csvTargetNumbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), sRow) Then valid = False
+                    candidates.Add dRow
+                End If
             End If
         Next v
         If Not valid Or candidates.Count = 0 Then GoTo NextCopySource
