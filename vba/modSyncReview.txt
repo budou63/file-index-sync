@@ -92,9 +92,10 @@ Private Function ReviewStrictAliasYear(ByVal raw As String) As Long
     Dim text As String, c As String, i As Long
     text = UCase$(Trim$(raw))
     text = Replace(text, "令和", "R")
+    text = Replace(text, "平成", "H")
     text = Replace(text, "年度", "")
     text = Replace(text, "年", "")
-    If Left$(text, 1) = "R" Then text = Mid$(text, 2)
+    If Left$(text, 1) = "R" Or Left$(text, 1) = "H" Then text = Mid$(text, 2)
     If Len(text) = 0 Or Len(text) > 10 Then Exit Function
     For i = 1 To Len(text)
         c = Mid$(text, i, 1)
@@ -107,6 +108,7 @@ Private Function ReviewCol(ByVal ws As Worksheet, ParamArray aliases() As Varian
     Dim col As Long, a As Variant, h As String, found As Long, chosen As Long
     Dim cacheKey As String, rowNo As Long, selectedText As String, otherText As String
     Dim yearAliasGroup As Long, selectedYear As Long, otherYear As Long
+    Dim yearReferences As Object, yearReferenceCols As Object, referenceCol As Long
     If reviewHeaderCache Is Nothing Then Set reviewHeaderCache = CreateObject("Scripting.Dictionary")
     cacheKey = ws.Name
     ' Only D's three-name alias lookup includes the Western-year column.
@@ -116,6 +118,10 @@ Private Function ReviewCol(ByVal ws As Worksheet, ParamArray aliases() As Varian
         cacheKey = cacheKey & Chr$(30) & CStr(a)
         If yearAliasGroup <> ReviewYearAliasGroup(CStr(a)) Then yearAliasGroup = 0
     Next a
+    If yearAliasGroup <> 0 Then
+        Set yearReferences = CreateObject("Scripting.Dictionary")
+        Set yearReferenceCols = CreateObject("Scripting.Dictionary")
+    End If
     If reviewHeaderCache.Exists(cacheKey) Then ReviewCol = CLng(reviewHeaderCache(cacheKey)): Exit Function
     For Each a In aliases
         found = 0
@@ -136,10 +142,25 @@ Private Function ReviewCol(ByVal ws As Worksheet, ParamArray aliases() As Varian
                     selectedText = Trim$(CStr(ws.Cells(rowNo, chosen).Value2))
                     otherText = Trim$(CStr(ws.Cells(rowNo, found).Value2))
                     If yearAliasGroup <> 0 Then
-                        selectedYear = ReviewStrictAliasYear(selectedText)
-                        otherYear = ReviewStrictAliasYear(otherText)
-                        If selectedYear = 0 Or otherYear = 0 Or selectedYear <> otherYear Then _
-                            Err.Raise vbObjectError + 6102, , "別名見出しの内容が一致しません: " & ws.Name & " 行" & rowNo
+                        If Not yearReferences.Exists(CStr(rowNo)) And Len(selectedText) > 0 Then
+                            yearReferences.Add CStr(rowNo), selectedText
+                            yearReferenceCols.Add CStr(rowNo), chosen
+                        End If
+                        If Len(otherText) > 0 And Not yearReferences.Exists(CStr(rowNo)) Then
+                            yearReferences.Add CStr(rowNo), otherText
+                            yearReferenceCols.Add CStr(rowNo), found
+                        End If
+                        If yearReferences.Exists(CStr(rowNo)) Then
+                            referenceCol = CLng(yearReferenceCols(CStr(rowNo)))
+                            selectedText = CStr(yearReferences(CStr(rowNo)))
+                            If Len(otherText) = 0 Then otherText = selectedText
+                            selectedYear = ReviewStrictAliasYear(selectedText)
+                            otherYear = ReviewStrictAliasYear(otherText)
+                            If selectedYear = 0 Or otherYear = 0 Or selectedYear <> otherYear Then _
+                                Err.Raise vbObjectError + 6102, , "別名見出しの内容が一致しません: " & ws.Name & " 行" & rowNo & _
+                                    " 列" & ws.Cells(1, referenceCol).Address(False, False) & " [" & CStr(ws.Cells(1, referenceCol).Value2) & "] 値=[" & selectedText & "]" & _
+                                    " / 列" & ws.Cells(1, found).Address(False, False) & " [" & CStr(ws.Cells(1, found).Value2) & "] 値=[" & otherText & "]"
+                        End If
                     ElseIf Len(otherText) > 0 And (Len(selectedText) = 0 Or _
                         StrComp(selectedText, otherText, vbBinaryCompare) <> 0) Then
                         Err.Raise vbObjectError + 6102, , "別名見出しの内容が一致しません: " & ws.Name & " 行" & rowNo
@@ -159,20 +180,30 @@ Private Function ReviewValue(ByVal ws As Worksheet, ByVal r As Long, ByVal col A
 End Function
 
 Private Function ReviewYear(ByVal raw As String) As Long
-    Dim n As Long, text As String
+    Dim n As Long, text As String, era As String, c As String, i As Long
     text = UCase$(Trim$(raw))
     text = Replace(text, "令和", "R")
+    text = Replace(text, "平成", "H")
     text = Replace(text, "年度", "")
     text = Replace(text, "年", "")
     If Len(text) < 1 Then Exit Function
-    If Left$(text, 1) = "R" Then
-        If Not IsNumeric(Mid$(text, 2)) Then Exit Function
-        n = CLng(Mid$(text, 2))
-        If n >= 1 And n <= 100 Then ReviewYear = n + 2018
-    ElseIf IsNumeric(text) Then
-        n = CLng(text)
-        If n >= 1900 And n <= 2200 Then ReviewYear = n
-    End If
+    era = Left$(text, 1)
+    If era = "R" Or era = "H" Then text = Mid$(text, 2) Else era = ""
+    If Len(text) = 0 Then Exit Function
+    If Len(text) > 4 Then Exit Function
+    For i = 1 To Len(text)
+        c = Mid$(text, i, 1)
+        If AscW(c) < 48 Or AscW(c) > 57 Then Exit Function
+    Next i
+    n = CLng(text)
+    Select Case era
+        Case "R"
+            If n >= 1 And n <= 100 Then ReviewYear = n + 2018
+        Case "H"
+            If n >= 1 And n <= 31 Then ReviewYear = n + 1988
+        Case ""
+            If n >= 1900 And n <= 2200 Then ReviewYear = n
+    End Select
 End Function
 
 Private Function ReviewFiscal(ByVal ws As Worksheet, ByVal r As Long) As Long
