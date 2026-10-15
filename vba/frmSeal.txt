@@ -1,4 +1,4 @@
-﻿Option Explicit
+Option Explicit
 
 Private mSyncingMoveModeButtons As Boolean
 Private Const FRM_SEAL_WIDTH_LARGE As Double = 740

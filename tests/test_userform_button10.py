@@ -5,7 +5,7 @@ import re
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-FORM = (ROOT / "frmSeal_").read_text(encoding="utf-8")
+FORM = (ROOT / "vba/frmSeal.txt").read_text(encoding="utf-8")
 
 
 def procedure(name: str) -> str:

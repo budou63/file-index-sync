@@ -5,8 +5,10 @@
 - GitHub `main` is the canonical source of truth for VBA and documentation.
 - Files under `サンプルデータ` are reference data for headers/layout/verification and are not implementation targets unless explicitly requested.
 - Do not treat a local workbook copy as the canonical implementation when it differs from `main`.
-- The six standard modules have one paste-ready source each at `vba/<VBA module name>.txt`, beginning with `Option Explicit` and omitting export-only `Attribute VB_Name`. Update their paths in tests and instructions if moved; do not create competing `.bas` exports as a second source of truth.
-- Form code, native `.frm`/`.frx` pairs, `frmSeal_`, the event class, and the sheet module stay in their existing root locations. Preserve `frmSeal`, `frmSealNew`, and `frmSyncReview` as separate components; standard-module relocation is not permission to alter their designer or event behavior.
+- Every managed VBA component has one authoritative paste-ready source at `vba/<component name>.txt`: standard module, class module, UserForm code, or worksheet code. The sheet file `vba/新ファイル基準表.txt` uses the sheet tab name; its workplace VBE codename has not been confirmed. Each source begins with `Option Explicit`, omits export-only `Attribute VB_Name`, and is CP932-representable. Copy the complete file to the corresponding existing VBE code window; do not import `.txt` or add duplicate components.
+- For future functional changes, edit the relevant `vba/*.txt` authoritative source directly, not only a workbook, export, restore artifact, fixture, or documentation. Before commit confirm the source appears in the diff and run relevant tests, body comparison, and CP932 checks; after push read back `origin/main` and confirm the committed files. Report changed filenames, VBE destinations, and reasons.
+- Keep `frmSeal` (old), `frmSealNew`, and `frmSyncReview` as separate forms. Do not alter their designer, controls, or event behavior for a source-location change. Root `frmSyncReview.frm` is a reference/restore artifact and `frmSyncReview-native.frm` plus `frmSyncReview-native.frx` are an adjacent import/restore pair, not alternative paste-ready authorities. Preserve them; when changing the canonical form code later, verify embedded code in restore artifacts remains aligned.
+- `Module2` exists in the user's Excel but has no verified repository source. It remains outside GitHub management: do not infer its contents, fabricate a source, or rename/delete it.
 
 ## Operational manual synchronization rule
 

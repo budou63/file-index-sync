@@ -3,20 +3,20 @@ from pathlib import Path
 import re
 import unittest
 ROOT = Path(__file__).resolve().parents[1]
-FORM = (ROOT / "frmSealNew_FormCode.txt").read_text(encoding="utf-8")
+FORM = (ROOT / "vba/frmSealNew.txt").read_text(encoding="utf-8")
 LAYOUT = (ROOT / "vba/modFrmSealNewLayout.txt").read_text(encoding="utf-8")
-EVENT_CLASS = (ROOT / "clsFrmSealNewEvent_Code.txt").read_text(encoding="utf-8")
+EVENT_CLASS = (ROOT / "vba/clsFrmSealNewEvent.txt").read_text(encoding="utf-8")
 def project_source() -> str:
-    return "\n".join((ROOT / name).read_text(encoding="utf-8-sig", errors="replace") for name in ("vba/Module1.txt", "frmSeal_", "vba/固定印刷設定.txt"))
+    return "\n".join((ROOT / name).read_text(encoding="utf-8-sig", errors="replace") for name in ("vba/Module1.txt", "vba/frmSeal.txt", "vba/固定印刷設定.txt"))
 class FrmSealNewStaticTests(unittest.TestCase):
     def test_existing_click_handlers_match_dispatch_exactly(self):
-        existing = set(re.findall(r"(?im)^Private Sub (\w+)_Click\(", (ROOT / "frmSeal_").read_text(encoding="utf-8")))
+        existing = set(re.findall(r"(?im)^Private Sub (\w+)_Click\(", (ROOT / "vba/frmSeal.txt").read_text(encoding="utf-8")))
         dispatch = re.findall(r"(?im)^\s*Case [\"](\w+)[\"]: (\w+)_Click", FORM)
         self.assertEqual(len(dispatch), len(existing))
         self.assertEqual({name for name, _ in dispatch}, existing)
         self.assertTrue(all(name == target for name, target in dispatch))
     def test_click_handler_bodies_preserve_original_logic(self):
-        baseline = (ROOT / "frmSeal_").read_text(encoding="utf-8")
+        baseline = (ROOT / "vba/frmSeal.txt").read_text(encoding="utf-8")
         names = re.findall(r"(?im)^Private Sub (\w+)_Click\(", baseline)
         def body(source, name):
             return re.search(r"(?ims)^Private Sub " + re.escape(name) + r"_Click\(\)(.*?)^End Sub", source).group(1).strip()
@@ -43,12 +43,12 @@ class FrmSealNewStaticTests(unittest.TestCase):
         self.assertEqual(len(generated_names) + len(direct), 23)
         self.assertEqual(set(generated_names + direct), {key for key, _ in dispatched})
     def test_old_form_control_refs_are_late_bound_for_empty_copy(self):
-        old_form = (ROOT / "frmSeal_").read_text(encoding="utf-8")
+        old_form = (ROOT / "vba/frmSeal.txt").read_text(encoding="utf-8")
         for name in ("tglDuplicateCheckMode", "tglMoveMode"):
             self.assertNotIn("Me." + name, old_form)
             self.assertIn("Me.Controls(" + chr(34) + name + chr(34) + ")", old_form)
     def test_missing_sheet_event_module_dependency_is_present(self):
-        sheet = (ROOT / "新ファイル基準表_SheetModule.bas").read_text(encoding="utf-8-sig")
+        sheet = (ROOT / "vba/新ファイル基準表.txt").read_text(encoding="utf-8-sig")
         self.assertIn("Private Sub Worksheet_Change", sheet)
         self.assertIn("Private Sub Worksheet_SelectionChange", sheet)
         self.assertIn("行移動_移動先クリックで確定", sheet)
@@ -59,7 +59,7 @@ class FrmSealNewStaticTests(unittest.TestCase):
         for symbol in ("−", "✓", "·", "‑", "–", "—"):
             self.assertNotIn(chr(34) + symbol + chr(34), module)
     def test_shared_seal_helpers_match_legacy_and_are_used_without_form_instantiation(self):
-        legacy = (ROOT / "frmSeal_").read_text(encoding="utf-8-sig")
+        legacy = (ROOT / "vba/frmSeal.txt").read_text(encoding="utf-8-sig")
         shared = (ROOT / "vba/modSealShared.txt").read_text(encoding="utf-8")
         start = "Public Sub BuildIndexes_NewSpec("
         self.assertEqual(shared[shared.index(start):], legacy[legacy.index(start):])

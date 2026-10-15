@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FORM = ROOT / "frmSyncReview_FormCode.txt"
+FORM = ROOT / "vba/frmSyncReview.txt"
 MODULE = ROOT / "vba/modSyncReview.txt"
 
 

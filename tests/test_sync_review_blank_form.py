@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / "frmSyncReview.frm"
-PASTE = ROOT / "frmSyncReview_FormCode.txt"
+PASTE = ROOT / "vba/frmSyncReview.txt"
 NATIVE = ROOT / "frmSyncReview-native.frm"
 FRX = ROOT / "frmSyncReview-native.frx"
 

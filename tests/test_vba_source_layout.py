@@ -1,18 +1,17 @@
-"""The paste-ready standard-module manifest; form artifacts remain separate."""
+"""One paste-ready source per managed VBA component; restore artifacts stay separate."""
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STANDARD = ("Module1", "modSealShared", "modFrmSealNewLayout", "modSyncReview",
             "固定印刷設定", "modDummyExport")
-FORM_ARTIFACTS = ("frmSeal_", "frmSealNew_FormCode.txt", "clsFrmSealNewEvent_Code.txt",
-                  "frmSyncReview_FormCode.txt", "frmSyncReview.frm",
-                  "frmSyncReview-native.frm", "frmSyncReview-native.frx")
+OTHER_CODE = ("clsFrmSealNewEvent", "frmSeal", "frmSealNew", "frmSyncReview", "新ファイル基準表")
+FORM_ARTIFACTS = ("frmSyncReview.frm", "frmSyncReview-native.frm", "frmSyncReview-native.frx")
 
 
 class SourceLayoutTests(unittest.TestCase):
-    def test_each_standard_module_has_one_paste_ready_source(self):
-        for name in STANDARD:
+    def test_each_managed_component_has_one_paste_ready_source(self):
+        for name in STANDARD + OTHER_CODE:
             with self.subTest(name=name):
                 path = ROOT / "vba" / (name + ".txt")
                 self.assertTrue(path.is_file(), str(path))
@@ -27,15 +26,17 @@ class SourceLayoutTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertTrue((ROOT / name).is_file(), name)
 
-    def test_no_legacy_standard_module_at_root(self):
+    def test_no_legacy_paste_source_at_root(self):
         for name in ("Module1", "modSealShared_Code.txt", "modFrmSealNewLayout_Code.txt",
-                     "modSyncReview.bas", "固定印刷設定.bas", "modDummyExport.bas"):
+                     "modSyncReview.bas", "固定印刷設定.bas", "modDummyExport.bas",
+                     "clsFrmSealNewEvent_Code.txt", "frmSealNew_FormCode.txt", "frmSeal_",
+                     "frmSyncReview_FormCode.txt", "新ファイル基準表_SheetModule.bas"):
             with self.subTest(name=name):
                 self.assertFalse((ROOT / name).exists(), name)
 
     def test_readme_maps_destinations_and_does_not_point_to_removed_files(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        for name in STANDARD:
+        for name in STANDARD + OTHER_CODE:
             self.assertIn("vba/" + name + ".txt", readme)
         for name in ("frmSeal", "frmSealNew", "frmSyncReview"):
             self.assertIn(name, readme)

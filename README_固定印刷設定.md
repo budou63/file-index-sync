@@ -47,7 +47,7 @@ Excelの `frmSeal` からシールを印刷する場合だけ、各PC・各Windo
 
 ## frmSealへ追加するボタン
 
-旧UserForm `frmSeal` の画面配置情報（`.frm` のデザイナ情報）はリポジトリに含まれていないため、旧フォームのボタンそのものはVBEで手動追加してください。コード側のClickイベントは `frmSeal_` に追加済みです。`frmSealNew` や `frmSyncReview` とは別のフォームです。
+旧UserForm `frmSeal` の画面配置情報（`.frm` のデザイナ情報）はリポジトリに含まれていないため、旧フォームのボタンそのものはVBEで手動追加してください。コード側のClickイベントは `vba/frmSeal.txt` に追加済みです。`frmSealNew` や `frmSyncReview` とは別のフォームです。
 
 ### ボタン1
 
@@ -74,7 +74,7 @@ Excelの `frmSeal` からシールを印刷する場合だけ、各PC・各Windo
 1. VBEで `frmSeal` を開きます。
 2. ツールボックスからCommandButtonを2つ配置します。
 3. 上記のオブジェクト名、Caption、Width、Height、Left、Topを設定します。
-4. `frmSeal_` のコードをフォームコードへ反映します。
+4. `vba/frmSeal.txt` のコードをフォームコードへ反映します。
 5. 既存の通常印刷ボタンは変更せず、そのまま残します。
 
 ## エラー時の安全動作

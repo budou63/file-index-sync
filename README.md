@@ -8,7 +8,7 @@
 
 ## GitHubからVBEへコードを貼るとき
 
-**標準モジュールの正本は `vba/` 内の同名 `.txt` だけです。** GitHubのファイルを開き、`Option Explicit` から末尾まで全文をコピーして、同名の標準モジュールの**コード画面**へ貼り付けます。`.txt` をVBEでインポートしたり、同名モジュールを追加して二重化したりしません。既存モジュールに職場固有の変更があれば差分を確認してから反映します。各ファイルはUTF-8保存・CP932で表現可能なVBAコードで、貼付用に `Attribute VB_Name` 行を含みません。標準モジュール同士を結合しないでください。
+**管理対象の貼付用VBA正本はすべて `vba/<コンポーネント名>.txt` です。** GitHubで該当ファイルを開き、`Option Explicit` から末尾まで全文をコピーし、Excelの**既存の対応するコード画面**へ貼り付けます。標準モジュール、クラス、UserForm、シートの貼付先を下表で区別してください。`.txt`をVBEへインポートしたり、同名コンポーネントを追加して二重化したりしません。職場固有の変更・既存イベントは反映前に比較し、消してよいと確認できないものを上書きしないでください。UTF-8保存でCP932表現可能、`Attribute VB_Name`等のインポート専用行は含みません。今後の機能改修は該当する`vba/*.txt`を**直接更新**し、コミット前に正本の差分とテストを確認、push後には`origin/main`の反映ファイルを確認します。変更報告にはファイル名・貼付先・理由を記載します。
 
 | GitHubの正本 | Excel内の名前 | 貼り付け先・注意 |
 |---|---|---|
@@ -18,13 +18,13 @@
 | `vba/modSyncReview.txt` | `modSyncReview` | 標準モジュール。同期候補の判定・承認・D番号クリア。フォームの導入手順も参照 |
 | `vba/固定印刷設定.txt` | `固定印刷設定` | 標準モジュール。印刷のPC別設定と出力先に注意 |
 | `vba/modDummyExport.txt` | `modDummyExport` | 標準モジュール。ダミーブック出力用。実データを公開しない |
-| `新ファイル基準表_SheetModule.bas` | シート「新ファイル基準表」のコード | **標準モジュールではない**。既存イベントと重複しないよう統合。フォーム同様、今回は移動しない |
-| `frmSeal_` | `frmSeal` | 旧UserFormの**コード画面**。職場固有のデザイナー部品はGitHubにないため、既存フォームを保持・差分確認。今回は移動・変更しない |
-| `frmSealNew_FormCode.txt` | `frmSealNew` | 新UserFormのコード画面。旧`frmSeal`と別フォームとして共存。イベントや部品は変更しない |
-| `clsFrmSealNewEvent_Code.txt` | `clsFrmSealNewEvent` | **クラスモジュール**のコード画面。`frmSealNew`のWithEvents用 |
-| `frmSyncReview_FormCode.txt` | `frmSyncReview` | 同期確認UserFormのコード画面。空フォーム貼付け方式は[導入手順](./同期候補確認フォーム_導入手順.md)に従う |
+| `vba/新ファイル基準表.txt` | シート「新ファイル基準表」 | **シートのコード画面**。タブ名で特定し、既存イベントがあれば差分を確認。職場ブックのVBEコードネームは未確認（標準モジュールへ貼らない） |
+| `vba/frmSeal.txt` | `frmSeal` | 旧UserFormの**コード画面**。職場のデザイナー・既存部品はGitHubで復元できないため保持し、職場固有のコード差分を確認 |
+| `vba/frmSealNew.txt` | `frmSealNew` | 新UserFormの**コード画面**。旧`frmSeal`と別フォームとして共存。画面部品は変えない |
+| `vba/clsFrmSealNewEvent.txt` | `clsFrmSealNewEvent` | **クラスモジュール**のコード画面。`frmSealNew`のWithEvents用 |
+| `vba/frmSyncReview.txt` | `frmSyncReview` | 同期確認UserFormの**コード画面**。空フォーム貼付け方式は[導入手順](./同期候補確認フォーム_導入手順.md)に従う |
 
-3つのフォーム `frmSeal`・`frmSealNew`・`frmSyncReview` は別々に維持します。`frmSyncReview.frm` はUTF-8参照用、`frmSyncReview-native.frm`と隣の`.frx`は**インポート方式向けの組**であり、空フォームへ貼る場合は`frmSyncReview_FormCode.txt`のみ使用します。2方式を同じブックへ重複導入しません。`frmSeal_`だけでは旧フォームのデザイナーを復元できないため、職場の既存フォームを削除しないでください。`.bas`や`.frm`の拡張子を一律に変更しない理由は、シート・フォームの導入方式とバイナリ連携が異なるためです。
+3つのフォーム `frmSeal`・`frmSealNew`・`frmSyncReview` は別々に維持します。ルートの`frmSyncReview.frm`はUTF-8の復元参考用、`frmSyncReview-native.frm`と隣の`frmSyncReview-native.frx`は分離せず保存する**インポート復元用の組**です。いずれも貼付用の正本ではありません。空フォームへ貼る場合の正本は`vba/frmSyncReview.txt`のみです。復元ファイル内にもコードが埋め込まれているため、将来フォームコードを変更するときは正本を直接更新し、必要な復元資産との整合も確認してください。貼付け方式とインポート方式を同じブックへ重複導入しません。`vba/frmSeal.txt`だけでは旧フォームのデザイナーを復元できないため、職場の既存フォームを削除しないでください。`Module2`は職場Excelに存在しますが内容と用途が未確認で、GitHubに正本はありません。管理対象外として保持し、推測してコードを作成・削除・上書きしないでください。
 
 ## プロジェクト概要
 `新ファイル基準表.xlsx` を中心に、CSV 整形・コードマスタ補完・差分インポート CSV 生成までを一貫して管理するためのリポジトリです。
@@ -79,7 +79,7 @@
 - CSV ファイル
 - README / ドキュメント
 - マクロ関連資産
-- 旧`frmSeal`の参照用コード（`frmSeal_`）。デザイナー情報は含まない
+- 旧`frmSeal`の参照用コード（`vba/frmSeal.txt`）。デザイナー情報は含まない
 
 ## 補足
 一時ファイル（`~$*.xls*`, `*.tmp`, `Thumbs.db`, `.DS_Store` など）は `.gitignore` で除外しています。
@@ -87,7 +87,7 @@
 ## 新ファイル基準表のID自動補完（Worksheet_Change）設定
 - `新ファイル基準表` で表示名入力時にID列へ自動補完するには、**シートモジュール**に `Worksheet_Change` が必要です。
 - 貼り付け先: `VBAProject > Microsoft Excel Objects > 新ファイル基準表`
-- コードは `新ファイル基準表_SheetModule.bas` を使用してください（標準モジュールでは発火しません）。
+- コードは `vba/新ファイル基準表.txt` を使用してください（標準モジュールでは発火しません）。
 
 ```vb
 Private Sub Worksheet_Change(ByVal Target As Range)
@@ -116,18 +116,18 @@ End Sub
 
 ### 含まれるテキストソース
 
-- `clsFrmSealNewEvent_Code.txt`: 動的ボタン／トグルの `WithEvents` クラス
+- `vba/clsFrmSealNewEvent.txt`: 動的ボタン／トグルの `WithEvents` クラス
 - `vba/modFrmSealNewLayout.txt`: 画面部品の生成と配置、起動マクロ `ShowFrmSealNew`
-- `frmSealNew_FormCode.txt`: UserForm本体と既存ボタン処理のイベント振り分け
-- `vba/modSealShared.txt`: シール見出し探索・単件転記・和暦／保存期間の共通処理。**標準モジュール名は `modSealShared`**。`frmSeal_` の旧実装と同じ処理をフォームなしで実行します。
+- `vba/frmSealNew.txt`: UserForm本体と既存ボタン処理のイベント振り分け
+- `vba/modSealShared.txt`: シール見出し探索・単件転記・和暦／保存期間の共通処理。**標準モジュール名は `modSealShared`**。`vba/frmSeal.txt` の旧実装と同じ処理をフォームなしで実行します。
 
 ### 検証用コピーへの導入
 
 1. 対象ブックを閉じ、`.xlsm` とVBAProjectのバックアップを作ってから作業します。元ブックは変更しません。
 2. `vba/Module1.txt`、`vba/固定印刷設定.txt`、`vba/modSealShared.txt` をそれぞれ同名の標準モジュールへ全文貼り付けます。既に同名モジュールがある場合は上書き／重複追加せず、GitHub `main` と内容・依存関係を比較し、不足分だけを反映します。既存 `Module1` に今回の変更（旧フォームのヘルパー参照先を `modSealShared` に変更）が必要です。
-3. `新ファイル基準表_SheetModule.bas` の内容は、標準モジュールではなくシート「新ファイル基準表」のコードモジュールへ追加します。既存 `Worksheet_Change`／`Worksheet_SelectionChange` があれば統合します。行移動クリック確定と自動補完に必要です。
-4. `clsFrmSealNewEvent_Code.txt` をクラス `clsFrmSealNewEvent`、`vba/modFrmSealNewLayout.txt` を標準モジュール `modFrmSealNewLayout`、`frmSealNew_FormCode.txt` をUserForm `frmSealNew` へ導入します。部品の手配置は不要です。
-5. `frmSeal` は削除・置換しません。`Module1` の旧フォーム**画面起動** (`frmSeal.Show`) は互換性のため残し、転記ヘルパーだけ `modSealShared` に振り替えています。デザイナーにトグルがない**検証コピーのみ**、`frmSeal_` の該当参照を `Me.Controls("tglDuplicateCheckMode")`／`Me.Controls("tglMoveMode")` の遅延参照にすると、コントロール未宣言によるコンパイルエラーを回避できます。職場の本来のフォームにはデザイナー差分の確認なしに適用しません。
+3. `vba/新ファイル基準表.txt` の内容は、標準モジュールではなくシート「新ファイル基準表」のコードモジュールへ追加します。既存 `Worksheet_Change`／`Worksheet_SelectionChange` があれば統合します。行移動クリック確定と自動補完に必要です。
+4. `vba/clsFrmSealNewEvent.txt` をクラス `clsFrmSealNewEvent`、`vba/modFrmSealNewLayout.txt` を標準モジュール `modFrmSealNewLayout`、`vba/frmSealNew.txt` をUserForm `frmSealNew` へ導入します。部品の手配置は不要です。
+5. `frmSeal` は削除・置換しません。`Module1` の旧フォーム**画面起動** (`frmSeal.Show`) は互換性のため残し、転記ヘルパーだけ `modSealShared` に振り替えています。デザイナーにトグルがない**検証コピーのみ**、`vba/frmSeal.txt` の該当参照を `Me.Controls("tglDuplicateCheckMode")`／`Me.Controls("tglMoveMode")` の遅延参照にすると、コントロール未宣言によるコンパイルエラーを回避できます。職場の本来のフォームにはデザイナー差分の確認なしに適用しません。
 6. **デバッグ > VBAProject のコンパイル**でエラーを解消してから `ShowFrmSealNew` を実行します。コンパイル未完のブックでは業務ボタンを有効化せず、更新処理はダミーデータのコピーだけでテストします。
 
 ### 23個のボタンと依存関係
