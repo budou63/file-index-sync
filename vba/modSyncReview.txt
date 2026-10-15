@@ -84,7 +84,7 @@ End Sub
 Private Function ReviewYearAliasGroup(ByVal aliasName As String) As Long
     Select Case aliasName
         Case "年度（和暦）", "年度(和暦)", "年度": ReviewYearAliasGroup = 1
-        Case "作成年度（和暦）", "作成年度(和暦)", "作成年度": ReviewYearAliasGroup = 2
+        Case "作成年度（和暦）", "作成年度(和暦)": ReviewYearAliasGroup = 2
     End Select
 End Function
 
@@ -111,9 +111,9 @@ Private Function ReviewCol(ByVal ws As Worksheet, ParamArray aliases() As Varian
     Dim yearReferences As Object, yearReferenceCols As Object, referenceCol As Long
     If reviewHeaderCache Is Nothing Then Set reviewHeaderCache = CreateObject("Scripting.Dictionary")
     cacheKey = ws.Name
-    ' Only D's three-name alias lookup includes the Western-year column.
-    ' Keep the two-name lookups used by A/B/C unchanged.
-    If UBound(aliases) = 2 Then yearAliasGroup = ReviewYearAliasGroup(CStr(aliases(0)))
+    ' Year aliases are compared only with aliases from the same family.
+    ' This keeps CE's CSV-originated "作成年度" outside review matching.
+    If UBound(aliases) >= 1 Then yearAliasGroup = ReviewYearAliasGroup(CStr(aliases(0)))
     For Each a In aliases
         cacheKey = cacheKey & Chr$(30) & CStr(a)
         If yearAliasGroup <> ReviewYearAliasGroup(CStr(a)) Then yearAliasGroup = 0
@@ -224,7 +224,6 @@ End Function
 Private Function ReviewName(ByVal ws As Worksheet, ByVal r As Long, ByVal isCsv As Boolean, ByVal includeFolder As Boolean) As String
     Dim created As Long, g1 As String, g2 As String, folder As String
     created = ReviewYear(ReviewValue(ws, r, ReviewCol(ws, "作成年度（和暦）", "作成年度(和暦)")))
-    If created = 0 Then created = ReviewYear(ReviewValue(ws, r, ReviewCol(ws, "作成年度")))
     If isCsv Then
         g1 = ReviewValue(ws, r, ReviewCol(ws, "分類名２", "分類名2", "第1ガイド", "第１ガイド"))
         g2 = ReviewValue(ws, r, ReviewCol(ws, "分類名３", "分類名3", "第2ガイド", "第２ガイド"))
@@ -552,14 +551,14 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
     Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
     If ReviewCol(src, "ファイルID") = 0 Or ReviewCol(src, "ファイル番号") = 0 Or _
        ReviewCol(src, "バーコード番号") = 0 Or ReviewCol(src, "年度（和暦）", "年度(和暦)", "年度") = 0 Or _
-       ReviewCol(src, "作成年度（和暦）", "作成年度(和暦)", "作成年度") = 0 Or _
+       ReviewCol(src, "作成年度（和暦）", "作成年度(和暦)") = 0 Or _
        ReviewCol(src, "分類名２", "分類名2", "第1ガイド", "第１ガイド") = 0 Or _
        ReviewCol(src, "分類名３", "分類名3", "第2ガイド", "第２ガイド") = 0 Or _
        ReviewCol(src, "タイトル", "個別フォルダー", "個別フォルダ") = 0 Or _
        ReviewCol(dst, "ファイルID") = 0 Or ReviewCol(dst, "ファイル番号") = 0 Or _
        ReviewCol(dst, "バーコード番号") = 0 Or ReviewCol(dst, "同期状態") = 0 Or _
        ReviewCol(dst, "年度（和暦）", "年度(和暦)", "年度") = 0 Or _
-       ReviewCol(dst, "作成年度（和暦）", "作成年度(和暦)", "作成年度") = 0 Or _
+       ReviewCol(dst, "作成年度（和暦）", "作成年度(和暦)") = 0 Or _
        ReviewCol(dst, "第1ガイド", "第１ガイド", "分類名２") = 0 Or _
        ReviewCol(dst, "第2ガイド", "第２ガイド", "分類名３") = 0 Or _
        ReviewCol(dst, "個別フォルダー", "個別フォルダ", "タイトル") = 0 Then _

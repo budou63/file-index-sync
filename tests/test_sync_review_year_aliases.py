@@ -38,6 +38,11 @@ def aliases_compatible(*values):
     return all(year_alias_compatible(nonblank[0], value) for value in nonblank)
 
 
+def created_year_for_review(western_year_alias, ce_year):
+    """CE is not a review alias and must never supply a fallback value."""
+    return year(western_year_alias)
+
+
 class ReviewYearAliasTests(unittest.TestCase):
     def test_year_alias_compatibility_cases(self):
         for left, right, expected in (
@@ -51,6 +56,22 @@ class ReviewYearAliasTests(unittest.TestCase):
         ):
             with self.subTest(left=left, right=right):
                 self.assertEqual(year_alias_compatible(left, right), expected)
+
+    def test_created_year_uses_only_wareki_columns_and_never_ce_fallback(self):
+        for wareki, ce, expected in (
+            ("R8", "2026", 2026), ("R8", "2025", 2026),
+            ("R8", "2024", 2026), ("H12", "", 2000),
+            ("R8", "", 2026), ("", "2026", 0), ("unknown", "2026", 0),
+        ):
+            with self.subTest(wareki=wareki, ce=ce):
+                self.assertEqual(created_year_for_review(wareki, ce), expected)
+        name_start = MODULE.index("Private Function ReviewName(")
+        name = MODULE[name_start:MODULE.index("End Function", name_start)]
+        self.assertIn('ReviewCol(ws, "作成年度（和暦）", "作成年度(和暦)")', name)
+        self.assertNotIn('ReviewCol(ws, "作成年度")', name)
+        detector_start = MODULE.index("Public Function SyncReviewCopyIdCandidates(")
+        detector = MODULE[detector_start:MODULE.index("End Function", detector_start)]
+        self.assertNotIn('"作成年度（和暦）", "作成年度(和暦)", "作成年度"', detector)
 
     def test_all_nonblank_year_aliases_are_compared_even_when_first_alias_is_blank(self):
         self.assertTrue(aliases_compatible("", "R8", "2026"))
@@ -91,9 +112,9 @@ class ReviewYearAliasTests(unittest.TestCase):
         start = MODULE.index("Public Function SyncReviewCopyIdCandidates(")
         detector = MODULE[start:MODULE.index("End Function", start)]
         self.assertIn('ReviewCol(src, "年度（和暦）", "年度(和暦)", "年度")', detector)
-        self.assertIn('ReviewCol(src, "作成年度（和暦）", "作成年度(和暦)", "作成年度")', detector)
+        self.assertIn('ReviewCol(src, "作成年度（和暦）", "作成年度(和暦)")', detector)
         self.assertIn('ReviewCol(dst, "年度（和暦）", "年度(和暦)", "年度")', detector)
-        self.assertIn('ReviewCol(dst, "作成年度（和暦）", "作成年度(和暦)", "作成年度")', detector)
+        self.assertIn('ReviewCol(dst, "作成年度（和暦）", "作成年度(和暦)")', detector)
 
 
 if __name__ == "__main__":
