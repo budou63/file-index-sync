@@ -2138,6 +2138,10 @@ End Function
 
 Private Function CsvHeaderIsIdentifier(ByVal headerName As String) As Boolean
     Dim normalized As String
+    If CanonicalHeaderName(headerName) = CanonicalHeaderName("汎用項目１０") Then
+        CsvHeaderIsIdentifier = True
+        Exit Function
+    End If
     normalized = UCase(NormalizeHeaderToken(headerName))
     CsvHeaderIsIdentifier = (InStr(1, normalized, "ID", vbTextCompare) > 0 Or _
         InStr(1, normalized, "コード", vbTextCompare) > 0 Or InStr(1, normalized, "番号", vbTextCompare) > 0)
@@ -3538,6 +3542,8 @@ Public Sub 手順5_差分インポートCSVを外部出力する()
         headerName = Trim$(CStr(wsOut.Cells(1, absCol).Value))
 
         If headerName <> "通し番号" And headerName <> "状態" Then
+            If Step2HeaderRequiresSourceText(headerName) Then _
+                wsExport.Cells(1, dstCol).Resize(lastRow, 1).NumberFormat = "@"
             wsExport.Cells(1, dstCol).Resize(lastRow, 1).Value = _
                 wsOut.Cells(usedRng.Row, absCol).Resize(lastRow, 1).Value
             dstCol = dstCol + 1
@@ -4706,12 +4712,12 @@ Private Sub ApplyStep4ConflictResolution(ByVal wsEdit As Worksheet, ByVal plan A
                         parentCode = Step4OriginalParentCode(wsEdit, r, name2Col, code2Col, parentChanges)
                         If parentCode = oldParent And NormalizeClassificationGuideKey(CStr(wsEdit.Cells(r, name3Col).Value)) = NormalizeClassificationGuideKey(CStr(entry(1))) _
                            And Trim$(CStr(wsEdit.Cells(r, code3Col).Value)) <> newCode Then
-                            wsEdit.Cells(r, code3Col).Value = newCode
+                            WriteClassificationCodeValue wsEdit.Cells(r, code3Col), "分類コード３", newCode
                             changed = changed + 1
                         End If
                     ElseIf NormalizeClassificationGuideKey(CStr(wsEdit.Cells(r, name2Col).Value)) = NormalizeClassificationGuideKey(CStr(entry(1))) Then
                         If oldCode <> newCode And (Trim$(CStr(wsEdit.Cells(r, code2Col).Value)) = oldCode Or Len(Trim$(CStr(wsEdit.Cells(r, code2Col).Value))) = 0) Then
-                            wsEdit.Cells(r, code2Col).Value = newCode
+                            WriteClassificationCodeValue wsEdit.Cells(r, code2Col), "分類コード２", newCode
                             changed = changed + 1
                         End If
                     End If
@@ -9006,13 +9012,37 @@ Private Function IsStep2UpdateExcludedHeader(ByVal headerName As String) As Bool
 
 End Function
 
+Private Function Step2HeaderRequiresSourceText(ByVal headerName As String) As Boolean
+
+    Select Case CanonicalHeaderName(headerName)
+        Case CanonicalHeaderName("ファイル番号"), _
+             CanonicalHeaderName("分類コード２"), _
+             CanonicalHeaderName("分類コード３"), _
+             CanonicalHeaderName("汎用項目１０")
+            Step2HeaderRequiresSourceText = True
+    End Select
+
+End Function
+
 Private Sub WriteStep2SourceValue(ByVal targetCell As Range, ByVal headerName As String, ByVal sourceValue As Variant)
-    If CanonicalHeaderName(headerName) = CanonicalHeaderName("ファイル番号") Then
+    If Step2HeaderRequiresSourceText(headerName) Then
         targetCell.NumberFormat = "@"
         targetCell.Value2 = CStr(sourceValue)
     Else
         targetCell.Value = sourceValue
     End If
+End Sub
+
+Private Sub WriteClassificationCodeValue(ByVal targetCell As Range, ByVal headerName As String, ByVal codeValue As String)
+
+    If CanonicalHeaderName(headerName) = CanonicalHeaderName("分類コード２") Or _
+       CanonicalHeaderName(headerName) = CanonicalHeaderName("分類コード３") Then
+        targetCell.NumberFormat = "@"
+        targetCell.Value2 = CStr(codeValue)
+    Else
+        targetCell.Value = codeValue
+    End If
+
 End Sub
 
 Private Sub RefreshSerialDiffMarksByKey( _
@@ -11015,10 +11045,10 @@ Public Sub 新ファイル基準表_分類コード再補完( _
                     codeValue = GetCodeFromCodeMaster(CStr(pairDefs(i)(0)), inputName, parentCodeValue)
                     If isRegistrationRow Then
                         ' 登録予定行は差分インポートで新規登録するため、分類名から引き直した値で上書きする。
-                        wsEdit.Cells(r, codeCols(i)).Value = codeValue
+                        WriteClassificationCodeValue wsEdit.Cells(r, codeCols(i)), CStr(pairDefs(i)(1)), codeValue
                     ElseIf Len(currentCode) = 0 Then
                         ' 既存行は分類コードが空欄の場合のみ補完する。既存値は原則維持する。
-                        If Len(codeValue) > 0 Then wsEdit.Cells(r, codeCols(i)).Value = codeValue
+                        If Len(codeValue) > 0 Then WriteClassificationCodeValue wsEdit.Cells(r, codeCols(i)), CStr(pairDefs(i)(1)), codeValue
                     ElseIf Len(codeValue) > 0 And NormalizeCellValue(currentCode) <> NormalizeCellValue(codeValue) Then
                         ' 既存行の不一致は自動変更せず、デバッグ出力に留める（ログシートはメインマクロのみ記録）。
                         Debug.Print "分類コード不一致（自動変更なし） / 項目名=" & CStr(pairDefs(i)(0)) & _
@@ -11205,7 +11235,7 @@ ContinueCollectGuide2:
         If Len(guideName) > 0 Then
             lookupKey = BuildGuideCodeMasterNameKey("分類名２", NormalizeClassificationGuideKey(guideName))
             If Not plannedGuide2Codes.Exists(lookupKey) Then
-                wsEdit.Cells(r, code2Col).Value = CStr(code2ByName(lookupKey))
+                WriteClassificationCodeValue wsEdit.Cells(r, code2Col), "分類コード２", CStr(code2ByName(lookupKey))
             End If
         End If
 ContinueReuseGuide2:
@@ -11219,7 +11249,7 @@ ContinueReuseGuide2:
         codeValue = CStr(plannedGuide2Codes(lookupKey))
         AppendCodeMasterRecord "分類名２", codeValue, guideName, "仮採番"
         For Each guideRow In guideRows
-            wsEdit.Cells(CLng(guideRow), code2Col).Value = codeValue
+            WriteClassificationCodeValue wsEdit.Cells(CLng(guideRow), code2Col), "分類コード２", codeValue
         Next guideRow
         Debug.Print "分類コード自動採番 / 項目名=分類名２ / 採番コード=" & codeValue & _
             " / 表示名=" & guideName & " / 対象行番号=" & CollectionToCsv(guideRows)
@@ -11241,14 +11271,14 @@ ContinueReuseGuide2:
                 If Len(parentCodeValue) = 0 Then
                     Err.Raise vbObjectError + 2609, , "第2ガイドの分類コードを採番するための第1ガイドコードがありません。行=" & CStr(r) & " / 第1ガイド=" & CStr(wsEdit.Cells(r, guide2Col).Value)
                 ElseIf code3ByName.Exists(guideKey) Then
-                    wsEdit.Cells(r, code3Col).Value = CStr(code3ByName(guideKey))
+                    WriteClassificationCodeValue wsEdit.Cells(r, code3Col), "分類コード３", CStr(code3ByName(guideKey))
                 Else
                     assignedCode = AllocateNextClassificationCode(usedCode3)
                     codeValue = CStr(assignedCode)
                     AppendCodeMasterRecord "分類名３", codeValue, guideName, "仮採番", parentCodeValue
                     code3ByName.Add guideKey, codeValue
                     usedCode3(codeValue) = True
-                    wsEdit.Cells(r, code3Col).Value = codeValue
+                    WriteClassificationCodeValue wsEdit.Cells(r, code3Col), "分類コード３", codeValue
                     Debug.Print "分類コード自動採番 / 項目名=分類名３ / 採番コード=" & codeValue & _
                         " / 表示名=" & guideName & " / 対象行番号=" & CStr(r)
                 End If

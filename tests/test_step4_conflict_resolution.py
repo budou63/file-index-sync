@@ -130,8 +130,8 @@ class SourcePathTests(unittest.TestCase):
         before = step4[:step4.index('ApplyStep4ConflictResolution')]
         self.assertNotIn('wsEdit.Cells(r, syncStatusColEdit).Value = "文書管理対象外"', before)
         apply = proc('ApplyStep4ConflictResolution')
-        self.assertIn('wsEdit.Cells(r, code2Col).Value', apply)
-        self.assertIn('wsEdit.Cells(r, code3Col).Value', apply)
+        self.assertIn('WriteClassificationCodeValue wsEdit.Cells(r, code2Col), "分類コード２"', apply)
+        self.assertIn('WriteClassificationCodeValue wsEdit.Cells(r, code3Col), "分類コード３"', apply)
         self.assertIn('wsMaster.Rows', apply)
         self.assertIn('WriteStep4ConflictSuccessLog', step4)
         self.assertIn('WriteProcessLog', proc('WriteStep4ConflictSuccessLog'))

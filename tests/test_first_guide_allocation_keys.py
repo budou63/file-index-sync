@@ -48,7 +48,7 @@ class FirstGuideAllocationKeyTests(unittest.TestCase):
         self.assertIn("lookupKey = BuildGuideCodeMasterNameKey(itemName, displayKey", builder)
         self.assertIn('lookupKey = BuildGuideCodeMasterNameKey("分類名２", guideKey)', allocator)
         self.assertIn("If Not code2ByName.Exists(lookupKey) Then", allocator)
-        self.assertIn("wsEdit.Cells(r, code2Col).Value = CStr(code2ByName(lookupKey))", allocator)
+        self.assertIn('WriteClassificationCodeValue wsEdit.Cells(r, code2Col), "分類コード２", CStr(code2ByName(lookupKey))', allocator)
         self.assertIn("code2ByName.Add lookupKey, codeValue", allocator)
         self.assertIn("pendingGuide2Rows.Add guideKey, guideRows", allocator)
 
@@ -67,7 +67,7 @@ class FirstGuideAllocationKeyTests(unittest.TestCase):
         self.assertIn("If Not pendingGuide2Rows.Exists(guideKey) Then", allocator)
         self.assertIn("pendingGuide2Rows(guideKey).Add r", allocator)
         self.assertIn("For Each guideRow In guideRows", allocator)
-        self.assertIn("wsEdit.Cells(CLng(guideRow), code2Col).Value = codeValue", allocator)
+        self.assertIn('WriteClassificationCodeValue wsEdit.Cells(CLng(guideRow), code2Col), "分類コード２", codeValue', allocator)
         self.assertLess(allocator.index("pendingGuide2Rows(guideKey).Add r"),
                         allocator.index('AppendCodeMasterRecord "分類名２"'))
         rows = ["新しいガイド", "新しいガイド"]
@@ -89,7 +89,7 @@ class FirstGuideAllocationKeyTests(unittest.TestCase):
         self.assertIn('GetStep4GuideCodeStateIssue("第1ガイド", "分類名２", guideName)', allocator)
         self.assertIn('Err.Raise vbObjectError + 2602', allocator)
         self.assertLess(allocator.index('GetStep4GuideCodeStateIssue("第1ガイド"'),
-                        allocator.index("wsEdit.Cells(r, code2Col).Value"))
+                        allocator.index('WriteClassificationCodeValue wsEdit.Cells(r, code2Col), "分類コード２"'))
         self.assertLess(allocator.index('GetStep4GuideCodeStateIssue("第1ガイド"'),
                         allocator.index('AppendCodeMasterRecord "分類名２"'))
         self.assertIn("If ContainsMacroInsertRemark(wsEdit.Cells(r, bikoCol).Value) Then", allocator)
@@ -104,7 +104,7 @@ class FirstGuideAllocationKeyTests(unittest.TestCase):
     def test_all_first_guide_allocations_validate_before_any_code_write(self) -> None:
         allocator = procedure("新ファイル基準表_登録予定分類コード採番")
         failure_check = allocator.index("If Len(failureText) > 0 Then")
-        self.assertLess(failure_check, allocator.index("wsEdit.Cells(r, code2Col).Value"))
+        self.assertLess(failure_check, allocator.index('WriteClassificationCodeValue wsEdit.Cells(r, code2Col), "分類コード２"'))
         self.assertLess(failure_check, allocator.index('AppendCodeMasterRecord "分類名２"'))
         self.assertLess(failure_check, allocator.index('AppendCodeMasterRecord "分類名３"'))
         self.assertIn("plannedGuide2Codes.Add", allocator)

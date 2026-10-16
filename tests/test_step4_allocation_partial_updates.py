@@ -28,7 +28,7 @@ class Step4AllocationFailureTests(unittest.TestCase):
         # assertions alone cannot prove the actual workbook is restored.
         step4 = procedure("手順4_差分インポートCSVを作成する")
         refill = procedure("新ファイル基準表_分類コード再補完")
-        self.assertIn('wsEdit.Cells(r, codeCols(i)).Value = codeValue', refill)
+        self.assertIn('WriteClassificationCodeValue wsEdit.Cells(r, codeCols(i)), CStr(pairDefs(i)(1)), codeValue', refill)
         self.assertIn("CaptureStep4AllocationColumns", step4)
         self.assertIn("RestoreStep4AllocationColumns", step4)
         self.assertIn("RestoreCodeMasterFromBackup", step4)
