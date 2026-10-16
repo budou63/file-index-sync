@@ -5658,10 +5658,10 @@ Public Sub 手順2_新ファイル基準表を作成する()
     destFileNoCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array("ファイル番号"))
     destBarcodeCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array("バーコード番号"))
 
-    ' 前回実行時の赤塗りつぶしが残らないよう、対象年度の「通し番号」列だけ事前にクリアする
+    ' 通し番号の差分表示は、全ての同期処理が完了した後に更新する。
+    ' 途中で処理が中断した場合、前回実行時の表示を消さないためである。
     serialCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), GetStep2HeaderCandidates("通し番号"))
     BuildStep2SuspectGuideMap wsSrc, srcLastCol, wsDst, dstLastRow, targetYearValue, suspectGuideMap
-    ClearSerialDiffMarksForTargetYear wsDst, serialCol, targetYearValue
 
     ' ID未登録の登録予定行のみ、作成年度＋第1ガイド＋第2ガイド＋個別フォルダーで名称照合する
     BuildSourceNameSyncMap wsSrc, srcLastRow, srcLastCol, sourceNameSyncMap, targetYearValue
@@ -6204,9 +6204,9 @@ ContinueNextSourceRow:
         ReapplyFormatAndWidthFromTemplate wsDst, formatTemplateMap, columnWidthMap, wsFormatTemplate
     End If
 
-    ' 書式再適用後に、追加・変更・名称ベース同期行の通し番号列だけを赤塗りする
+    ' 書式再適用後に、対象年度の前回差分表示をリセットしてから今回の結果を文字色で表示する。
     serialCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), GetStep2HeaderCandidates("通し番号"))
-    ApplySerialDiffMarksByKey wsDst, serialCol, visualDiffMap, serialCommentMap, targetYearValue
+    RefreshSerialDiffMarksByKey wsDst, serialCol, visualDiffMap, serialCommentMap, targetYearValue
 
     ' CSV整形完了時点の使用範囲へ、見出し行フィルターを正しい範囲で設定し直す
     ApplyAutoFilterToNewFileStandard wsDst
@@ -8761,7 +8761,7 @@ Private Sub ClearSerialDiffMarksForTargetYear(ByVal ws As Worksheet, ByVal seria
     Dim rowNo As Long
     Dim warekiYearCol As Long
     Dim westernYearCol As Long
-    Dim syncCol As Long
+    Dim targetCell As Range
 
     If ws Is Nothing Then Exit Sub
     If serialCol <= 0 Then Exit Sub
@@ -8771,17 +8771,16 @@ Private Sub ClearSerialDiffMarksForTargetYear(ByVal ws As Worksheet, ByVal seria
 
     warekiYearCol = FindHeaderColumn(ws, GetLastHeaderCol(ws), Array("年度（和暦）", "年度(和暦)"))
     westernYearCol = FindHeaderColumn(ws, GetLastHeaderCol(ws), Array("年度"))
-    syncCol = FindHeaderColumn(ws, GetLastHeaderCol(ws), Array("同期状態"))
 
     For rowNo = 2 To lastRow
-        If syncCol > 0 Then
-            If IsIgnoredBySyncStatus(CStr(ws.Cells(rowNo, syncCol).Value)) Then GoTo ContinueNextClearSerialRow
-        End If
         If targetYearValue <= 0 Or GetNormalizedYearFromRow(ws, rowNo, warekiYearCol, westernYearCol) = targetYearValue Then
-            ws.Cells(rowNo, serialCol).Interior.Pattern = xlNone
-            SafeDeleteComment ws.Cells(rowNo, serialCol)
+            Set targetCell = ws.Cells(rowNo, serialCol)
+            targetCell.Font.Color = RGB(0, 0, 0)
+            If SerialDiffCommentIsLegacyCsvMark(targetCell) And targetCell.Interior.Color = CSV_DIFF_SERIAL_MARK_COLOR Then
+                targetCell.Interior.Pattern = xlNone
+            End If
+            SafeDeleteSerialDiffComment targetCell
         End If
-ContinueNextClearSerialRow:
     Next rowNo
 
 End Sub
@@ -8807,6 +8806,7 @@ Private Sub ApplySerialDiffMarksByKey( _
     Dim statusValue As String
     Dim warekiYearCol As Long
     Dim westernYearCol As Long
+    Dim targetCell As Range
 
     If ws Is Nothing Then Exit Sub
     If serialCol <= 0 Then Exit Sub
@@ -8851,16 +8851,13 @@ Private Sub ApplySerialDiffMarksByKey( _
         End If
 
         If markKey <> "" Then
-            With ws.Cells(rowNo, serialCol).Interior
-                .Pattern = xlSolid
-                .Color = CSV_DIFF_SERIAL_MARK_COLOR
-            End With
+            Set targetCell = ws.Cells(rowNo, serialCol)
+            targetCell.Font.Color = Step2SerialDiffFontColor(CStr(visualDiffMap(markKey)))
 
-            SafeDeleteComment ws.Cells(rowNo, serialCol)
             If Not serialCommentMap Is Nothing Then
                 If serialCommentMap.Exists(markKey) Then
                     commentText = CStr(serialCommentMap(markKey))
-                    If Len(commentText) > 0 Then SafeAddComment ws.Cells(rowNo, serialCol), commentText
+                    If Len(commentText) > 0 Then SafeReplaceSerialDiffComment targetCell, commentText
                 End If
             End If
         End If
@@ -8868,6 +8865,78 @@ ContinueNextDiffMarkRow:
     Next rowNo
 
 End Sub
+
+Private Function Step2SerialDiffFontColor(ByVal diffType As String) As Long
+
+    Select Case diffType
+        Case "追加"
+            Step2SerialDiffFontColor = RGB(0, 128, 0)
+        Case "登録予定現行", "名称同期"
+            Step2SerialDiffFontColor = RGB(0, 0, 255)
+        Case "変更"
+            Step2SerialDiffFontColor = RGB(255, 0, 0)
+        Case Else
+            Step2SerialDiffFontColor = RGB(0, 0, 0)
+    End Select
+
+End Function
+
+Private Sub SafeReplaceSerialDiffComment(ByVal targetCell As Range, ByVal diffCommentText As String)
+
+    Dim previousText As String
+
+    If targetCell Is Nothing Then Exit Sub
+    If targetCell.Comment Is Nothing Then
+        SafeAddComment targetCell, diffCommentText
+        Exit Sub
+    End If
+
+    previousText = CStr(targetCell.Comment.Text)
+    If SerialDiffCommentIsLegacyCsvMark(targetCell) Then
+        SafeDeleteComment targetCell
+        SafeAddComment targetCell, diffCommentText
+    Else
+        targetCell.Comment.Text Text:=previousText & vbCrLf & "【CSV整形差分】" & vbCrLf & diffCommentText
+    End If
+
+End Sub
+
+Private Sub SafeDeleteSerialDiffComment(ByVal targetCell As Range)
+
+    Dim previousText As String
+    Dim markerAt As Long
+
+    If targetCell Is Nothing Then Exit Sub
+    If targetCell.Comment Is Nothing Then Exit Sub
+
+    previousText = CStr(targetCell.Comment.Text)
+    markerAt = InStr(1, previousText, vbCrLf & "【CSV整形差分】", vbBinaryCompare)
+    If markerAt > 0 Then
+        targetCell.Comment.Text Text:=Left$(previousText, markerAt - 1)
+    ElseIf SerialDiffCommentIsLegacyCsvMark(targetCell) Then
+        SafeDeleteComment targetCell
+    End If
+
+End Sub
+
+Private Function SerialDiffCommentIsLegacyCsvMark(ByVal targetCell As Range) As Boolean
+
+    Dim previousText As String
+
+    If targetCell Is Nothing Then Exit Function
+    If targetCell.Comment Is Nothing Then Exit Function
+    previousText = CStr(targetCell.Comment.Text)
+    SerialDiffCommentIsLegacyCsvMark = _
+        Left$(previousText, Len("【新規追加】")) = "【新規追加】" Or _
+        Left$(previousText, Len("【内容変更】")) = "【内容変更】" Or _
+        Left$(previousText, Len("【名称ベース同期】")) = "【名称ベース同期】" Or _
+        Left$(previousText, Len("【名称同期】")) = "【名称同期】" Or _
+        Left$(previousText, Len("【判定困難】")) = "【判定困難】" Or _
+        Left$(previousText, Len("【削除予定】")) = "【削除予定】" Or _
+        Left$(previousText, Len("【削除可】")) = "【削除可】" Or _
+        Left$(previousText, Len("【登録予定")) = "【登録予定"
+
+End Function
 
 Private Sub UpdateRowFromSourceByHeader( _
     ByVal wsSrc As Worksheet, _
@@ -8944,6 +9013,93 @@ Private Sub WriteStep2SourceValue(ByVal targetCell As Range, ByVal headerName As
     Else
         targetCell.Value = sourceValue
     End If
+End Sub
+
+Private Sub RefreshSerialDiffMarksByKey( _
+    ByVal ws As Worksheet, _
+    ByVal serialCol As Long, _
+    ByVal visualDiffMap As Object, _
+    ByVal serialCommentMap As Object, _
+    ByVal targetYearValue As Long)
+
+    Dim visualSnapshot As Collection
+    Dim errNumber As Long
+    Dim errDescription As String
+
+    Set visualSnapshot = CaptureSerialDiffMarksForTargetYear(ws, serialCol, targetYearValue)
+    On Error GoTo RestoreAndRaise
+    ClearSerialDiffMarksForTargetYear ws, serialCol, targetYearValue
+    ApplySerialDiffMarksByKey ws, serialCol, visualDiffMap, serialCommentMap, targetYearValue
+    Exit Sub
+
+RestoreAndRaise:
+    errNumber = Err.Number
+    errDescription = Err.Description
+    On Error Resume Next
+    RestoreSerialDiffMarksForTargetYear ws, serialCol, visualSnapshot
+    On Error GoTo 0
+    Err.Raise errNumber, "RefreshSerialDiffMarksByKey", errDescription
+
+End Sub
+
+Private Function CaptureSerialDiffMarksForTargetYear( _
+    ByVal ws As Worksheet, _
+    ByVal serialCol As Long, _
+    ByVal targetYearValue As Long) As Collection
+
+    Dim visualSnapshot As Collection
+    Dim lastRow As Long
+    Dim rowNo As Long
+    Dim warekiYearCol As Long
+    Dim westernYearCol As Long
+    Dim targetCell As Range
+    Dim commentText As String
+    Dim hasComment As Boolean
+
+    Set visualSnapshot = New Collection
+    Set CaptureSerialDiffMarksForTargetYear = visualSnapshot
+    If ws Is Nothing Then Exit Function
+    If serialCol <= 0 Then Exit Function
+
+    lastRow = Step2GetLastDataRow(ws)
+    If lastRow < 2 Then Exit Function
+    warekiYearCol = FindHeaderColumn(ws, GetLastHeaderCol(ws), Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(ws, GetLastHeaderCol(ws), Array("年度"))
+
+    For rowNo = 2 To lastRow
+        If targetYearValue <= 0 Or GetNormalizedYearFromRow(ws, rowNo, warekiYearCol, westernYearCol) = targetYearValue Then
+            Set targetCell = ws.Cells(rowNo, serialCol)
+            commentText = ""
+            hasComment = Not (targetCell.Comment Is Nothing)
+            If hasComment Then commentText = CStr(targetCell.Comment.Text)
+            visualSnapshot.Add Array(rowNo, CLng(targetCell.Font.Color), CLng(targetCell.Interior.Pattern), _
+                CLng(targetCell.Interior.Color), hasComment, commentText)
+        End If
+    Next rowNo
+
+End Function
+
+Private Sub RestoreSerialDiffMarksForTargetYear( _
+    ByVal ws As Worksheet, _
+    ByVal serialCol As Long, _
+    ByVal visualSnapshot As Collection)
+
+    Dim snapshotItem As Variant
+    Dim targetCell As Range
+
+    If ws Is Nothing Then Exit Sub
+    If serialCol <= 0 Then Exit Sub
+    If visualSnapshot Is Nothing Then Exit Sub
+
+    For Each snapshotItem In visualSnapshot
+        Set targetCell = ws.Cells(CLng(snapshotItem(0)), serialCol)
+        targetCell.Font.Color = CLng(snapshotItem(1))
+        targetCell.Interior.Pattern = CLng(snapshotItem(2))
+        If CLng(snapshotItem(2)) <> xlNone Then targetCell.Interior.Color = CLng(snapshotItem(3))
+        SafeDeleteComment targetCell
+        If CBool(snapshotItem(4)) Then SafeAddComment targetCell, CStr(snapshotItem(5))
+    Next snapshotItem
+
 End Sub
 
 Private Sub AppendRowFromSourceByHeader( _
