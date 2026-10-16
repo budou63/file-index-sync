@@ -73,7 +73,7 @@ Private Sub BuildControls()
     PlaceControl mTxtDetails, 324, 28, 269, 263.5
     Set mChkDelete = EnsureControl("chkDelete", "Forms.CheckBox.1")
     PlaceControl mChkDelete, 9, 301.5, 300, 17.5
-    mChkDelete.Caption = "この削除可候補を一括削除の選択に加える"
+    mChkDelete.Caption = "選択したExcel行を削除対象にする"
     Set mLblStatus = EnsureControl("lblStatus", "Forms.Label.1")
     PlaceControl mLblStatus, 9, 323.5, 580, 23
     mLblStatus.Caption = "フォームを開いただけでは変更しません。"
@@ -103,7 +103,7 @@ Private Sub BuildControls()
     mCmdClear.Caption = "選択行の番号をクリア"
     Set mCmdRefresh = EnsureControl("cmdRefresh", "Forms.CommandButton.1")
     PlaceControl mCmdRefresh, 9, 407, 70, 21
-    mCmdRefresh.Caption = "再読み込み"
+    mCmdRefresh.Caption = "再判定"
     Set mCmdFinish = EnsureControl("cmdFinish", "Forms.CommandButton.1")
     PlaceControl mCmdFinish, 508, 407, 82, 21
     mCmdFinish.Caption = "確認終了"
@@ -244,6 +244,11 @@ Private Sub ShowCurrent()
         Exit Sub
     End If
     category = CStr(item("category"))
+    If category = "C" Then
+        mLstRows.MultiSelect = fmMultiSelectMulti
+    Else
+        mLstRows.MultiSelect = fmMultiSelectSingle
+    End If
     keeper = 0
     If category = "D" Then
         keeper = CLng(item("copyKeeperRow"))
@@ -306,7 +311,13 @@ Private Sub mLstCases_Click()
     If Not rendering Then ShowCurrent
 End Sub
 Private Sub mLstRows_Click()
-    If Not rendering Then ShowCurrentSelection
+    Dim item As Object
+    If rendering Then Exit Sub
+    Set item = SelectedCase()
+    If Not item Is Nothing Then
+        If CStr(item("category")) = "C" Then SelectDeleteRow item, SelectedRow()
+    End If
+    ShowCurrentSelection
 End Sub
 
 Private Sub ShowCurrentSelection()
@@ -360,22 +371,41 @@ Failed:
 End Sub
 
 Private Sub mChkDelete_Click()
-    Dim item As Object, key As String
+    Dim item As Object, key As String, rowNo As Long
     If rendering Then Exit Sub
     Set item = SelectedCase()
     If item Is Nothing Then Exit Sub
     key = CStr(item("key"))
+    rowNo = SelectedRow()
+    If CStr(item("category")) <> "C" Or rowNo < 2 Then
+        rendering = True: mChkDelete.Value = False: rendering = False
+        mLblStatus.Caption = "削除対象にできるExcel行を選択してください。"
+        Exit Sub
+    End If
     If mChkDelete.Value And Len(SyncReviewDecision(item)) > 0 Then
         rendering = True: mChkDelete.Value = False: rendering = False
         mLblStatus.Caption = "保留・別物の判断済み行は削除できません。"
         Exit Sub
     End If
     If mChkDelete.Value Then
-        If Not deletionSelection.Exists(key) Then deletionSelection.Add key, True
+        If Not deletionSelection.Exists(key) Then deletionSelection.Add key, rowNo
     ElseIf deletionSelection.Exists(key) Then
         deletionSelection.Remove key
     End If
-    mLblStatus.Caption = "削除選択：" & deletionSelection.Count & " 件。削除前に全件再確認・事前バックアップを実施します。"
+    mLblStatus.Caption = "削除対象のExcel行：" & deletionSelection.Count & " 件。削除前に全件再確認・事前バックアップを実施します。"
+End Sub
+Private Sub SelectDeleteRow(ByVal item As Object, ByVal rowNo As Long)
+    Dim key As String
+    If item Is Nothing Then Exit Sub
+    If CStr(item("category")) <> "C" Or rowNo < 2 Then Exit Sub
+    key = CStr(item("key"))
+    If Len(SyncReviewDecision(item)) > 0 Then
+        mLblStatus.Caption = "保留・別物と判断済みの行は削除対象にできません。"
+        Exit Sub
+    End If
+    If Not deletionSelection.Exists(key) Then deletionSelection.Add key, rowNo
+    rendering = True: mChkDelete.Value = True: rendering = False
+    mLblStatus.Caption = "Excel行" & rowNo & "を削除対象に追加しました。別の候補行も選択できます。"
 End Sub
 Private Sub mCmdGoTo_Click()
     Dim item As Object
@@ -474,7 +504,7 @@ Private Sub SelectCaseRow(ByVal rowNo As Long)
     Next i
 End Sub
 Private Sub mCmdDelete_Click()
-    Dim selected As New Collection, i As Long, item As Object, completed As Boolean
+    Dim selected As New Collection, i As Long, item As Object, deletionItem As Object, completed As Boolean
     If cases Is Nothing Then Exit Sub
     Set item = SelectedCase()
     If Not item Is Nothing Then
@@ -483,12 +513,25 @@ Private Sub mCmdDelete_Click()
     For i = 1 To cases.Count
         Set item = cases(i)
         If CStr(item("category")) = "C" Then
-            If deletionSelection.Exists(CStr(item("key"))) And Len(SyncReviewDecision(item)) = 0 Then selected.Add item
+            If deletionSelection.Exists(CStr(item("key"))) And Len(SyncReviewDecision(item)) = 0 Then
+                Set deletionItem = SyncReviewSelectedDeletionItem(item, CLng(deletionSelection(CStr(item("key")))))
+                If deletionItem Is Nothing Then Err.Raise vbObjectError + 6142, , "削除対象のExcel行を選択してください。"
+                selected.Add deletionItem
+            End If
         End If
     Next i
+    If selected.Count = 0 Then
+        mLblStatus.Caption = "削除対象のExcel行を選択してください。"
+        MsgBox "削除対象のExcel行を選択してください。CSV行ではなく、C候補のExcel行を選択します。", vbExclamation
+        Exit Sub
+    End If
     completed = SyncReviewDeleteBatch(selected)
-    Set deletionSelection = CreateObject("Scripting.Dictionary")
-    mCmdRefresh_Click
+    If completed Then
+        Set deletionSelection = CreateObject("Scripting.Dictionary")
+        mCmdRefresh_Click
+    Else
+        mLblStatus.Caption = "削除は完了していません。選択内容とバックアップ表示を確認してください。"
+    End If
 End Sub
 Private Sub mCmdRefresh_Click()
     Dim refreshed As Collection, copyCases As Collection, copyItem As Object, previousCases As Collection

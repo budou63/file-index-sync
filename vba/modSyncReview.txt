@@ -337,6 +337,17 @@ Private Function NewCase(ByVal category As String, ByVal yearValue As Long, ByVa
     Set NewCase = item
 End Function
 
+Public Function SyncReviewSelectedDeletionItem(ByVal item As Object, ByVal selectedRow As Long) As Object
+    If item Is Nothing Then Exit Function
+    If CStr(item("category")) <> "C" Then Exit Function
+    If CLng(item("sourceRow")) <> 0 Then Exit Function
+    If selectedRow < 2 Then Exit Function
+    ' C candidates are deliberately one Excel row per case. Do not turn a
+    ' multi-row or stale item into a partial deletion request.
+    If CStr(item("rows")) <> CStr(selectedRow) Then Exit Function
+    Set SyncReviewSelectedDeletionItem = item
+End Function
+
 Private Sub ReviewMapAdd(ByVal map As Object, ByVal key As String, ByVal rowNo As Long)
     Dim rows As Collection
     If Len(key) = 0 Then Exit Sub

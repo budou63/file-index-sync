@@ -53,7 +53,7 @@ class BlankFormTests(unittest.TestCase):
         self.assertIn("mTxtDetails.MultiLine = True", source)
         self.assertIn("mTxtDetails.ScrollBars = fmScrollBarsVertical", source)
         self.assertIn("mTxtDetails.Locked = True", source)
-        self.assertIn('mChkDelete.Caption = "この削除可候補を一括削除の選択に加える"', source)
+        self.assertIn('mChkDelete.Caption = "選択したExcel行を削除対象にする"', source)
         self.assertIn("SyncReviewDeleteBatch(selected)", source)
         self.assertIn("SyncReviewApprove(item, SelectedRow())", source)
 

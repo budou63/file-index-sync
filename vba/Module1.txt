@@ -2695,44 +2695,120 @@ Private Function FindInsertRowByYearOrder( _
 
 End Function
 
-Private Sub SortNewFileStandardByFiscalYear(ByVal wsDst As Worksheet)
+Private Sub PlaceStep2NewRowsNearGroups(ByVal wsDst As Worksheet, ByVal appendedRowKeys As Collection, _
+    ByVal targetYearValue As Long)
+
+    Dim headers As Object
+    Dim rowKey As Variant
+    Dim currentRow As Long
+    Dim insertRow As Long
+
+    If wsDst Is Nothing Then Exit Sub
+    If appendedRowKeys Is Nothing Then Exit Sub
+    If appendedRowKeys.Count = 0 Then Exit Sub
+    If wsDst.FilterMode Then Err.Raise vbObjectError + 2613, , _
+        "フィルター適用中は新規行の安全な差し込みができません。フィルターを手動で解除してCSV整形を再実行してください。"
+
+    Set headers = CreateObject("Scripting.Dictionary")
+    BuildHeaderMap wsDst, GetLastHeaderCol(wsDst), headers
+    For Each rowKey In appendedRowKeys
+        currentRow = FindStep2RowByFileKey(wsDst, headers, CStr(rowKey))
+        If currentRow < 2 Then Err.Raise vbObjectError + 2614, , "追加した新規行を再特定できません。"
+        insertRow = FindStep2NearbyInsertRow(wsDst, currentRow, targetYearValue)
+        If insertRow < 2 Then Err.Raise vbObjectError + 2615, , "新規行の差し込み位置を判定できません。"
+        If insertRow <> currentRow And insertRow <> currentRow + 1 Then
+            wsDst.Rows(currentRow).Cut
+            wsDst.Rows(insertRow).Insert Shift:=xlDown
+            Application.CutCopyMode = False
+        End If
+    Next rowKey
+
+End Sub
+
+Private Function FindStep2RowByFileKey(ByVal ws As Worksheet, ByVal headers As Object, ByVal rowKey As String) As Long
+
+    Dim rowNo As Long
+    Dim lastRow As Long
+
+    If ws Is Nothing Then Exit Function
+    If headers Is Nothing Then Exit Function
+    If Len(rowKey) = 0 Then Exit Function
+    lastRow = Step2GetLastDataRow(ws)
+    For rowNo = 2 To lastRow
+        If BuildFileKeyFromSheetRow(ws, rowNo, headers) = rowKey Then
+            FindStep2RowByFileKey = rowNo
+            Exit Function
+        End If
+    Next rowNo
+
+End Function
+
+Private Function FindStep2NearbyInsertRow(ByVal ws As Worksheet, ByVal currentRow As Long, _
+    ByVal targetYearValue As Long) As Long
 
     Dim lastRow As Long
     Dim lastCol As Long
     Dim warekiYearCol As Long
     Dim westernYearCol As Long
-    Dim tempYearCol As Long
+    Dim class1Col As Long
+    Dim guide1Col As Long
+    Dim guide2Col As Long
     Dim rowNo As Long
+    Dim candidateRow As Long
+    Dim matchLevel As Long
+    Dim bestLevel As Long
+    Dim class1Value As String
+    Dim guide1Value As String
+    Dim guide2Value As String
 
-    If wsDst Is Nothing Then Exit Sub
+    If ws Is Nothing Then Exit Function
+    lastRow = Step2GetLastDataRow(ws)
+    lastCol = GetLastHeaderCol(ws)
+    If currentRow < 2 Or currentRow > lastRow Or lastCol <= 0 Then Exit Function
+    warekiYearCol = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("年度（和暦）"))
+    westernYearCol = FindHeaderColumn(ws, lastCol, Array("年度"))
+    class1Col = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("分類名１"))
+    guide1Col = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("第1ガイド"))
+    guide2Col = FindHeaderColumn(ws, lastCol, GetStep2HeaderCandidates("第2ガイド"))
+    If warekiYearCol <= 0 And westernYearCol <= 0 Then Exit Function
 
-    lastRow = Step2GetLastDataRow(wsDst)
-    lastCol = GetLastHeaderCol(wsDst)
-    If lastRow < 2 Or lastCol <= 0 Then Exit Sub
+    If class1Col > 0 Then class1Value = NormalizeForFolderNameSyncKey(ws.Cells(currentRow, class1Col).Value2)
+    If guide1Col > 0 Then guide1Value = NormalizeForFolderNameSyncKey(ws.Cells(currentRow, guide1Col).Value2)
+    If guide2Col > 0 Then guide2Value = NormalizeForFolderNameSyncKey(ws.Cells(currentRow, guide2Col).Value2)
 
-    warekiYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度（和暦）", "年度(和暦)"))
-    westernYearCol = FindHeaderColumn(wsDst, lastCol, Array("年度"))
-    If warekiYearCol <= 0 And westernYearCol <= 0 Then Exit Sub
-
-    tempYearCol = EnsureHeaderColumn(wsDst, "__年度順_TMP__")
+    ' same year: choose the last existing group at the strongest matching level.
     For rowNo = 2 To lastRow
-        wsDst.Cells(rowNo, tempYearCol).Value = GetNormalizedYearFromRow(wsDst, rowNo, warekiYearCol, westernYearCol)
+        If rowNo <> currentRow Then
+            If GetNormalizedYearFromRow(ws, rowNo, warekiYearCol, westernYearCol) = targetYearValue Then
+                matchLevel = 0
+                If class1Col > 0 And Len(class1Value) > 0 Then
+                    If NormalizeForFolderNameSyncKey(ws.Cells(rowNo, class1Col).Value2) = class1Value Then
+                        matchLevel = 1
+                        If guide1Col > 0 And Len(guide1Value) > 0 Then
+                            If NormalizeForFolderNameSyncKey(ws.Cells(rowNo, guide1Col).Value2) = guide1Value Then
+                                matchLevel = 2
+                                If guide2Col > 0 And Len(guide2Value) > 0 Then
+                                    If NormalizeForFolderNameSyncKey(ws.Cells(rowNo, guide2Col).Value2) = guide2Value Then matchLevel = 3
+                                End If
+                            End If
+                        End If
+                    End If
+                End If
+                If matchLevel >= bestLevel And matchLevel > 0 Then
+                    bestLevel = matchLevel
+                    candidateRow = rowNo
+                End If
+            End If
+        End If
     Next rowNo
 
-    If wsDst.FilterMode Then wsDst.ShowAllData
-    With wsDst.Sort
-        .SortFields.Clear
-        .SortFields.Add Key:=wsDst.Range(wsDst.Cells(2, tempYearCol), wsDst.Cells(lastRow, tempYearCol)), SortOn:=xlSortOnValues, Order:=xlAscending, DataOption:=xlSortNormal
-        .SetRange wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(lastRow, tempYearCol))
-        .Header = xlYes
-        .MatchCase = False
-        .Orientation = xlTopToBottom
-        .Apply
-    End With
+    If candidateRow > 0 Then
+        FindStep2NearbyInsertRow = candidateRow + 1
+    Else
+        FindStep2NearbyInsertRow = FindInsertRowByYearOrder(ws, 2, lastRow, warekiYearCol, westernYearCol, targetYearValue)
+    End If
 
-    DeleteHeaderColumnIfExists wsDst, "__年度順_TMP__"
-
-End Sub
+End Function
 
 '--------------------------------------------------------
 ' 年度表現を内部比較用の西暦年度へ正規化する
@@ -5449,6 +5525,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim errNumber As Long
     Dim errDescription As String
     Dim step2Succeeded As Boolean
+    Dim appendedRowKeys As Collection
 
     On Error GoTo ErrorHandler
 
@@ -5488,6 +5565,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Set validationTemplateMap = CreateObject("Scripting.Dictionary")
     Set formatTemplateMap = CreateObject("Scripting.Dictionary")
     Set columnWidthMap = CreateObject("Scripting.Dictionary")
+    Set appendedRowKeys = New Collection
 
     previousScreenUpdating = Application.ScreenUpdating
     previousEnableEvents = Application.EnableEvents
@@ -6065,6 +6143,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         serialCommentMap(key) = BuildSerialDiffComment("追加", "", "")
                     End If
                     appendedCount = appendedCount + 1
+                    appendedRowKeys.Add key
                     If Not touchedTargetRowMap.Exists(CStr(appendRow)) Then touchedTargetRowMap.Add CStr(appendRow), appendRow
                     appendRow = appendRow + 1
                 End If
@@ -6110,7 +6189,9 @@ ContinueNextSourceRow:
         ' 列幅は利用者が手動調整した値を維持するため、自動調整しない。
     End If
 
-    SortNewFileStandardByFiscalYear wsDst
+    ' 新規追加行だけを既存の年度・分類・ガイドの近くへ移動する。
+    ' 既存行を全体ソートしないため、利用者が保っている同年度内の順序を維持する。
+    PlaceStep2NewRowsNearGroups wsDst, appendedRowKeys, targetYearValue
 
     ' 9) 左側固定対象の不足見出しを通知用に収集（列の表示状態は変更しない）
     HideKeyColumnsForStep2 wsDst, displayHeaders, missingHeadersText
