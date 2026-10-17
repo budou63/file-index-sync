@@ -994,6 +994,27 @@ Public Function SyncReviewDecision(ByVal item As Object) As String
     Next r
 End Function
 
+Public Function SyncReviewDecisionComment(ByVal item As Object) As String
+    Dim ws As Worksheet, r As Long, sourceHash As String, destHash As String, storedDecision As String
+    Set ws = ReviewAudit(False)
+    If ws Is Nothing Then Exit Function
+    sourceHash = ReviewDigest(CStr(item("sourceSignature")))
+    destHash = ReviewDigest(CStr(item("destinationSignature")))
+    For r = ReviewLast(ws) To 2 Step -1
+        If CStr(ws.Cells(r, 4).Value2) = CStr(item("key")) And _
+           ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
+           ReviewAuditHashMatches(ws.Cells(r, 10).Value2, destHash) Then
+            storedDecision = CStr(ws.Cells(r, 5).Value2)
+            Select Case storedDecision
+                Case "別物", "保留", "同一として処理", "削除完了"
+                    If Not IsError(ws.Cells(r, 11).Value2) Then _
+                        SyncReviewDecisionComment = CStr(ws.Cells(r, 11).Value2)
+                    Exit Function
+            End Select
+        End If
+    Next r
+End Function
+
 Private Sub ReviewWriteAudit(ByVal item As Object, ByVal decision As String, ByVal detail As String, ByVal backup As String)
     Dim ws As Worksheet, r As Long
     Set ws = ReviewAudit(True)

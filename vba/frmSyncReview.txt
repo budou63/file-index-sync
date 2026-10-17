@@ -6,6 +6,12 @@ Private mLblCase As MSForms.Label
 Private WithEvents mLstCases As MSForms.ListBox
 Private mLblRows As MSForms.Label
 Private WithEvents mLstRows As MSForms.ListBox
+Private mLblCompareRows As MSForms.Label
+Private mFraCompare As MSForms.Frame
+Private mCompareHeaders(0 To 2) As MSForms.Label
+Private mCompareItemLabels(1 To 9) As MSForms.TextBox
+Private mCompareCsvCells(1 To 9) As MSForms.TextBox
+Private mCompareExcelCells(1 To 9) As MSForms.TextBox
 Private mTxtDetails As MSForms.TextBox
 Private WithEvents mChkDelete As MSForms.CheckBox
 Private mLblStatus As MSForms.Label
@@ -26,6 +32,7 @@ Private deletionSelection As Object
 Private targetYear As Long
 Private rendering As Boolean
 Private mDUnavailableReason As String
+Private Const COMPARE_FIELD_COUNT As Long = 9
 
 Private Function EnsureControl(ByVal controlName As String, ByVal progId As String) As MSForms.Control
     Dim existing As MSForms.Control
@@ -50,12 +57,29 @@ Private Sub PlaceControl(ByVal control As MSForms.Control, ByVal x As Single, By
     control.Height = h
 End Sub
 
+Private Function EnsureFrameControl(ByVal parent As MSForms.Frame, ByVal controlName As String, _
+                                    ByVal progId As String) As MSForms.Control
+    Dim existing As MSForms.Control
+    Dim expectedType As String
+    expectedType = Split(progId, ".")(1)
+    For Each existing In parent.Controls
+        If existing.Name = controlName Then
+            If TypeName(existing) <> expectedType Then Err.Raise vbObjectError + 514, _
+                "frmSyncReview", "比較表部品の種類が一致しません: " & controlName
+            Set EnsureFrameControl = existing
+            Exit Function
+        End If
+    Next existing
+    Set EnsureFrameControl = parent.Controls.Add(progId, controlName, True)
+End Function
+
 Private Sub BuildControls()
+    Dim i As Long
     Me.Caption = "同期候補の確認"
-    Me.Width = 605
+    Me.Width = 760
     Me.Height = Me.Height + (440 - Me.InsideHeight)
     Set mLblCounts = EnsureControl("lblCounts", "Forms.Label.1")
-    PlaceControl mLblCounts, 9, 6, 580, 19
+    PlaceControl mLblCounts, 9, 6, 740, 19
     mLblCounts.Caption = "候補を読み込みます"
     Set mCboCategory = EnsureControl("cboCategory", "Forms.ComboBox.1")
     PlaceControl mCboCategory, 9, 28, 187.5, 16.5
@@ -69,16 +93,62 @@ Private Sub BuildControls()
     mLblRows.Caption = "候補のExcel行"
     Set mLstRows = EnsureControl("lstRows", "Forms.ListBox.1")
     PlaceControl mLstRows, 205, 64.5, 110, 228
+    Set mLblCompareRows = EnsureControl("lblCompareRows", "Forms.Label.1")
+    PlaceControl mLblCompareRows, 324, 28, 420, 18
+    mLblCompareRows.Caption = "CSV行: ― / 新ファイル基準表行: ―"
+    Set mFraCompare = EnsureControl("fraCompare", "Forms.Frame.1")
+    PlaceControl mFraCompare, 324, 48, 420, 225
+    mFraCompare.Caption = ""
+    mFraCompare.ScrollBars = fmScrollBarsVertical
+    mFraCompare.ScrollHeight = 430
+    For i = 0 To 2
+        Set mCompareHeaders(i) = EnsureFrameControl(mFraCompare, "lblCompareHeader" & CStr(i), "Forms.Label.1")
+        Select Case i
+            Case 0
+                PlaceControl mCompareHeaders(i), 4, 3, 78, 18
+                mCompareHeaders(i).Caption = "項目 / 表示比較"
+            Case 1
+                PlaceControl mCompareHeaders(i), 86, 3, 156, 18
+                mCompareHeaders(i).Caption = "目録CSV"
+            Case 2
+                PlaceControl mCompareHeaders(i), 246, 3, 156, 18
+                mCompareHeaders(i).Caption = "新ファイル基準表"
+        End Select
+        mCompareHeaders(i).Font.Bold = True
+    Next i
+    For i = 1 To COMPARE_FIELD_COUNT
+        Set mCompareItemLabels(i) = EnsureFrameControl(mFraCompare, "txtCompareField" & Format$(i, "00"), "Forms.TextBox.1")
+        Set mCompareCsvCells(i) = EnsureFrameControl(mFraCompare, "txtCompareCsv" & Format$(i, "00"), "Forms.TextBox.1")
+        Set mCompareExcelCells(i) = EnsureFrameControl(mFraCompare, "txtCompareExcel" & Format$(i, "00"), "Forms.TextBox.1")
+        PlaceControl mCompareItemLabels(i), 4, 24, 78, 32
+        PlaceControl mCompareCsvCells(i), 86, 24, 156, 32
+        PlaceControl mCompareExcelCells(i), 246, 24, 156, 32
+        mCompareItemLabels(i).MultiLine = True
+        mCompareCsvCells(i).MultiLine = True
+        mCompareExcelCells(i).MultiLine = True
+        mCompareItemLabels(i).WordWrap = True
+        mCompareCsvCells(i).WordWrap = True
+        mCompareExcelCells(i).WordWrap = True
+        mCompareItemLabels(i).ScrollBars = fmScrollBarsVertical
+        mCompareCsvCells(i).ScrollBars = fmScrollBarsVertical
+        mCompareExcelCells(i).ScrollBars = fmScrollBarsVertical
+        mCompareItemLabels(i).Locked = True
+        mCompareCsvCells(i).Locked = True
+        mCompareExcelCells(i).Locked = True
+        mCompareItemLabels(i).TabStop = False
+        mCompareCsvCells(i).TabStop = False
+        mCompareExcelCells(i).TabStop = False
+    Next i
     Set mTxtDetails = EnsureControl("txtDetails", "Forms.TextBox.1")
-    PlaceControl mTxtDetails, 324, 28, 269, 263.5
+    PlaceControl mTxtDetails, 324, 278, 420, 50
     Set mChkDelete = EnsureControl("chkDelete", "Forms.CheckBox.1")
     PlaceControl mChkDelete, 9, 301.5, 300, 17.5
     mChkDelete.Caption = "選択したExcel行を削除対象にする"
     Set mLblStatus = EnsureControl("lblStatus", "Forms.Label.1")
-    PlaceControl mLblStatus, 9, 323.5, 580, 23
+    PlaceControl mLblStatus, 9, 333, 740, 21
     mLblStatus.Caption = "フォームを開いただけでは変更しません。"
     Set mLblDWarning = EnsureControl("lblDWarning", "Forms.Label.1")
-    PlaceControl mLblDWarning, 9, 348, 580, 23
+    PlaceControl mLblDWarning, 9, 356, 740, 21
     mLblDWarning.Visible = False
     Set mCmdGoTo = EnsureControl("cmdGoTo", "Forms.CommandButton.1")
     PlaceControl mCmdGoTo, 9, 379.5, 70, 21
@@ -178,6 +248,186 @@ Private Function SelectedRow() As Long
     SelectedRow = CLng(Split(CStr(mLstRows.List(mLstRows.ListIndex)), " ")(0))
 End Function
 
+Private Sub CompareFieldSpec(ByVal fieldIndex As Long, ByRef fieldCaption As String, _
+                              ByRef csvAliases As Variant, ByRef excelAliases As Variant)
+    Select Case fieldIndex
+        Case 1
+            fieldCaption = "ファイルID": csvAliases = Array("ファイルID"): excelAliases = Array("ファイルID")
+        Case 2
+            fieldCaption = "ファイル番号": csvAliases = Array("ファイル番号"): excelAliases = Array("ファイル番号")
+        Case 3
+            fieldCaption = "バーコード番号": csvAliases = Array("バーコード番号"): excelAliases = Array("バーコード番号")
+        Case 4
+            fieldCaption = "年度": csvAliases = Array("年度"): excelAliases = Array("年度")
+        Case 5
+            fieldCaption = "作成年度": csvAliases = Array("作成年度（和暦）", "作成年度(和暦)")
+            excelAliases = Array("作成年度（和暦）", "作成年度(和暦)")
+        Case 6
+            fieldCaption = "第1ガイド": csvAliases = Array("分類名２", "分類名2", "第1ガイド", "第１ガイド")
+            excelAliases = Array("第1ガイド", "第１ガイド", "分類名２", "分類名2")
+        Case 7
+            fieldCaption = "第2ガイド": csvAliases = Array("分類名３", "分類名3", "第2ガイド", "第２ガイド")
+            excelAliases = Array("第2ガイド", "第２ガイド", "分類名３", "分類名3")
+        Case 8
+            fieldCaption = "個別フォルダー": csvAliases = Array("タイトル", "個別フォルダー", "個別フォルダ")
+            excelAliases = Array("個別フォルダー", "個別フォルダ", "タイトル")
+        Case 9
+            fieldCaption = "同期状態": csvAliases = Empty: excelAliases = Array("同期状態")
+    End Select
+End Sub
+
+Private Function CompareHeaderKey(ByVal rawHeader As String) As String
+    rawHeader = Replace(Trim$(rawHeader), "　", "")
+    rawHeader = Replace(rawHeader, " ", "")
+    On Error Resume Next
+    rawHeader = StrConv(rawHeader, vbNarrow)
+    On Error GoTo 0
+    CompareHeaderKey = LCase$(rawHeader)
+End Function
+
+Private Function FindCompareColumn(ByVal ws As Worksheet, ByVal aliases As Variant) As Long
+    Dim lastCol As Long, colNo As Long, foundCol As Long, foundCount As Long
+    Dim headerText As String, alias As Variant
+    If ws Is Nothing Or IsEmpty(aliases) Then Exit Function
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For colNo = 1 To lastCol
+        If Not IsError(ws.Cells(1, colNo).Value2) Then
+            headerText = CompareHeaderKey(CStr(ws.Cells(1, colNo).Value2))
+            For Each alias In aliases
+                If headerText = CompareHeaderKey(CStr(alias)) Then
+                    foundCount = foundCount + 1
+                    foundCol = colNo
+                    Exit For
+                End If
+            Next alias
+        End If
+    Next colNo
+    If foundCount = 1 Then FindCompareColumn = foundCol
+End Function
+
+Private Function CompareCellText(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal aliases As Variant, _
+                                 ByRef headerFound As Boolean) As String
+    Dim colNo As Long, rawValue As Variant, shownText As String
+    headerFound = False
+    If ws Is Nothing Or rowNo < 2 Then Exit Function
+    colNo = FindCompareColumn(ws, aliases)
+    If colNo <= 0 Then Exit Function
+    headerFound = True
+    rawValue = ws.Cells(rowNo, colNo).Value2
+    If IsError(rawValue) Then
+        CompareCellText = "セルエラー"
+        Exit Function
+    End If
+    If IsNull(rawValue) Or IsEmpty(rawValue) Then Exit Function
+    CompareCellText = CStr(rawValue)
+    shownText = CStr(ws.Cells(rowNo, colNo).Text)
+    If Len(shownText) > 0 And InStr(1, shownText, "#", vbBinaryCompare) = 0 Then _
+        CompareCellText = shownText
+End Function
+
+Private Function CompareDisplayStatus(ByVal csvHeaderFound As Boolean, ByVal excelHeaderFound As Boolean, _
+                                      ByVal csvText As String, ByVal excelText As String) As String
+    If Not csvHeaderFound Or Not excelHeaderFound Then
+        CompareDisplayStatus = "比較対象外"
+    ElseIf StrComp(csvText, excelText, vbBinaryCompare) = 0 Then
+        CompareDisplayStatus = "一致"
+    Else
+        CompareDisplayStatus = "相違"
+    End If
+End Function
+
+Private Function CompareRowHeight(ByVal fieldCaption As String, ByVal csvText As String, _
+                                  ByVal excelText As String, ByVal statusText As String) As Single
+    Dim longest As Long, heightValue As Single
+    longest = Application.Max(Len(fieldCaption) + Len(statusText), Len(csvText), Len(excelText))
+    heightValue = 30 + (longest \ 16) * 12
+    If heightValue > 66 Then heightValue = 66
+    CompareRowHeight = heightValue
+End Function
+
+Private Function CompareRowLabel(ByVal rowNo As Long) As String
+    If rowNo < 2 Then
+        CompareRowLabel = "―"
+    Else
+        CompareRowLabel = CStr(rowNo)
+    End If
+End Function
+
+Private Sub RenderComparison(ByVal item As Object, ByVal excelRow As Long)
+    Dim src As Worksheet, dst As Worksheet
+    Dim sourceRow As Long, fieldIndex As Long, y As Single, rowHeight As Single
+    Dim fieldCaption As String, statusText As String, csvText As String, excelText As String
+    Dim csvAliases As Variant, excelAliases As Variant
+    Dim csvHeaderFound As Boolean, excelHeaderFound As Boolean
+    Dim previousDecision As String, decisionComment As String, fillColor As Long
+    If item Is Nothing Then
+        mLblCompareRows.Caption = "CSV行: ― / 新ファイル基準表行: ―"
+        mTxtDetails.Text = ""
+        mFraCompare.ScrollTop = 0
+        y = 24
+        For fieldIndex = 1 To COMPARE_FIELD_COUNT
+            mCompareItemLabels(fieldIndex).Text = "―" & vbCrLf & "比較対象外"
+            mCompareCsvCells(fieldIndex).Text = "―"
+            mCompareExcelCells(fieldIndex).Text = "―"
+            mCompareItemLabels(fieldIndex).BackColor = RGB(242, 242, 242)
+            mCompareCsvCells(fieldIndex).BackColor = RGB(242, 242, 242)
+            mCompareExcelCells(fieldIndex).BackColor = RGB(242, 242, 242)
+            PlaceControl mCompareItemLabels(fieldIndex), 4, y, 78, 30
+            PlaceControl mCompareCsvCells(fieldIndex), 86, y, 156, 30
+            PlaceControl mCompareExcelCells(fieldIndex), 246, y, 156, 30
+            y = y + 32
+        Next fieldIndex
+        mFraCompare.ScrollHeight = y + 4
+        Exit Sub
+    End If
+    Set src = ThisWorkbook.Worksheets(CSV_SHEET)
+    Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
+    sourceRow = CLng(item("sourceRow"))
+    mLblCompareRows.Caption = "CSV行: " & CompareRowLabel(sourceRow) & _
+        "    新ファイル基準表行: " & CompareRowLabel(excelRow)
+    y = 24
+    mFraCompare.ScrollTop = 0
+    For fieldIndex = 1 To COMPARE_FIELD_COUNT
+        csvAliases = Empty: excelAliases = Empty: fieldCaption = ""
+        CompareFieldSpec fieldIndex, fieldCaption, csvAliases, excelAliases
+        csvHeaderFound = False: excelHeaderFound = False
+        csvText = "": excelText = ""
+        If sourceRow >= 2 Then csvText = CompareCellText(src, sourceRow, csvAliases, csvHeaderFound)
+        If excelRow >= 2 Then excelText = CompareCellText(dst, excelRow, excelAliases, excelHeaderFound)
+        statusText = CompareDisplayStatus(csvHeaderFound, excelHeaderFound, csvText, excelText)
+        If Not csvHeaderFound Or sourceRow < 2 Or Len(csvText) = 0 Then csvText = "―"
+        If Not excelHeaderFound Or excelRow < 2 Or Len(excelText) = 0 Then excelText = "―"
+        mCompareItemLabels(fieldIndex).Text = fieldCaption & vbCrLf & statusText
+        mCompareCsvCells(fieldIndex).Text = csvText
+        mCompareExcelCells(fieldIndex).Text = excelText
+        Select Case statusText
+            Case "相違": fillColor = RGB(255, 235, 235)
+            Case "比較対象外": fillColor = RGB(242, 242, 242)
+            Case Else: fillColor = RGB(255, 255, 255)
+        End Select
+        mCompareItemLabels(fieldIndex).BackColor = fillColor
+        mCompareCsvCells(fieldIndex).BackColor = fillColor
+        mCompareExcelCells(fieldIndex).BackColor = fillColor
+        mCompareItemLabels(fieldIndex).ControlTipText = fieldCaption & "：" & statusText
+        rowHeight = CompareRowHeight(fieldCaption, csvText, excelText, statusText)
+        PlaceControl mCompareItemLabels(fieldIndex), 4, y, 78, rowHeight
+        PlaceControl mCompareCsvCells(fieldIndex), 86, y, 156, rowHeight
+        PlaceControl mCompareExcelCells(fieldIndex), 246, y, 156, rowHeight
+        y = y + rowHeight + 2
+    Next fieldIndex
+    mFraCompare.ScrollHeight = y + 4
+    previousDecision = ""
+    decisionComment = ""
+    If CStr(item("category")) <> "D" Then
+        previousDecision = SyncReviewDecision(item)
+        decisionComment = SyncReviewDecisionComment(item)
+    End If
+    If Len(previousDecision) = 0 Then previousDecision = "未確認"
+    If Len(decisionComment) > 0 Then previousDecision = previousDecision & " / " & decisionComment
+    mTxtDetails.Text = "【保留理由】" & CStr(item("reason")) & vbCrLf & _
+        "【前回判断】" & previousDecision
+End Sub
+
 Private Sub ShowCategory()
     Dim i As Long, item As Object, category As String, counts(1 To 4) As Long, unresolved(1 To 4) As Long
     Dim decision As String, idx As Long, categoryIndex As Long, isD As Boolean
@@ -229,7 +479,7 @@ NextCase:
 End Sub
 
 Private Sub ShowCurrent()
-    Dim item As Object, v As Variant, rows As String, decision As String, category As String
+    Dim item As Object, v As Variant, rows As String, category As String
     Dim candidates As Collection, candidate As Variant, keeper As Long, rowNo As Long
     Set item = SelectedCase()
     rendering = True
@@ -237,6 +487,7 @@ Private Sub ShowCurrent()
     mChkDelete.Value = False
     If item Is Nothing Then
         mTxtDetails.Text = "このカテゴリには候補がありません。"
+        RenderComparison Nothing, 0
         mCmdApprove.Enabled = False: mCmdGoTo.Enabled = False: mCmdClear.Enabled = False
         mCmdOther.Enabled = False: mCmdHold.Enabled = False: mCmdDelete.Enabled = False
         mChkDelete.Visible = False
@@ -266,10 +517,7 @@ Private Sub ShowCurrent()
         End If
     End If
     If mLstRows.ListCount > 0 Then mLstRows.ListIndex = 0
-    decision = ""
-    If category <> "D" Then decision = SyncReviewDecision(item)
-    mTxtDetails.Text = CStr(item("details")) & vbCrLf & vbCrLf & "前回判断：" & _
-        IIf(Len(decision) = 0, "未確認", decision)
+    mTxtDetails.Text = ""
     rowNo = SelectedRow()
     mCmdGoTo.Enabled = (category <> "D" And rowNo >= 2)
     mCmdApprove.Enabled = (category = "B" And mLstRows.ListCount = 1)
@@ -286,6 +534,7 @@ Private Sub ShowCurrent()
         mLblStatus.Caption = "Aの重複ID・複数行の統合は自動承認不可。Cはチェック後に件数を確認します。"
     End If
     rendering = False
+    RenderComparison item, rowNo
 End Sub
 
 Private Function IsCopyCandidate(ByVal item As Object, ByVal rowNo As Long) As Boolean
@@ -324,17 +573,19 @@ Private Sub ShowCurrentSelection()
     Dim item As Object, rowNo As Long
     Set item = SelectedCase()
     If item Is Nothing Then Exit Sub
-    If CStr(item("category")) <> "D" Then Exit Sub
     rowNo = SelectedRow()
-    mCmdClear.Enabled = IsCopyCandidate(item, rowNo)
-    If Len(mDUnavailableReason) > 0 Then mCmdClear.Enabled = False
-    If rowNo = CLng(item("copyKeeperRow")) Then
-        mLblStatus.Caption = "この行はCSVと一致する番号保持行です。クリアできません。"
-    ElseIf mCmdClear.Enabled Then
-        mLblStatus.Caption = "D候補行です。ボタンで専用APIの再照合・確認を開始します。"
-    Else
-        mLblStatus.Caption = "D候補ではありません。クリアできません。"
+    If CStr(item("category")) = "D" Then
+        mCmdClear.Enabled = IsCopyCandidate(item, rowNo)
+        If Len(mDUnavailableReason) > 0 Then mCmdClear.Enabled = False
+        If rowNo = CLng(item("copyKeeperRow")) Then
+            mLblStatus.Caption = "この行はCSVと一致する番号保持行です。クリアできません。"
+        ElseIf mCmdClear.Enabled Then
+            mLblStatus.Caption = "D候補行です。ボタンで専用APIの再照合・確認を開始します。"
+        Else
+            mLblStatus.Caption = "D候補ではありません。クリアできません。"
+        End If
     End If
+    RenderComparison item, rowNo
 End Sub
 
 Private Sub mCmdClear_Click()
