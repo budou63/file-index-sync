@@ -41,8 +41,11 @@ class Step2NameSyncSafetyTests(unittest.TestCase):
 
     def test_missing_status_requires_fiscal_year_three_names_and_absent_id(self):
         code = body("Step2ConfirmMissingSyncStatus")
-        for part in ("GetNormalizedYearFromRow", "GetSyncStatusValue", "fileIdCol", "c2", "c3", "titleCol", "vbDefaultButton2", "SafeAddComment"):
+        comments = body("Step2AddMissingSyncStatusComments")
+        for part in ("GetNormalizedYearFromRow", "GetSyncStatusValue", "fileIdCol", "c2", "c3", "titleCol", "vbDefaultButton2"):
             self.assertIn(part, code)
+        self.assertIn("SafeAddComment", comments)
+        self.assertNotIn("SafeAddComment", code)
         self.assertNotIn('= "登録予定"', code)
 
     def test_ambiguity_comment_has_bounded_examples_counts_and_identity(self):

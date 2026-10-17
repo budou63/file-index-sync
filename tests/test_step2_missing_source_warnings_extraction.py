@@ -44,11 +44,11 @@ class MissingSourceWarningsTests(unittest.TestCase):
         self.assertRegex(helper, r"ByVal missingFileIdCount As Long, _\s*ByRef missingFileIdRows As String, _\s*ByVal missingNameDataCount As Long, _\s*ByRef missingNameRows As String")
         self.assertIn("ShowStep2MissingSourceWarnings missingFileIdCount, missingFileIdRows, _\n        missingNameDataCount, missingNameRows", step2)
         self.assertEqual(step2.count("ShowStep2MissingSourceWarnings missingFileIdCount"), 1)
-        self.assertLess(step2.index('appendedCount + updatedCount + nameSyncCount, "成功"'),
-                        step2.index("ShowStep2MissingSourceWarnings missingFileIdCount"))
         self.assertLess(step2.index("ShowStep2MissingSourceWarnings missingFileIdCount"),
                         step2.index("If Len(missingHeadersText) > 0 Then"))
         self.assertLess(step2.index("If Len(missingHeadersText) > 0 Then"),
+                        step2.index('appendedCount + updatedCount + nameSyncCount, "成功"'))
+        self.assertLess(step2.index('appendedCount + updatedCount + nameSyncCount, "成功"'),
                         step2.index("step2Succeeded = True"))
         self.assertNotIn("If missingFileIdCount > 20 Then", step2)
         self.assertNotIn("If missingNameDataCount > 20 Then", step2)

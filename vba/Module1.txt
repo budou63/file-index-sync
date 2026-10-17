@@ -1,5 +1,10 @@
 Option Explicit
 
+Private Const STEP2_RESULT_CANCELLED As Long = 0
+Private Const STEP2_RESULT_COMPLETED As Long = 1
+Private Const STEP2_RESULT_FAILED As Long = 2
+Private mStep2Result As Long
+
 Private Const SHEET_MOKUROKU_CSV As String = "目録CSV"
 Private Const SHEET_NEW_FILE_STANDARD As String = "新ファイル基準表"
 Private Const SHEET_CODE_MANAGEMENT As String = "コード管理CSV"
@@ -112,6 +117,7 @@ Public Sub 新ファイル基準表生成()
     Dim oldCalculation As XlCalculation
     Dim reviewBatchStarted As Boolean
     Dim batchSucceeded As Boolean
+    Dim batchApplicationStateCaptured As Boolean
 
     On Error GoTo ErrorHandler
 
@@ -119,6 +125,7 @@ Public Sub 新ファイル基準表生成()
     oldScreenUpdating = Application.ScreenUpdating
     oldEnableEvents = Application.EnableEvents
     oldCalculation = Application.Calculation
+    batchApplicationStateCaptured = True
     modSyncReview.SyncReviewBeginBatch
     reviewBatchStarted = True
 
@@ -129,6 +136,7 @@ Public Sub 新ファイル基準表生成()
 
     ' 手順2 -> 手順3 の順で既存マクロをそのまま呼び出す
     Call 手順2_新ファイル基準表を作成する
+    If mStep2Result <> STEP2_RESULT_COMPLETED Then GoTo Cleanup
     Call 手順3_コード管理CSVを作成する(True)
 
     MsgBox "新ファイル基準表とコード管理CSVの作成が完了しました。", vbInformation
@@ -140,10 +148,14 @@ ErrorHandler:
 
 Cleanup:
     ' 例外時を含め、必ず元の設定へ戻す
-    Application.ScreenUpdating = oldScreenUpdating
-    Application.EnableEvents = oldEnableEvents
-    RestoreCalculationIfPossible oldCalculation
+    On Error Resume Next
+    If batchApplicationStateCaptured Then
+        Application.ScreenUpdating = oldScreenUpdating
+        Application.EnableEvents = oldEnableEvents
+        RestoreCalculationIfPossible oldCalculation
+    End If
     If reviewBatchStarted Then modSyncReview.SyncReviewEndBatch batchSucceeded
+    On Error GoTo 0
 
 End Sub
 
@@ -5531,8 +5543,12 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim errNumber As Long
     Dim errDescription As String
     Dim step2Succeeded As Boolean
+    Dim step2ApplicationStateCaptured As Boolean
+    Dim step2WriteStarted As Boolean
+    Dim syncStatusPromptReady As Boolean
     Dim appendedRowKeys As Collection
 
+    mStep2Result = STEP2_RESULT_CANCELLED
     On Error GoTo ErrorHandler
 
     Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
@@ -5576,6 +5592,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     previousScreenUpdating = Application.ScreenUpdating
     previousEnableEvents = Application.EnableEvents
     previousCalculationMode = Application.Calculation
+    step2ApplicationStateCaptured = True
     Application.ScreenUpdating = False
     Application.EnableEvents = False
     TrySetManualCalculation
@@ -5625,10 +5642,24 @@ Public Sub 手順2_新ファイル基準表を作成する()
             "フィルター適用中は列順変更を安全に実行できません。フィルターを手動で解除してからCSV整形を再実行してください。"
     End If
 
+    ' 利用者の確認を、列追加やコメント付与などの書込みより前に行う。
+    dstLastRow = Step2GetLastDataRow(wsDst)
+    If dstLastRow < 1 Then dstLastRow = 1
+    syncCol = FindHeaderColumn(wsDst, dstLastCol, Array("同期状態"))
+    syncStatusPromptReady = _
+        FindHeaderColumn(wsDst, dstLastCol, Array("ファイルID")) > 0 And _
+        FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("分類名２")) > 0 And _
+        FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("分類名３")) > 0 And _
+        FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("タイトル")) > 0
+    If syncStatusPromptReady Then
+        If Not Step2ConfirmMissingSyncStatus(wsDst, dstLastRow, syncCol, targetYearValue) Then GoTo SafeExit
+    End If
+
     ' 1) 既存「新ファイル基準表」の見出しを辞書化（追加列保持のため）
     BuildHeaderMap wsDst, dstLastCol, existingDstHeaders
 
     ' 2) ユーザー管理列を確保
+    step2WriteStarted = True
     For i = LBound(baselineUserManagedHeaders) To UBound(baselineUserManagedHeaders)
         EnsureColumnByHeader wsDst, existingDstHeaders, CStr(baselineUserManagedHeaders(i))
     Next i
@@ -5637,6 +5668,12 @@ Public Sub 手順2_新ファイル基準表を作成する()
     ' 3) 目録CSVの見出し辞書とCSV由来列の転記マップを作成する
     BuildStep2SourceTransferMap wsSrc, wsDst, srcLastCol, srcHeaderMap, existingDstHeaders, _
         baselineUserManagedHeaders, srcToDstMap
+    If Not syncStatusPromptReady Then
+        dstLastRow = Step2GetLastDataRow(wsDst)
+        If dstLastRow < 1 Then dstLastRow = 1
+        If Not Step2ConfirmMissingSyncStatus(wsDst, dstLastRow, syncCol, targetYearValue) Then GoTo SafeExit
+    End If
+    Step2AddMissingSyncStatusComments wsDst, Step2GetLastDataRow(wsDst), syncCol, targetYearValue
 
     ' 4) 既存行マップを作成し、「更新＋新規追加」で反映する
     If wsDst.FilterMode Then
@@ -5649,7 +5686,6 @@ Public Sub 手順2_新ファイル基準表を作成する()
     appendRow = dstLastRow + 1
 
     ' 高速化対応: 重複呼び出しを削除（1回のみ）
-    If Not Step2ConfirmMissingSyncStatus(wsDst, dstLastRow, syncCol, targetYearValue) Then GoTo SafeExit
     BuildExistingRowMap wsDst, dstLastRow, existingRowMap, targetYearValue
     BuildStep2IdentityIndex wsSrc, srcLastRow, srcLastCol, targetYearValue, _
         sourceFullKeyMap, sourceFileIdMap, sourceIdBarcodeMap, sourceFileNoMap, sourceFileNoPaddingMap, sourceBarcodeMap
@@ -6219,8 +6255,6 @@ ContinueNextSourceRow:
     ' マクロ実行中に列順変更や書式再適用があっても、既存列の手動幅を最終的に戻す。
     RestoreColumnWidthsByHeader wsDst, newFileStandardColumnWidths
 
-    WriteProcessLog "CSV整形（新ファイル基準表作成）", SHEET_MOKUROKU_CSV, targetYearRaw, _
-        appendedCount + updatedCount + nameSyncCount, "成功", "新ファイル基準表を作成"
     ShowStep2MissingSourceWarnings missingFileIdCount, missingFileIdRows, _
         missingNameDataCount, missingNameRows
 
@@ -6271,11 +6305,14 @@ ContinueNextSourceRow:
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
     End If
+    WriteProcessLog "CSV整形（新ファイル基準表作成）", SHEET_MOKUROKU_CSV, targetYearRaw, _
+        appendedCount + updatedCount + nameSyncCount, "成功", "新ファイル基準表を作成"
+    mStep2Result = STEP2_RESULT_COMPLETED
     step2Succeeded = True
 
 SafeExit:
     On Error Resume Next
-    RestoreColumnWidthsByHeader wsDst, newFileStandardColumnWidths
+    If step2WriteStarted Then RestoreColumnWidthsByHeader wsDst, newFileStandardColumnWidths
     If Not wsValidationTemplate Is Nothing Then
         Application.DisplayAlerts = False
         wsValidationTemplate.Delete
@@ -6286,15 +6323,17 @@ SafeExit:
         wsFormatTemplate.Delete
         Application.DisplayAlerts = True
     End If
+    If step2ApplicationStateCaptured Then
+        Application.ScreenUpdating = previousScreenUpdating
+        Application.EnableEvents = previousEnableEvents
+        RestoreCalculationIfPossible previousCalculationMode
+    End If
     On Error GoTo 0
-
-    Application.ScreenUpdating = previousScreenUpdating
-    Application.EnableEvents = previousEnableEvents
-    RestoreCalculationIfPossible previousCalculationMode
     If step2Succeeded Then modSyncReview.SyncReviewAfterStep2Success targetYearValue
     Exit Sub
 
 ErrorHandler:
+    mStep2Result = STEP2_RESULT_FAILED
     errNumber = Err.Number
     errDescription = Err.Description
     WriteProcessLog "CSV整形（新ファイル基準表作成）", SHEET_MOKUROKU_CSV, targetYearRaw, _
@@ -7097,6 +7136,21 @@ NextRow:
     Step2ConfirmMissingSyncStatus = (MsgBox("同期状態が空欄の未登録候補: " & n & "件" & vbCrLf & _
         "行番号: " & examples & vbCrLf & "登録予定にするか確認してください。自動変更しません。" & vbCrLf & _
         "このままCSV整形を続けますか？", vbYesNo Or vbExclamation Or vbDefaultButton2) = vbYes)
+End Function
+
+Private Sub Step2AddMissingSyncStatusComments( _
+    ByVal ws As Worksheet, ByVal lastRow As Long, ByVal syncCol As Long, ByVal targetYear As Long)
+
+    Dim yearCol As Long, westernCol As Long, fileIdCol As Long, c2 As Long, c3 As Long, titleCol As Long
+    Dim r As Long
+    If ws Is Nothing Or lastRow < 2 Or syncCol <= 0 Then Exit Sub
+    yearCol = FindHeaderColumn(ws, GetLastHeaderCol(ws), GetStep2HeaderCandidates("年度（和暦）"))
+    westernCol = FindHeaderColumn(ws, GetLastHeaderCol(ws), Array("年度"))
+    fileIdCol = FindHeaderColumn(ws, GetLastHeaderCol(ws), Array("ファイルID"))
+    c2 = FindHeaderColumn(ws, GetLastHeaderCol(ws), GetStep2HeaderCandidates("分類名２"))
+    c3 = FindHeaderColumn(ws, GetLastHeaderCol(ws), GetStep2HeaderCandidates("分類名３"))
+    titleCol = FindHeaderColumn(ws, GetLastHeaderCol(ws), GetStep2HeaderCandidates("タイトル"))
+    If fileIdCol <= 0 Or c2 <= 0 Or c3 <= 0 Or titleCol <= 0 Then Exit Sub
     For r = 2 To lastRow
         If GetNormalizedYearFromRow(ws, r, yearCol, westernCol) <> targetYear Then GoTo NextMark
         If GetSyncStatusValue(ws, r, syncCol) <> "" Or Len(GetTrimmedCell(ws, r, fileIdCol)) > 0 Then GoTo NextMark
@@ -7106,7 +7160,7 @@ NextRow:
             SafeAddComment ws.Cells(r, syncCol), "【同期状態未入力】手入力の未登録候補です。登録予定か確認してください。"
 NextMark:
     Next r
-End Function
+End Sub
 
 Private Sub BuildSourceNameSyncMap( _
     ByVal wsSrc As Worksheet, _
