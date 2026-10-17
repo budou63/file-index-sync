@@ -5540,6 +5540,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim deletionPlannedDeletedCount As Long
     Dim colorDiffDetectedCount As Long
     Dim newFileStandardColumnWidths As Object
+    Dim registrationIdentifierValues As Collection
     Dim errNumber As Long
     Dim errDescription As String
     Dim step2Succeeded As Boolean
@@ -5653,6 +5654,13 @@ Public Sub 手順2_新ファイル基準表を作成する()
         FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("タイトル")) > 0
     If syncStatusPromptReady Then
         If Not Step2ConfirmMissingSyncStatus(wsDst, dstLastRow, syncCol, targetYearValue) Then GoTo SafeExit
+        If Not Step2PrepareRegistrationIdentifierCleanup(wsDst, dstLastRow, dstLastCol, _
+            targetYearValue, targetYearRaw, registrationIdentifierValues) Then GoTo SafeExit
+        Step2ApplyRegistrationIdentifierCleanup wsDst, targetYearValue, registrationIdentifierValues
+    Else
+        ' 既存の空欄状態確認が列追加後になる構成では、識別番号の確認だけ先に済ませ、消去は両確認後に行う。
+        If Not Step2PrepareRegistrationIdentifierCleanup(wsDst, dstLastRow, dstLastCol, _
+            targetYearValue, targetYearRaw, registrationIdentifierValues) Then GoTo SafeExit
     End If
 
     ' 1) 既存「新ファイル基準表」の見出しを辞書化（追加列保持のため）
@@ -5672,6 +5680,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
         dstLastRow = Step2GetLastDataRow(wsDst)
         If dstLastRow < 1 Then dstLastRow = 1
         If Not Step2ConfirmMissingSyncStatus(wsDst, dstLastRow, syncCol, targetYearValue) Then GoTo SafeExit
+        Step2ApplyRegistrationIdentifierCleanup wsDst, targetYearValue, registrationIdentifierValues
     End If
     Step2AddMissingSyncStatusComments wsDst, Step2GetLastDataRow(wsDst), syncCol, targetYearValue
 
@@ -6342,6 +6351,256 @@ ErrorHandler:
     Resume SafeExit
 
 End Sub
+
+' Excel通常操作で変更された行だけを検査し、登録予定行の識別番号3項目の値を消す。
+Public Sub 新ファイル基準表_登録予定識別番号を自動クリア( _
+    ByVal Target As Range, ByVal ws As Worksheet)
+
+    Dim oldEnableEvents As Boolean
+    Dim lastCol As Long, lastRow As Long
+    Dim fileIdCol As Long, fileNoCol As Long, barcodeCol As Long, syncCol As Long
+    Dim watchedColumns As Range, changedRange As Range, changedArea As Range
+    Dim seenRows As Object
+    Dim rowNo As Long, firstRow As Long, finalRow As Long
+    Dim errNumber As Long, errSource As String, errDescription As String
+
+    If ws Is Nothing Or Target Is Nothing Then Exit Sub
+    oldEnableEvents = Application.EnableEvents
+    On Error GoTo ErrorHandler
+    Application.EnableEvents = False
+
+    lastCol = GetLastHeaderCol(ws)
+    If lastCol <= 0 Then GoTo SafeExit
+    fileIdCol = FindHeaderColumn(ws, lastCol, Array("ファイルID"))
+    fileNoCol = FindHeaderColumn(ws, lastCol, Array("ファイル番号"))
+    barcodeCol = FindHeaderColumn(ws, lastCol, Array("バーコード番号"))
+    syncCol = FindHeaderColumn(ws, lastCol, Array("同期状態"))
+    If fileIdCol <= 0 Or fileNoCol <= 0 Or barcodeCol <= 0 Or syncCol <= 0 Then GoTo SafeExit
+
+    Set watchedColumns = Application.Union(ws.Columns(fileIdCol), ws.Columns(fileNoCol), _
+        ws.Columns(barcodeCol), ws.Columns(syncCol))
+    Set changedRange = Application.Intersect(Target, watchedColumns)
+    If changedRange Is Nothing Then GoTo SafeExit
+
+    lastRow = ws.Cells(ws.Rows.Count, syncCol).End(xlUp).Row
+    If lastRow < 2 Then GoTo SafeExit
+    Set seenRows = CreateObject("Scripting.Dictionary")
+    For Each changedArea In changedRange.Areas
+        firstRow = changedArea.Row
+        finalRow = changedArea.Row + changedArea.Rows.Count - 1
+        If firstRow < 2 Then firstRow = 2
+        If finalRow > lastRow Then finalRow = lastRow
+        For rowNo = firstRow To finalRow
+            If Not seenRows.Exists(CStr(rowNo)) Then
+                seenRows.Add CStr(rowNo), True
+                If GetSyncStatusValue(ws, rowNo, syncCol) = "登録予定" Then
+                    ws.Cells(rowNo, fileIdCol).ClearContents
+                    ws.Cells(rowNo, fileNoCol).ClearContents
+                    ws.Cells(rowNo, barcodeCol).ClearContents
+                End If
+            End If
+        Next rowNo
+    Next changedArea
+
+SafeExit:
+    Application.EnableEvents = oldEnableEvents
+    Exit Sub
+
+ErrorHandler:
+    errNumber = Err.Number
+    errSource = Err.Source
+    errDescription = Err.Description
+    Application.EnableEvents = oldEnableEvents
+    On Error GoTo 0
+    Err.Raise errNumber, errSource, errDescription
+End Sub
+
+' 手順2で消去候補を確認・記録する。セルへの書込みは既存の確認がすべて済んだ後に行う。
+Private Function Step2PrepareRegistrationIdentifierCleanup( _
+    ByVal ws As Worksheet, ByVal lastRow As Long, ByVal lastCol As Long, _
+    ByVal targetYear As Long, ByVal targetYearLabel As String, _
+    ByRef oldValues As Collection) As Boolean
+
+    Dim syncCol As Long, warekiYearCol As Long, westernYearCol As Long
+    Dim fileIdCol As Long, fileNoCol As Long, barcodeCol As Long
+    Dim rowNo As Long, residualRowCount As Long, residualCellCount As Long
+    Dim examples As String, promptText As String
+    Dim fileIdValue As Variant, fileNoValue As Variant, barcodeValue As Variant
+
+    Step2PrepareRegistrationIdentifierCleanup = True
+    Set oldValues = New Collection
+    If ws Is Nothing Or lastRow < 2 Then Exit Function
+
+    syncCol = FindHeaderColumn(ws, lastCol, Array("同期状態"))
+    warekiYearCol = FindHeaderColumn(ws, lastCol, Array("年度（和暦）", "年度(和暦)"))
+    westernYearCol = FindHeaderColumn(ws, lastCol, Array("年度"))
+    fileIdCol = FindHeaderColumn(ws, lastCol, Array("ファイルID"))
+    fileNoCol = FindHeaderColumn(ws, lastCol, Array("ファイル番号"))
+    barcodeCol = FindHeaderColumn(ws, lastCol, Array("バーコード番号"))
+    ' どちらかの見出しがまだない場合、対象年度の登録予定行は現時点で特定できない。
+    ' 列追加後も同期状態・年度の値自体は空欄なので、この時点では消去対象なしとして扱う。
+    If syncCol <= 0 Or (warekiYearCol <= 0 And westernYearCol <= 0) Then Exit Function
+
+    For rowNo = 2 To lastRow
+        If GetNormalizedYearFromRow(ws, rowNo, warekiYearCol, westernYearCol) <> targetYear Then GoTo NextRegistrationRow
+        If GetSyncStatusValue(ws, rowNo, syncCol) <> "登録予定" Then GoTo NextRegistrationRow
+
+        fileIdValue = Step2ReadIdentifierFormula(ws, rowNo, fileIdCol)
+        fileNoValue = Step2ReadIdentifierFormula(ws, rowNo, fileNoCol)
+        barcodeValue = Step2ReadIdentifierFormula(ws, rowNo, barcodeCol)
+        If Not Step2HasIdentifierValue(ws, rowNo, fileIdCol) And _
+           Not Step2HasIdentifierValue(ws, rowNo, fileNoCol) And _
+           Not Step2HasIdentifierValue(ws, rowNo, barcodeCol) Then GoTo NextRegistrationRow
+
+        residualRowCount = residualRowCount + 1
+        If residualRowCount <= 20 Then examples = examples & IIf(Len(examples) > 0, "、", "") & CStr(rowNo)
+        If Step2HasIdentifierValue(ws, rowNo, fileIdCol) Then residualCellCount = residualCellCount + 1
+        If Step2HasIdentifierValue(ws, rowNo, fileNoCol) Then residualCellCount = residualCellCount + 1
+        If Step2HasIdentifierValue(ws, rowNo, barcodeCol) Then residualCellCount = residualCellCount + 1
+        oldValues.Add Array(CLng(rowNo), fileIdValue, fileNoValue, barcodeValue)
+NextRegistrationRow:
+    Next rowNo
+
+    If residualCellCount = 0 Then Exit Function
+    If residualRowCount > 20 Then examples = examples & " ほか"
+    If Len(targetYearLabel) = 0 Then targetYearLabel = CStr(targetYear)
+    promptText = "登録予定の行に識別番号が残っています。" & vbCrLf & _
+        "対象年度：" & targetYearLabel & vbCrLf & _
+        "対象行数：" & CStr(residualRowCount) & "行" & vbCrLf & _
+        "残存セル数：" & CStr(residualCellCount) & "セル" & vbCrLf & vbCrLf & _
+        "行番号：" & examples & vbCrLf & vbCrLf & _
+        "ファイルID・ファイル番号・バーコード番号を空欄にして、CSV整形を続行しますか？"
+    If MsgBox(promptText, vbYesNo Or vbExclamation Or vbDefaultButton2) <> vbYes Then
+        Step2PrepareRegistrationIdentifierCleanup = False
+    End If
+End Function
+
+Private Sub Step2ApplyRegistrationIdentifierCleanup( _
+    ByVal ws As Worksheet, ByVal targetYear As Long, ByVal oldValues As Collection)
+    Dim fileIdCol As Long, fileNoCol As Long, barcodeCol As Long, lastCol As Long
+    Dim rowSnapshot As Variant, clearStarted As Boolean
+    Dim backupPath As String
+    Dim errNumber As Long, errSource As String, errDescription As String
+
+    If ws Is Nothing Or oldValues Is Nothing Then Exit Sub
+    If oldValues.Count = 0 Then Exit Sub
+    lastCol = GetLastHeaderCol(ws)
+    fileIdCol = FindHeaderColumn(ws, lastCol, Array("ファイルID"))
+    fileNoCol = FindHeaderColumn(ws, lastCol, Array("ファイル番号"))
+    barcodeCol = FindHeaderColumn(ws, lastCol, Array("バーコード番号"))
+
+    On Error GoTo ClearError
+    backupPath = Step2CreateRegistrationIdentifierBackup(targetYear, oldValues)
+    clearStarted = True
+    For Each rowSnapshot In oldValues
+        If fileIdCol > 0 Then ws.Cells(CLng(rowSnapshot(0)), fileIdCol).ClearContents
+        If fileNoCol > 0 Then ws.Cells(CLng(rowSnapshot(0)), fileNoCol).ClearContents
+        If barcodeCol > 0 Then ws.Cells(CLng(rowSnapshot(0)), barcodeCol).ClearContents
+    Next rowSnapshot
+    Exit Sub
+
+ClearError:
+    errNumber = Err.Number
+    errSource = Err.Source
+    errDescription = Err.Description
+    On Error Resume Next
+    If clearStarted Then RestoreRegistrationIdentifierValues ws, oldValues, fileIdCol, fileNoCol, barcodeCol
+    On Error GoTo 0
+    Err.Raise errNumber, errSource, errDescription
+End Sub
+
+Private Function Step2HasIdentifierValue(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As Boolean
+    Dim cellValue As Variant
+    If ws Is Nothing Or colNo <= 0 Then Exit Function
+    cellValue = ws.Cells(rowNo, colNo).Value2
+    If IsError(cellValue) Then
+        Step2HasIdentifierValue = True
+    ElseIf Not IsEmpty(cellValue) Then
+        Step2HasIdentifierValue = (Len(Trim$(CStr(cellValue))) > 0)
+    End If
+End Function
+
+Private Function Step2ReadIdentifierFormula(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As Variant
+    If ws Is Nothing Or colNo <= 0 Then
+        Step2ReadIdentifierFormula = Empty
+    Else
+        Step2ReadIdentifierFormula = ws.Cells(rowNo, colNo).Formula
+    End If
+End Function
+
+Private Sub RestoreRegistrationIdentifierValues( _
+    ByVal ws As Worksheet, ByVal oldValues As Collection, _
+    ByVal fileIdCol As Long, ByVal fileNoCol As Long, ByVal barcodeCol As Long)
+    Dim rowSnapshot As Variant, rowNo As Long
+    If ws Is Nothing Or oldValues Is Nothing Then Exit Sub
+    For Each rowSnapshot In oldValues
+        rowNo = CLng(rowSnapshot(0))
+        If fileIdCol > 0 Then RestoreRegistrationIdentifierCell ws.Cells(rowNo, fileIdCol), fileIdCol, rowSnapshot(1)
+        If fileNoCol > 0 Then RestoreRegistrationIdentifierCell ws.Cells(rowNo, fileNoCol), fileNoCol, rowSnapshot(2)
+        If barcodeCol > 0 Then RestoreRegistrationIdentifierCell ws.Cells(rowNo, barcodeCol), barcodeCol, rowSnapshot(3)
+    Next rowSnapshot
+End Sub
+
+Private Sub RestoreRegistrationIdentifierCell(ByVal targetCell As Range, ByVal colNo As Long, ByVal oldFormula As Variant)
+    If colNo <= 0 Then Exit Sub
+    If IsEmpty(oldFormula) Then
+        targetCell.ClearContents
+    Else
+        targetCell.Formula = oldFormula
+    End If
+End Sub
+
+Private Function Step2CreateRegistrationIdentifierBackup(ByVal targetYear As Long, ByVal oldValues As Collection) As String
+    Dim backupFolder As String, backupPath As String, manifestPath As String
+    Dim extension As String, workbookDot As Long, stamp As String
+    Dim fso As Object, textStream As Object, rowSnapshot As Variant
+    Dim errNumber As Long, errDescription As String
+
+    On Error GoTo BackupError
+    If Len(ThisWorkbook.Path) = 0 Then Err.Raise vbObjectError + 2621, , _
+        "バックアップ先を決められないため、登録予定行の識別番号は変更していません。"
+    backupFolder = ThisWorkbook.Path & Application.PathSeparator & "Step2IdentifierBackups"
+    If Len(Dir$(backupFolder, vbDirectory)) = 0 Then MkDir backupFolder
+    workbookDot = InStrRev(ThisWorkbook.Name, ".")
+    If workbookDot > 0 Then extension = Mid$(ThisWorkbook.Name, workbookDot) Else extension = ".xlsm"
+    stamp = Format$(Now, "yyyymmdd_hhnnss") & "_" & Format$(CLng(Timer * 1000), "00000000")
+    backupPath = backupFolder & Application.PathSeparator & "PreClearRegisteredIdentifiers_" & stamp & extension
+    manifestPath = backupPath & ".txt"
+    ThisWorkbook.SaveCopyAs backupPath
+
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set textStream = fso.CreateTextFile(manifestPath, False, True)
+    textStream.WriteLine "対象年度=" & CStr(targetYear)
+    textStream.WriteLine "行番号" & vbTab & "ファイルID" & vbTab & "ファイル番号" & vbTab & "バーコード番号"
+    For Each rowSnapshot In oldValues
+        textStream.WriteLine CStr(rowSnapshot(0)) & vbTab & _
+            Step2BackupIdentifierText(rowSnapshot(1)) & vbTab & _
+            Step2BackupIdentifierText(rowSnapshot(2)) & vbTab & _
+            Step2BackupIdentifierText(rowSnapshot(3))
+    Next rowSnapshot
+    textStream.Close
+    Step2CreateRegistrationIdentifierBackup = backupPath
+    Exit Function
+
+BackupError:
+    errNumber = Err.Number
+    errDescription = Err.Description
+    On Error Resume Next
+    If Not textStream Is Nothing Then textStream.Close
+    If Len(manifestPath) > 0 And Len(Dir$(manifestPath)) > 0 Then Kill manifestPath
+    On Error GoTo 0
+    Err.Raise errNumber, "Step2CreateRegistrationIdentifierBackup", errDescription
+End Function
+
+Private Function Step2BackupIdentifierText(ByVal storedValue As Variant) As String
+    If IsError(storedValue) Then
+        Step2BackupIdentifierText = "[セルエラー]"
+    ElseIf IsEmpty(storedValue) Then
+        Step2BackupIdentifierText = ""
+    Else
+        Step2BackupIdentifierText = CStr(storedValue)
+    End If
+End Function
 
 ' 診断対象の件数は全件数え、警告に表示する行番号だけ先頭20件に絞る。
 Private Sub RecordStep2MissingSourceRow(ByRef rowCount As Long, ByRef rowList As String, ByVal rowNo As Long)
