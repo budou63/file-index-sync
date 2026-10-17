@@ -6034,7 +6034,6 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         changedHeadersText = GetChangedHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
                         idCompletionHeadersText = GetIdentityCompletionHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap)
                         UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap, colorDiffDetectedCount
-                        AppendRemarkOnce wsDst, targetRow, "システム同期済"
                         If key <> "" Then existingRowMap(key) = targetRow
                         ' 名称ベース同期が成立した行は、差分比較結果に関わらず今回の同期済み変更行として赤塗り対象にする
                         If key <> "" Then

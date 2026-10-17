@@ -125,6 +125,14 @@ class Step2NameSyncSafetyTests(unittest.TestCase):
         self.assertIn("AppendAmbiguousNameSyncRemark", name_review)
         self.assertIn("登録予定行にはIDを付与せず", name_review)
 
+    def test_name_sync_does_not_append_system_synced_remark_but_keeps_sync_status(self):
+        step2 = body("手順2_新ファイル基準表を作成する")
+        name_sync = step2[step2.index("If sourceCandidates.Count = 1 And destCandidates.Count = 1 And ambiguityNote = \"\" Then"):step2.index("Else\n                        ambiguousSyncCount", step2.index("If sourceCandidates.Count = 1 And destCandidates.Count = 1 And ambiguityNote = \"\" Then"))]
+        self.assertNotIn('AppendRemarkOnce wsDst, targetRow, "システム同期済"', name_sync)
+        self.assertIn('wsDst.Cells(targetRow, syncCol).Value = "同期済"', name_sync)
+        self.assertIn("UpdateRowFromSourceByHeader wsSrc, wsDst", name_sync)
+        self.assertIn("AppendRemarkOnce", SOURCE)
+
     def test_file_number_updates_and_new_rows_preserve_source_text(self):
         step2 = body("手順2_新ファイル基準表を作成する")
         writer = body("WriteStep2SourceValue")
