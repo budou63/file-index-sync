@@ -33,20 +33,20 @@ class SourceTransferExtractionTests(unittest.TestCase):
         )
         indices = [body.index(item) for item in required_in_order]
         self.assertEqual(indices, sorted(indices))
-        self.assertIn('baselineUserManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1", "保存番号", "廃棄年月日", "同期状態")', step2)
+        self.assertIn('baselineUserManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1", "保存番号", "廃棄年月日", "同期状態", "最終編集者", "最終編集日時")', step2)
         self.assertIn("BuildHeaderMap wsDst, dstLastCol, existingDstHeaders", step2)
         self.assertLess(step2.index("BuildHeaderMap wsDst"), step2.index("' 4) 既存行マップ"))
         self.assertIn("IsUserManagedHeader = Not srcHeaderMap.Exists(canonicalHeader)", proc("IsUserManagedHeader"))
 
     def test_decision_example_preserves_user_columns_and_skips_empty_headers(self):
         # Python decision example only; the source-bound tests verify VBA wiring.
-        headers = ["年度", "タイトル", "", "通し番号", "同期状態", "独自列"]
-        managed = {"通し番号", "同期状態"}
+        headers = ["年度", "タイトル", "", "通し番号", "同期状態", "最終編集者", "最終編集日時", "独自列"]
+        managed = {"通し番号", "同期状態", "最終編集者", "最終編集日時"}
         transfer = {}
         for col, header in enumerate(headers, 1):
             if header and header not in managed:
                 transfer[header] = col
-        self.assertEqual(transfer, {"年度": 1, "タイトル": 2, "独自列": 6})
+        self.assertEqual(transfer, {"年度": 1, "タイトル": 2, "独自列": 8})
 
     def test_stage_one_wires_private_helper_between_user_headers_and_identity_index(self):
         step2 = proc("手順2_新ファイル基準表を作成する")

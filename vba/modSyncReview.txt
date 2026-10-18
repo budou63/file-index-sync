@@ -280,21 +280,35 @@ Private Function ReviewLast(ByVal ws As Worksheet) As Long
 End Function
 
 Private Function ReviewSignature(ByVal ws As Worksheet, ByVal r As Long) As String
-    Dim col As Long, valueText As String, lastCol As Long
+    Dim col As Long, valueText As String, lastCol As Long, signatureLastCol As Long
     If r < 2 Or r > ReviewLast(ws) Then Exit Function
     lastCol = Application.Max(ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column, _
         ws.Cells(r, ws.Columns.Count).End(xlToLeft).Column)
-    ReviewSignature = ws.Name & "|" & CStr(r) & "|" & CStr(lastCol) & "|"
+    signatureLastCol = lastCol
+    Do While signatureLastCol > 1 And ReviewIsInternalMetadataHeader(ws.Cells(1, signatureLastCol).Value2)
+        signatureLastCol = signatureLastCol - 1
+    Loop
+    ReviewSignature = ws.Name & "|" & CStr(r) & "|" & CStr(signatureLastCol) & "|"
     For col = 1 To lastCol
-        If IsError(ws.Cells(r, col).Value2) Then Err.Raise vbObjectError + 6135, , "行にエラー値があります。"
-        valueText = TypeName(ws.Cells(r, col).Value2) & ":" & CStr(ws.Cells(r, col).Value2)
-        If ws.Cells(r, col).HasFormula Then valueText = valueText & "#" & CStr(ws.Cells(r, col).Formula)
-        ReviewSignature = ReviewSignature & CStr(Len(valueText)) & ":" & valueText
+        If Not ReviewIsInternalMetadataHeader(ws.Cells(1, col).Value2) Then
+            If IsError(ws.Cells(r, col).Value2) Then Err.Raise vbObjectError + 6135, , "行にエラー値があります。"
+            valueText = TypeName(ws.Cells(r, col).Value2) & ":" & CStr(ws.Cells(r, col).Value2)
+            If ws.Cells(r, col).HasFormula Then valueText = valueText & "#" & CStr(ws.Cells(r, col).Formula)
+            ReviewSignature = ReviewSignature & CStr(Len(valueText)) & ":" & valueText
+        End If
     Next col
     ReviewSignature = ReviewSignature & "|id-format=" & _
         ws.Cells(r, ReviewCol(ws, "ファイルID")).NumberFormat & "|no-format=" & _
         ws.Cells(r, ReviewCol(ws, "ファイル番号")).NumberFormat & "|bar-format=" & _
         ws.Cells(r, ReviewCol(ws, "バーコード番号")).NumberFormat
+End Function
+
+Private Function ReviewIsInternalMetadataHeader(ByVal headerValue As Variant) As Boolean
+    If IsError(headerValue) Then Exit Function
+    Select Case Trim$(CStr(headerValue))
+        Case "最終編集者", "最終編集日時"
+            ReviewIsInternalMetadataHeader = True
+    End Select
 End Function
 
 Private Function ReviewDescription(ByVal ws As Worksheet, ByVal r As Long, ByVal isCsv As Boolean) As String
@@ -665,9 +679,11 @@ Private Function ReviewCopySheetSignature(ByVal ws As Worksheet) As String
     lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
     For col = 1 To lastCol
         If IsError(ws.Cells(1, col).Value2) Then Err.Raise vbObjectError + 6142, , "見出しにエラー値があります。"
-        valueText = TypeName(ws.Cells(1, col).Value2) & ":" & CStr(ws.Cells(1, col).Value2)
-        If ws.Cells(1, col).HasFormula Then valueText = valueText & "#" & CStr(ws.Cells(1, col).Formula)
-        headerText = headerText & CStr(Len(valueText)) & ":" & valueText
+        If Not ReviewIsInternalMetadataHeader(ws.Cells(1, col).Value2) Then
+            valueText = TypeName(ws.Cells(1, col).Value2) & ":" & CStr(ws.Cells(1, col).Value2)
+            If ws.Cells(1, col).HasFormula Then valueText = valueText & "#" & CStr(ws.Cells(1, col).Formula)
+            headerText = headerText & CStr(Len(valueText)) & ":" & valueText
+        End If
     Next col
     ReDim parts(0 To lastRow - 1)
     parts(0) = ws.Name & "|" & ReviewDigest(headerText)

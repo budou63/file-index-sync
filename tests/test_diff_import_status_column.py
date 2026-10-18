@@ -58,7 +58,8 @@ class DiffImportStatusColumnTests(unittest.TestCase):
 
     def test_export_excludes_state_and_serial_by_header_name(self) -> None:
         export = procedure("手順5_差分インポートCSVを外部出力する")
-        self.assertIn('If headerName <> "通し番号" And headerName <> "状態" Then', export)
+        self.assertIn('If headerName <> "通し番号" And headerName <> "状態" And _', export)
+        self.assertIn('headerName <> "最終編集者" And headerName <> "最終編集日時"', export)
 
     def test_yellow_fill_is_kept_for_rows_requiring_guide_creation(self) -> None:
         step4 = procedure("手順4_差分インポートCSVを作成する")

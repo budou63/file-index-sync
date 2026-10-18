@@ -2949,6 +2949,10 @@ Public Sub nプラス1_毎年作成年度補正を実行する()
     Dim targetYearValue As Long
     Dim changedCount As Long
     Dim reviewCount As Long
+    Dim previousEnableEvents As Boolean
+    Dim errNumber As Long
+    Dim errSource As String
+    Dim errDescription As String
 
     Set ws = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
 
@@ -2961,11 +2965,26 @@ Public Sub nプラス1_毎年作成年度補正を実行する()
         End If
     End If
 
+    previousEnableEvents = Application.EnableEvents
+    On Error GoTo EventErrorHandler
+    Application.EnableEvents = False
     ApplyAnnualFolderNameCorrections ws, changedCount, reviewCount, targetYearValue
+    Application.EnableEvents = previousEnableEvents
+    On Error GoTo 0
 
     MsgBox "n+1/毎年作成の年度補正が完了しました。" & vbCrLf & _
            "補正件数: " & changedCount & " 件" & vbCrLf & _
            "要確認件数: " & reviewCount & " 件", vbInformation
+    Exit Sub
+
+EventErrorHandler:
+    errNumber = Err.Number
+    errSource = Err.Source
+    errDescription = Err.Description
+    On Error Resume Next
+    Application.EnableEvents = previousEnableEvents
+    On Error GoTo 0
+    Err.Raise errNumber, errSource, errDescription
 
 End Sub
 
@@ -3553,7 +3572,8 @@ Public Sub 手順5_差分インポートCSVを外部出力する()
         absCol = usedRng.Column + srcCol - 1
         headerName = Trim$(CStr(wsOut.Cells(1, absCol).Value))
 
-        If headerName <> "通し番号" And headerName <> "状態" Then
+        If headerName <> "通し番号" And headerName <> "状態" And _
+           headerName <> "最終編集者" And headerName <> "最終編集日時" Then
             If Step2HeaderRequiresSourceText(headerName) Then _
                 wsExport.Cells(1, dstCol).Resize(lastRow, 1).NumberFormat = "@"
             wsExport.Cells(1, dstCol).Resize(lastRow, 1).Value = _
@@ -5633,7 +5653,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     displayHeaders = GetStep2DisplayHeadersOrder()
 
     ' ユーザー管理列（CSV上書き対象外）
-    baselineUserManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1", "保存番号", "廃棄年月日", "同期状態")
+    baselineUserManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1", "保存番号", "廃棄年月日", "同期状態", "最終編集者", "最終編集日時")
 
     ' 左側に追加したい独自列（必要時にここへ追記）
     additionalLeftDisplayHeaders = Array()
@@ -7666,6 +7686,10 @@ Public Sub SyncSecondColorNameFromColor( _
     Dim lastRow As Long
     Dim rowNo As Long
     Dim colorName As String
+    Dim previousEnableEvents As Boolean
+    Dim errNumber As Long
+    Dim errSource As String
+    Dim errDescription As String
 
     If wsDst Is Nothing Then Exit Sub
 
@@ -7683,6 +7707,10 @@ Public Sub SyncSecondColorNameFromColor( _
     End If
     If lastRow < startRow Then Exit Sub
 
+    previousEnableEvents = Application.EnableEvents
+    On Error GoTo EventErrorHandler
+    Application.EnableEvents = False
+
     wsDst.Range(wsDst.Cells(startRow, color2Col), wsDst.Cells(lastRow, color2Col)).Value = _
         wsDst.Range(wsDst.Cells(startRow, colorCol), wsDst.Cells(lastRow, colorCol)).Value
 
@@ -7692,6 +7720,19 @@ Public Sub SyncSecondColorNameFromColor( _
         SetCellColorByName wsDst.Cells(rowNo, colorCol), colorName
         SetCellColorByName wsDst.Cells(rowNo, color2Col), colorName
     Next rowNo
+
+    Application.EnableEvents = previousEnableEvents
+    On Error GoTo 0
+    Exit Sub
+
+EventErrorHandler:
+    errNumber = Err.Number
+    errSource = Err.Source
+    errDescription = Err.Description
+    On Error Resume Next
+    Application.EnableEvents = previousEnableEvents
+    On Error GoTo 0
+    Err.Raise errNumber, errSource, errDescription
 
 End Sub
 
@@ -8036,7 +8077,8 @@ Private Sub ClearIdentityColumnsForNewRow(ByVal ws As Worksheet, ByVal rowNo As 
         "登録者メンバーID", "登録日時", _
         "更新者メンバーID", "更新日時", _
         "引継処理日", "棚卸処理日", "廃棄処理日", _
-        "履歴番号", "履歴管理コメント")
+        "履歴番号", "履歴管理コメント", _
+        "最終編集者", "最終編集日時")
 
     lastCol = GetLastUsedCol(ws)
     For i = LBound(clearHeaders) To UBound(clearHeaders)
@@ -12541,6 +12583,10 @@ Public Sub 新ファイル基準表_色名から2色名同期(ByVal Target As Ra
     Dim color2Col As Long
     Dim workRange As Range
     Dim changedCell As Range
+    Dim previousEnableEvents As Boolean
+    Dim errNumber As Long
+    Dim errSource As String
+    Dim errDescription As String
 
     If Target Is Nothing Then Exit Sub
     If wsEdit Is Nothing Then Exit Sub
@@ -12555,11 +12601,28 @@ Public Sub 新ファイル基準表_色名から2色名同期(ByVal Target As Ra
     Set workRange = Intersect(Target, wsEdit.Range(wsEdit.Cells(2, colorCol), wsEdit.Cells(wsEdit.Rows.Count, colorCol)))
     If workRange Is Nothing Then Exit Sub
 
+    previousEnableEvents = Application.EnableEvents
+    On Error GoTo EventErrorHandler
+    Application.EnableEvents = False
+
     For Each changedCell In workRange.Cells
         wsEdit.Cells(changedCell.row, color2Col).Value = wsEdit.Cells(changedCell.row, colorCol).Value
         SetCellColorByName wsEdit.Cells(changedCell.row, colorCol), CStr(wsEdit.Cells(changedCell.row, colorCol).Value)
         SetCellColorByName wsEdit.Cells(changedCell.row, color2Col), CStr(wsEdit.Cells(changedCell.row, color2Col).Value)
     Next changedCell
+
+    Application.EnableEvents = previousEnableEvents
+    On Error GoTo 0
+    Exit Sub
+
+EventErrorHandler:
+    errNumber = Err.Number
+    errSource = Err.Source
+    errDescription = Err.Description
+    On Error Resume Next
+    Application.EnableEvents = previousEnableEvents
+    On Error GoTo 0
+    Err.Raise errNumber, errSource, errDescription
 
 End Sub
 
@@ -15809,3 +15872,158 @@ Private Sub RestoreCalculationIfPossible(ByVal savedMode As XlCalculation)
     End If
     On Error GoTo 0
 End Sub
+
+' 手動の値変更行だけに、WindowsログインIDとExcel日付値を記録する。
+' 見出し欠落・重複・Username取得不可の場合は何も変更しない。
+Public Sub 新ファイル基準表_最終編集情報を記録(ByVal Target As Range, ByVal ws As Worksheet)
+
+    Dim previousEnableEvents As Boolean
+    Dim eventsCaptured As Boolean
+    Dim editorCol As Long
+    Dim timestampCol As Long
+    Dim area As Range
+    Dim firstRow As Long
+    Dim lastRow As Long
+    Dim rowNo As Long
+    Dim rowKey As Variant
+    Dim blockStart As Long
+    Dim blockEnd As Long
+    Dim probeRow As Long
+    Dim rowsToStamp As Object
+    Dim processedRows As Object
+    Dim stampRange As Range
+    Dim userName As String
+    Dim editTimestamp As Date
+    Dim errNumber As Long
+    Dim errDescription As String
+
+    If Target Is Nothing Then Exit Sub
+    If ws Is Nothing Then Exit Sub
+
+    previousEnableEvents = Application.EnableEvents
+    eventsCaptured = True
+    On Error GoTo ErrorHandler
+
+    If Not (Target.Worksheet Is ws) Then GoTo SafeExit
+    If Application.CutCopyMode = xlCut Then GoTo SafeExit
+
+    editorCol = LastEditFindUniqueColumn(ws, "最終編集者")
+    timestampCol = LastEditFindUniqueColumn(ws, "最終編集日時")
+    If editorCol <= 0 Or timestampCol <= 0 Or editorCol = timestampCol Then GoTo SafeExit
+
+    userName = Trim$(Environ$("Username"))
+    If Len(userName) = 0 Then GoTo SafeExit
+    If Target.Areas.Count = 0 Then GoTo SafeExit
+
+    Set rowsToStamp = CreateObject("Scripting.Dictionary")
+    For Each area In Target.Areas
+        If LastEditAreaHasBusinessChanges(area, editorCol, timestampCol) Then
+            firstRow = area.Row
+            lastRow = area.Row + area.Rows.Count - 1
+            If firstRow < 2 Then firstRow = 2
+            For rowNo = firstRow To lastRow
+                If rowNo > 1 Then
+                    If Not rowsToStamp.Exists(CStr(rowNo)) Then rowsToStamp.Add CStr(rowNo), rowNo
+                End If
+            Next rowNo
+        End If
+    Next area
+    If rowsToStamp.Count = 0 Then GoTo SafeExit
+
+    editTimestamp = Now
+    Application.EnableEvents = False
+    Set processedRows = CreateObject("Scripting.Dictionary")
+    For Each rowKey In rowsToStamp.Keys
+        rowNo = CLng(rowKey)
+        If Not processedRows.Exists(CStr(rowNo)) Then
+            blockStart = rowNo
+            Do While rowsToStamp.Exists(CStr(blockStart - 1)) And _
+                     Not processedRows.Exists(CStr(blockStart - 1))
+                blockStart = blockStart - 1
+            Loop
+            blockEnd = rowNo
+            Do While rowsToStamp.Exists(CStr(blockEnd + 1)) And _
+                     Not processedRows.Exists(CStr(blockEnd + 1))
+                blockEnd = blockEnd + 1
+            Loop
+
+            ws.Range(ws.Cells(blockStart, editorCol), ws.Cells(blockEnd, editorCol)).Value2 = userName
+            Set stampRange = ws.Range(ws.Cells(blockStart, timestampCol), ws.Cells(blockEnd, timestampCol))
+            stampRange.NumberFormat = "yyyy/mm/dd hh:mm:ss"
+            stampRange.Value2 = editTimestamp
+
+            For probeRow = blockStart To blockEnd
+                processedRows.Add CStr(probeRow), True
+            Next probeRow
+        End If
+    Next rowKey
+
+SafeExit:
+    If eventsCaptured Then
+        On Error Resume Next
+        Application.EnableEvents = previousEnableEvents
+        On Error GoTo 0
+    End If
+    Exit Sub
+
+ErrorHandler:
+    errNumber = Err.Number
+    errDescription = Err.Description
+    Debug.Print "最終編集情報を更新できませんでした: " & CStr(errNumber) & " " & errDescription
+    Resume SafeExit
+
+End Sub
+
+Private Function LastEditFindUniqueColumn(ByVal ws As Worksheet, ByVal headerName As String) As Long
+
+    Dim lastCol As Long
+    Dim colNo As Long
+    Dim foundCol As Long
+    Dim matchCount As Long
+    Dim headerValue As String
+
+    LastEditFindUniqueColumn = 0
+    If ws Is Nothing Then Exit Function
+
+    lastCol = GetLastHeaderCol(ws)
+    If lastCol <= 0 Then Exit Function
+
+    For colNo = 1 To lastCol
+        If Not IsError(ws.Cells(1, colNo).Value2) Then
+            headerValue = Trim$(CStr(ws.Cells(1, colNo).Value2))
+            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(headerName), vbTextCompare) = 0 Then
+                foundCol = colNo
+                matchCount = matchCount + 1
+                If matchCount > 1 Then Exit Function
+            End If
+        End If
+    Next colNo
+
+    If matchCount = 1 Then LastEditFindUniqueColumn = foundCol
+
+End Function
+
+Private Function LastEditAreaHasBusinessChanges( _
+    ByVal changedArea As Range, ByVal editorCol As Long, ByVal timestampCol As Long) As Boolean
+
+    Dim firstCol As Long
+    Dim lastCol As Long
+    Dim leftMetadataCol As Long
+    Dim rightMetadataCol As Long
+
+    If changedArea Is Nothing Then Exit Function
+
+    firstCol = changedArea.Column
+    lastCol = firstCol + changedArea.Columns.Count - 1
+    leftMetadataCol = Application.Min(editorCol, timestampCol)
+    rightMetadataCol = Application.Max(editorCol, timestampCol)
+
+    If changedArea.Columns.Count = 1 Then
+        If firstCol = editorCol Or firstCol = timestampCol Then Exit Function
+    ElseIf changedArea.Columns.Count = 2 Then
+        If firstCol = leftMetadataCol And lastCol = rightMetadataCol Then Exit Function
+    End If
+
+    LastEditAreaHasBusinessChanges = True
+
+End Function

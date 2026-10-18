@@ -49,7 +49,8 @@ class Step2CodeTextPreservationTests(unittest.TestCase):
         self.assertNotEqual(stored, "321")
         exporter = proc("手順5_差分インポートCSVを外部出力する")
 
-        self.assertIn('If headerName <> "通し番号" And headerName <> "状態" Then', exporter)
+        self.assertIn('If headerName <> "通し番号" And headerName <> "状態" And _', exporter)
+        self.assertIn('headerName <> "最終編集者" And headerName <> "最終編集日時"', exporter)
         self.assertIn("Step2HeaderRequiresSourceText(headerName)", exporter)
         self.assertIn('wsExport.Cells(1, dstCol).Resize(lastRow, 1).NumberFormat = "@"', exporter)
         self.assertIn("wsOut.Cells(usedRng.Row, absCol).Resize(lastRow, 1).Value", exporter)

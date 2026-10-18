@@ -26,6 +26,9 @@ Private Sub Worksheet_Change(ByVal Target As Range)
 
     Application.EnableEvents = False
 
+    ' Worksheet_Change が発火した手動編集を記録する。自動処理は呼出元でイベントを停止する。
+    新ファイル基準表_最終編集情報を記録 Target, Me
+
     ' 標準モジュール(Module1)の補完処理を呼び出す
     ' ※この中で「年度（和暦）→年度（西暦）」および
     '   「廃棄年月日自動計算」まで連続実行する
