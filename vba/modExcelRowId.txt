@@ -14,6 +14,9 @@ Private Declare Function CoCreateGuid Lib "ole32.dll" (ByRef pGuid As ExcelRowId
 #End If
 
 Private Const ROW_ID_HEADER As String = "Excel管理行ID"
+Private Const ROW_ID_STATE_HAS_TITLE As String = "HasFolderTitle"
+Private Const ROW_ID_STATE_ID_VALUE As String = "IdValue"
+Private Const ROW_ID_STATE_ID_HAS_FORMULA As String = "IdHasFormula"
 Private Const ROW_ID_SHEET As String = "新ファイル基準表"
 Private Const ROW_ID_DETAIL_LIMIT As Long = 2200
 
@@ -173,32 +176,47 @@ End Sub
 Public Function ExcelRowIdCaptureSelection(ByVal Target As Range, ByVal ws As Worksheet) As Object
 
     Dim snapshots As Object
+    Dim rowSnapshot As Object
+    Dim idCol As Long
     Dim titleCol As Long
     Dim lastRow As Long
     Dim captureLastRow As Long
-    Dim area As Range
     Dim firstRow As Long
     Dim finalRow As Long
     Dim rowNo As Long
+    Dim area As Range
 
-    If Target Is Nothing Or ws Is Nothing Then Exit Function
+    If Target Is Nothing Then Exit Function
+    If ws Is Nothing Then Exit Function
     If Not (Target.Worksheet Is ws) Then Exit Function
-    titleCol = ExcelRowIdTryFindFolderTitleColumn(ws)
-    If titleCol <= 0 Then Exit Function
+
+    idCol = ExcelRowIdRequireColumn(ws)
+    titleCol = ExcelRowIdRequireFolderTitleColumn(ws)
     lastRow = ExcelRowIdLastUsedRow(ws)
-    captureLastRow = Application.Max(lastRow + 1, Target.Row + Target.Rows.Count - 1)
     Set snapshots = CreateObject("Scripting.Dictionary")
     snapshots.CompareMode = vbTextCompare
 
     For Each area In Target.Areas
-        firstRow = Application.Max(2, area.Row)
-        finalRow = Application.Min(captureLastRow, area.Row + area.Rows.Count - 1)
+        firstRow = area.Row
+        captureLastRow = Application.Max(lastRow + 1, firstRow + area.Rows.Count - 1)
+        finalRow = Application.Min(captureLastRow, firstRow + area.Rows.Count - 1)
+        If firstRow < 2 Then firstRow = 2
+        If finalRow < firstRow Then GoTo ContinueArea
         If finalRow - firstRow > 5000 Then Exit Function
+
         For rowNo = firstRow To finalRow
-            If Not snapshots.Exists(CStr(rowNo)) Then _
-                snapshots.Add CStr(rowNo), ExcelRowIdHasFolderTitle(ws, rowNo, titleCol)
+            If Not snapshots.Exists(CStr(rowNo)) Then
+                Set rowSnapshot = CreateObject("Scripting.Dictionary")
+                rowSnapshot.CompareMode = vbTextCompare
+                rowSnapshot.Add ROW_ID_STATE_HAS_TITLE, ExcelRowIdHasFolderTitle(ws, rowNo, titleCol)
+                rowSnapshot.Add ROW_ID_STATE_ID_VALUE, ws.Cells(rowNo, idCol).Value2
+                rowSnapshot.Add ROW_ID_STATE_ID_HAS_FORMULA, CBool(ws.Cells(rowNo, idCol).HasFormula)
+                snapshots.Add CStr(rowNo), rowSnapshot
+            End If
         Next rowNo
+ContinueArea:
     Next area
+
     Set ExcelRowIdCaptureSelection = snapshots
 
 End Function
@@ -329,189 +347,491 @@ WriteError:
 
 End Function
 
-Public Sub ExcelRowIdHandleWorksheetChange(ByVal Target As Range, ByVal ws As Worksheet, ByVal priorTitleState As Object)
+Private Function ExcelRowIdTryGetPriorRowState( _
+    ByVal priorRowState As Object, ByVal rowNo As Long, _
+    ByRef priorHadTitle As Boolean, ByRef priorIdValue As Variant, _
+    ByRef priorIdHasFormula As Boolean) As Boolean
 
-    Dim idCol As Long
+    Dim rowKey As String
+    Dim rowSnapshot As Object
+
+    If priorRowState Is Nothing Then Exit Function
+    rowKey = CStr(rowNo)
+    If Not priorRowState.Exists(rowKey) Then Exit Function
+    If Not IsObject(priorRowState.Item(rowKey)) Then Exit Function
+    Set rowSnapshot = priorRowState.Item(rowKey)
+    If Not rowSnapshot.Exists(ROW_ID_STATE_HAS_TITLE) Then Exit Function
+    If Not rowSnapshot.Exists(ROW_ID_STATE_ID_VALUE) Then Exit Function
+    If Not rowSnapshot.Exists(ROW_ID_STATE_ID_HAS_FORMULA) Then Exit Function
+
+    priorHadTitle = CBool(rowSnapshot.Item(ROW_ID_STATE_HAS_TITLE))
+    priorIdValue = rowSnapshot.Item(ROW_ID_STATE_ID_VALUE)
+    priorIdHasFormula = CBool(rowSnapshot.Item(ROW_ID_STATE_ID_HAS_FORMULA))
+    ExcelRowIdTryGetPriorRowState = True
+
+End Function
+
+Private Function ExcelRowIdStoredValueIsBlank(ByVal rawValue As Variant) As Boolean
+
+    If IsError(rawValue) Or IsNull(rawValue) Then Exit Function
+    If IsEmpty(rawValue) Then
+        ExcelRowIdStoredValueIsBlank = True
+    Else
+        ExcelRowIdStoredValueIsBlank = (Len(Trim$(CStr(rawValue))) = 0)
+    End If
+
+End Function
+
+Private Function ExcelRowIdGroupContainsRow(ByVal idGroups As Object, ByVal normalizedId As String, ByVal rowNo As Long) As Boolean
+
+    Dim groupRows As Collection
+    Dim rowValue As Variant
+
+    If idGroups Is Nothing Then Exit Function
+    If Not idGroups.Exists(normalizedId) Then Exit Function
+    Set groupRows = idGroups.Item(normalizedId)
+    For Each rowValue In groupRows
+        If CLng(rowValue) = rowNo Then
+            ExcelRowIdGroupContainsRow = True
+            Exit Function
+        End If
+    Next rowValue
+
+End Function
+
+Private Function ExcelRowIdResolveDuplicateGroup( _
+    ByVal ws As Worksheet, ByVal titleCol As Long, ByVal normalizedId As String, _
+    ByVal groupRows As Collection, ByVal targetRows As Object, _
+    ByVal priorRowState As Object, ByVal idGroups As Object, _
+    ByVal rowsToAssign As Object, ByVal rowsToRestore As Object, _
+    ByRef unsafeReason As String) As Boolean
+
+    Dim rowValue As Variant
+    Dim rowNo As Long
+    Dim rowKey As String
+    Dim ownerCount As Long
+    Dim newCount As Long
+    Dim restoreCount As Long
+    Dim candidateRowKey As String
+    Dim candidateValue As String
+    Dim candidateNormalizedId As String
+    Dim priorHadTitle As Boolean
+    Dim priorIdValue As Variant
+    Dim priorIdHasFormula As Boolean
+    Dim priorNormalizedId As String
+
+    If groupRows Is Nothing Then
+        unsafeReason = "重複したIDの行を取得できませんでした。"
+        Exit Function
+    End If
+    If groupRows.Count <> 2 Then
+        unsafeReason = "重複IDの行数が2行ではないため、コピー元と変更先を安全に特定できません。"
+        Exit Function
+    End If
+
+    For Each rowValue In groupRows
+        rowNo = CLng(rowValue)
+        rowKey = CStr(rowNo)
+        If Not ExcelRowIdHasFolderTitle(ws, rowNo, titleCol) Then
+            unsafeReason = "重複IDの行にフォルダー名がなく、コピー元と変更先を特定できません。"
+            Exit Function
+        End If
+
+        If Not targetRows.Exists(rowKey) Then
+            ownerCount = ownerCount + 1
+        Else
+            If Not ExcelRowIdTryGetPriorRowState(priorRowState, rowNo, _
+                priorHadTitle, priorIdValue, priorIdHasFormula) Then
+                unsafeReason = "コピー先の変更前状態を確認できません。"
+                Exit Function
+            End If
+
+            If priorHadTitle Then
+                If priorIdHasFormula Then
+                    unsafeReason = "変更前の管理行IDが数式だったため、自動修復を止めました。"
+                    Exit Function
+                End If
+                If IsError(priorIdValue) Or IsNull(priorIdValue) Then
+                    unsafeReason = "変更前の管理行IDを安全に読み取れません。"
+                    Exit Function
+                End If
+
+                If ExcelRowIdStoredValueIsBlank(priorIdValue) Then
+                    newCount = newCount + 1
+                    candidateRowKey = rowKey
+                ElseIf ExcelRowIdNormalizeValue(priorIdValue, priorNormalizedId) Then
+                    If StrComp(priorNormalizedId, normalizedId, vbTextCompare) = 0 Then
+                        If ExcelRowIdGroupContainsRow(idGroups, normalizedId, rowNo + 1) _
+                            And Not targetRows.Exists(CStr(rowNo + 1)) Then
+                            newCount = newCount + 1
+                            candidateRowKey = rowKey
+                        Else
+                            ownerCount = ownerCount + 1
+                        End If
+                    ElseIf ExcelRowIdGroupContainsRow(idGroups, priorNormalizedId, rowNo + 1) Then
+                        newCount = newCount + 1
+                        candidateRowKey = rowKey
+                    Else
+                        restoreCount = restoreCount + 1
+                        candidateRowKey = rowKey
+                        candidateValue = CStr(priorIdValue)
+                        candidateNormalizedId = priorNormalizedId
+                    End If
+                Else
+                    unsafeReason = "変更前の管理行IDが正規形式ではないため、自動修復を止めました。"
+                    Exit Function
+                End If
+            Else
+                If Not ExcelRowIdStoredValueIsBlank(priorIdValue) Then
+                    If IsError(priorIdValue) Or IsNull(priorIdValue) Then
+                        unsafeReason = "新規行の変更前ID欄を安全に読み取れません。"
+                        Exit Function
+                    End If
+                    If Not priorIdHasFormula Then
+                        If Not ExcelRowIdNormalizeValue(priorIdValue, priorNormalizedId) Then
+                            unsafeReason = "新規行の変更前ID欄に不明な値があり、自動修復を止めました。"
+                            Exit Function
+                        End If
+                    End If
+                End If
+                newCount = newCount + 1
+                candidateRowKey = rowKey
+            End If
+        End If
+    Next rowValue
+
+    If ownerCount <> 1 Or newCount + restoreCount <> 1 Or (newCount > 0 And restoreCount > 0) Then
+        unsafeReason = "コピー元と新規行または既存行を一意に区別できません。"
+        Exit Function
+    End If
+
+    If newCount = 1 Then
+        If rowsToAssign.Exists(candidateRowKey) Or rowsToRestore.Exists(candidateRowKey) Then
+            unsafeReason = "同じ行に複数の管理行ID処理が必要になったため、自動修復を止めました。"
+            Exit Function
+        End If
+        rowsToAssign.Add candidateRowKey, True
+    ElseIf restoreCount = 1 Then
+        If idGroups.Exists(candidateNormalizedId) Then
+            unsafeReason = "既存行の元IDが別の行に残っているため、IDを復元すると重複します。"
+            Exit Function
+        End If
+        If rowsToAssign.Exists(candidateRowKey) Or rowsToRestore.Exists(candidateRowKey) Then
+            unsafeReason = "同じ行に複数の管理行ID処理が必要になったため、自動修復を止めました。"
+            Exit Function
+        End If
+        rowsToRestore.Add candidateRowKey, candidateValue
+    End If
+
+    ExcelRowIdResolveDuplicateGroup = True
+
+End Function
+
+Public Sub ExcelRowIdHandleWorksheetChange(ByVal Target As Range, ByVal ws As Worksheet, ByVal priorRowState As Object)
+
+    Dim oldEnableEvents As Boolean
+    Dim eventsCaptured As Boolean
     Dim titleCol As Long
+    Dim idCol As Long
     Dim lastRow As Long
+    Dim firstTargetRow As Long
+    Dim lastTargetRow As Long
+    Dim rowNo As Long
+    Dim rowKey As Variant
+    Dim rowValue As Variant
+    Dim area As Range
     Dim targetRows As Object
     Dim idGroups As Object
-    Dim assignmentRows As Object
-    Dim assignments As Object
-    Dim oldValues As Object
-    Dim usedIds As Object
-    Dim writtenRows As Collection
-    Dim area As Range
-    Dim rowNo As Long
-    Dim firstRow As Long
-    Dim finalRow As Long
-    Dim rowKey As Variant
-    Dim occurrence As Variant
     Dim groupRows As Collection
-    Dim targetOccurrenceCount As Long
-    Dim changedDuplicateRow As Long
+    Dim rowsToAssign As Object
+    Dim rowsToRestore As Object
+    Dim processedGroups As Object
+    Dim usedIds As Object
+    Dim writeValues As Object
+    Dim oldValues As Object
+    Dim writtenRows As Collection
     Dim valueText As String
     Dim normalizedId As String
-    Dim newId As String
+    Dim priorNormalizedId As String
+    Dim priorHadTitle As Boolean
+    Dim priorIdValue As Variant
+    Dim priorIdHasFormula As Boolean
+    Dim isCopyOperation As Boolean
+    Dim isCutOperation As Boolean
     Dim targetIncludesId As Boolean
     Dim targetIncludesTitle As Boolean
-    Dim isCopyOperation As Boolean
+    Dim targetIncludesBusinessArea As Boolean
+    Dim targetIncludesSystemArea As Boolean
+    Dim copyRangeHandled As Boolean
     Dim unsafeReason As String
-    Dim oldEnableEvents As Boolean
-    Dim errDescription As String
+    Dim newId As String
+    Dim restoreId As String
     Dim rollbackSucceeded As Boolean
+    Dim errNumber As Long
+    Dim errDescription As String
+    Dim verifyId As String
 
-    If Target Is Nothing Or ws Is Nothing Then Exit Sub
+    If Target Is Nothing Then Exit Sub
+    If ws Is Nothing Then Exit Sub
     If Not (Target.Worksheet Is ws) Then Exit Sub
-    oldEnableEvents = Application.EnableEvents
-    On Error GoTo ErrorHandler
-    idCol = ExcelRowIdTryFindColumn(ws)
-    titleCol = ExcelRowIdTryFindFolderTitleColumn(ws)
-    If idCol <= 0 Or titleCol <= 0 Then Exit Sub
-    lastRow = ExcelRowIdLastUsedRow(ws)
-    If lastRow < 2 Then Exit Sub
 
+    oldEnableEvents = Application.EnableEvents
+    eventsCaptured = True
+    On Error GoTo ErrorHandler
+
+    titleCol = ExcelRowIdRequireFolderTitleColumn(ws)
+    idCol = ExcelRowIdRequireColumn(ws)
+    lastRow = ExcelRowIdLastUsedRow(ws)
     targetIncludesId = Not (Application.Intersect(Target, ws.Columns(idCol)) Is Nothing)
     targetIncludesTitle = Not (Application.Intersect(Target, ws.Columns(titleCol)) Is Nothing)
+    targetIncludesBusinessArea = Not (Application.Intersect(Target, ws.Range("A:T")) Is Nothing)
+    targetIncludesSystemArea = Not (Application.Intersect(Target, ws.Range("U:XFD")) Is Nothing)
     isCopyOperation = (Application.CutCopyMode = xlCopy)
+    isCutOperation = (Application.CutCopyMode = xlCut)
+
+    If lastRow < 2 Then GoTo SafeExit
+    firstTargetRow = Target.Row
+    lastTargetRow = Target.Row + Target.Rows.Count - 1
+    If firstTargetRow < 2 Then firstTargetRow = 2
+    If lastTargetRow - firstTargetRow > 10000 Then
+        unsafeReason = "変更範囲が大きすぎるため、安全確認を中止しました。"
+        GoTo UnsafeExit
+    End If
+
     Set targetRows = CreateObject("Scripting.Dictionary")
     targetRows.CompareMode = vbTextCompare
-
     For Each area In Target.Areas
-        firstRow = Application.Max(2, area.Row)
-        finalRow = Application.Min(lastRow, area.Row + area.Rows.Count - 1)
-        If finalRow - firstRow > 10000 Then
-            MsgBox "変更範囲が大きすぎるため、管理行IDを自動処理しませんでした。" & _
-                vbCrLf & "「Excel管理行ID_点検」で確認してください。", vbExclamation, "管理行ID確認"
-            Exit Sub
-        End If
-        For rowNo = firstRow To finalRow
+        firstTargetRow = area.Row
+        lastTargetRow = area.Row + area.Rows.Count - 1
+        If firstTargetRow < 2 Then firstTargetRow = 2
+        For rowNo = firstTargetRow To lastTargetRow
             If Not targetRows.Exists(CStr(rowNo)) Then targetRows.Add CStr(rowNo), rowNo
         Next rowNo
     Next area
-    If targetRows.Count = 0 Then Exit Sub
+    If targetRows.Count = 0 Then GoTo SafeExit
 
     Set idGroups = CreateObject("Scripting.Dictionary")
     idGroups.CompareMode = vbTextCompare
-    If targetIncludesId Then ExcelRowIdBuildGroups ws, idCol, lastRow, idGroups
+    If targetIncludesId Or targetIncludesBusinessArea Then _
+        ExcelRowIdBuildGroups ws, idCol, lastRow, idGroups
+    Set rowsToAssign = CreateObject("Scripting.Dictionary")
+    rowsToAssign.CompareMode = vbTextCompare
+    Set rowsToRestore = CreateObject("Scripting.Dictionary")
+    rowsToRestore.CompareMode = vbTextCompare
+    Set processedGroups = CreateObject("Scripting.Dictionary")
+    processedGroups.CompareMode = vbTextCompare
 
-    Set assignmentRows = CreateObject("Scripting.Dictionary")
-    assignmentRows.CompareMode = vbTextCompare
     For Each rowKey In targetRows.Keys
         rowNo = CLng(rowKey)
         If Not ExcelRowIdHasFolderTitle(ws, rowNo, titleCol) Then GoTo ContinueTargetRow
         If ws.Cells(rowNo, idCol).HasFormula Then
-            If targetIncludesId Then unsafeReason = "管理行ID欄に数式がある行が含まれています（行 " & CStr(rowNo) & "）。"
+            If targetIncludesId Or targetIncludesBusinessArea Then unsafeReason = "変更範囲に数式の管理行IDが含まれています。"
             GoTo ContinueTargetRow
         End If
         If IsError(ws.Cells(rowNo, idCol).Value2) Then
-            If targetIncludesId Then unsafeReason = "管理行ID欄にエラー値があります（行 " & CStr(rowNo) & "）。"
+            If targetIncludesId Or targetIncludesBusinessArea Then unsafeReason = "変更範囲にエラー値の管理行IDが含まれています。"
             GoTo ContinueTargetRow
         End If
+
         valueText = Trim$(CStr(ws.Cells(rowNo, idCol).Value2))
         If Len(valueText) = 0 Then
-            If Not priorTitleState Is Nothing Then
-                If priorTitleState.Exists(CStr(rowNo)) Then
-                    If Not CBool(priorTitleState(CStr(rowNo))) Then assignmentRows(CStr(rowNo)) = True
+            If targetIncludesBusinessArea Then
+                If Not targetIncludesId Then
+                    If Not rowsToAssign.Exists(CStr(rowNo)) Then rowsToAssign.Add CStr(rowNo), True
+                ElseIf Not ExcelRowIdTryGetPriorRowState(priorRowState, rowNo, _
+                    priorHadTitle, priorIdValue, priorIdHasFormula) Then
+                    unsafeReason = "ID列を含む変更先の変更前状態を確認できません。"
+                ElseIf Not priorHadTitle Then
+                    If Not rowsToAssign.Exists(CStr(rowNo)) Then rowsToAssign.Add CStr(rowNo), True
+                    copyRangeHandled = True
+                ElseIf priorIdHasFormula Then
+                    unsafeReason = "既存行の変更前IDが数式だったため、自動処理を止めました。"
+                ElseIf ExcelRowIdStoredValueIsBlank(priorIdValue) Then
+                    If Not rowsToAssign.Exists(CStr(rowNo)) Then rowsToAssign.Add CStr(rowNo), True
+                    copyRangeHandled = True
+                ElseIf ExcelRowIdNormalizeValue(priorIdValue, priorNormalizedId) Then
+                    If ExcelRowIdGroupContainsRow(idGroups, priorNormalizedId, rowNo + 1) Then
+                        If Not rowsToAssign.Exists(CStr(rowNo)) Then rowsToAssign.Add CStr(rowNo), True
+                    ElseIf idGroups.Exists(priorNormalizedId) Then
+                        unsafeReason = "既存IDが別の行へ移動した可能性があり、新規行と既存行を区別できません。"
+                    Else
+                        If Not rowsToRestore.Exists(CStr(rowNo)) Then _
+                            rowsToRestore.Add CStr(rowNo), CStr(priorIdValue)
+                    End If
+                    copyRangeHandled = True
+                Else
+                    unsafeReason = "変更前IDが正規形式ではないため、自動処理を止めました。"
                 End If
             End If
-        ElseIf Not ExcelRowIdNormalizeValue(valueText, normalizedId) Then
-            If targetIncludesId Then unsafeReason = "不正な管理行IDを検出しました（行 " & CStr(rowNo) & "）。"
-        ElseIf targetIncludesId And idGroups.Exists(normalizedId) Then
-            Set groupRows = idGroups(normalizedId)
-            If groupRows.Count > 1 Then
-                targetOccurrenceCount = 0
-                changedDuplicateRow = 0
-                For Each occurrence In groupRows
-                    If targetRows.Exists(CStr(CLng(occurrence))) Then
-                        targetOccurrenceCount = targetOccurrenceCount + 1
-                        changedDuplicateRow = CLng(occurrence)
-                    End If
-                Next occurrence
-                If isCopyOperation And targetIncludesTitle And Target.Areas.Count = 1 And _
-                    groupRows.Count = 2 And targetOccurrenceCount = 1 And _
-                    changedDuplicateRow = rowNo And _
-                    ExcelRowIdHasFolderTitle(ws, CLng(groupRows(1)), titleCol) And _
-                    ExcelRowIdHasFolderTitle(ws, CLng(groupRows(2)), titleCol) Then
-                    If priorTitleState Is Nothing Then
-                        unsafeReason = "コピー先の変更前状態を確認できません（ID=" & normalizedId & "）。"
-                    ElseIf Not priorTitleState.Exists(CStr(rowNo)) Then
-                        unsafeReason = "コピー先の変更前状態を確認できません（ID=" & normalizedId & "）。"
-                    ElseIf CBool(priorTitleState(CStr(rowNo))) Then
-                        unsafeReason = "変更先が新規行か確認できません（ID=" & normalizedId & "）。"
+            GoTo ContinueTargetRow
+        End If
+
+        If Not ExcelRowIdNormalizeValue(valueText, normalizedId) Then
+            If targetIncludesId Or targetIncludesBusinessArea Then unsafeReason = "変更範囲に形式不正の管理行IDが含まれています。"
+            GoTo ContinueTargetRow
+        End If
+        If Not targetIncludesId Then
+            If idGroups.Exists(normalizedId) Then
+                Set groupRows = idGroups.Item(normalizedId)
+                If groupRows.Count > 1 Then
+                    unsafeReason = "A～T列の変更行に未解決の重複IDがあります。"
+                End If
+            End If
+            GoTo ContinueTargetRow
+        End If
+        If Not idGroups.Exists(normalizedId) Then
+            unsafeReason = "変更後の管理行IDを一覧から確認できません。"
+            GoTo ContinueTargetRow
+        End If
+
+        Set groupRows = idGroups.Item(normalizedId)
+        If groupRows.Count > 1 Then
+            If processedGroups.Exists(normalizedId) Then GoTo ContinueTargetRow
+            processedGroups.Add normalizedId, True
+            If isCutOperation Then
+                unsafeReason = "切り取り・行移動中にID重複が見つかったため、自動修復を止めました。"
+            ElseIf Not ExcelRowIdResolveDuplicateGroup(ws, titleCol, normalizedId, _
+                groupRows, targetRows, priorRowState, idGroups, rowsToAssign, rowsToRestore, unsafeReason) Then
+                If Len(unsafeReason) = 0 Then unsafeReason = "コピー元と変更先を安全に特定できません。"
+            Else
+                copyRangeHandled = True
+            End If
+        ElseIf isCopyOperation And targetIncludesTitle Then
+            If targetRows.Count <> 1 Then
+                unsafeReason = "複数行の行全体コピーではコピー先を安全に特定できません。"
+            ElseIf Not ExcelRowIdTryGetPriorRowState(priorRowState, rowNo, _
+                priorHadTitle, priorIdValue, priorIdHasFormula) Then
+                unsafeReason = "コピー先の変更前状態を確認できません。"
+            ElseIf Not priorHadTitle Then
+                If Not rowsToAssign.Exists(CStr(rowNo)) Then rowsToAssign.Add CStr(rowNo), True
+                copyRangeHandled = True
+            ElseIf priorIdHasFormula Then
+                unsafeReason = "コピー先の変更前IDが数式だったため、自動修復を止めました。"
+            ElseIf ExcelRowIdStoredValueIsBlank(priorIdValue) Then
+                If Not rowsToAssign.Exists(CStr(rowNo)) Then rowsToAssign.Add CStr(rowNo), True
+                copyRangeHandled = True
+            ElseIf ExcelRowIdNormalizeValue(priorIdValue, priorNormalizedId) Then
+                If StrComp(priorNormalizedId, normalizedId, vbTextCompare) <> 0 Then
+                    If idGroups.Exists(priorNormalizedId) Then
+                        unsafeReason = "コピー先の元IDが別の行に残っているため、並べ替え・移動との区別ができません。"
                     Else
-                        assignmentRows(CStr(rowNo)) = True
+                        If Not rowsToRestore.Exists(CStr(rowNo)) Then
+                            rowsToRestore.Add CStr(rowNo), CStr(priorIdValue)
+                        End If
+                        copyRangeHandled = True
                     End If
-                Else
-                    unsafeReason = "重複IDの元行を安全に特定できません（ID=" & normalizedId & "）。"
                 End If
-            ElseIf isCopyOperation And targetIncludesTitle Then
-                If priorTitleState Is Nothing Then
-                    unsafeReason = "コピー先の変更前状態を確認できません（ID=" & normalizedId & "）。"
-                ElseIf Not priorTitleState.Exists(CStr(rowNo)) Then
-                    unsafeReason = "コピー先の変更前状態を確認できません（ID=" & normalizedId & "）。"
-                ElseIf Not CBool(priorTitleState(CStr(rowNo))) Then
-                    assignmentRows(CStr(rowNo)) = True
-                End If
+            Else
+                unsafeReason = "コピー先の変更前IDが正規形式ではないため、自動修復を止めました。"
             End If
         End If
 ContinueTargetRow:
     Next rowKey
 
-    If Len(unsafeReason) > 0 Then
-        MsgBox unsafeReason & vbCrLf & "IDは変更していません。" & vbCrLf & _
-            "行移動・並べ替えとの誤認を避けるため、自動修正を中止しました。" & vbCrLf & _
-            "「Excel管理行ID_点検」で重複・欠損を確認してください。", _
-            vbExclamation, "管理行IDの確認が必要です"
-        Exit Sub
-    End If
-    If assignmentRows.Count = 0 Then Exit Sub
+    If Len(unsafeReason) > 0 Then GoTo UnsafeExit
+    If rowsToAssign.Count = 0 And rowsToRestore.Count = 0 Then GoTo SafeExit
 
     Set usedIds = ExcelRowIdBuildUsedIds(ws, idCol, lastRow)
-    Set assignments = CreateObject("Scripting.Dictionary")
-    assignments.CompareMode = vbTextCompare
+    Set writeValues = CreateObject("Scripting.Dictionary")
+    writeValues.CompareMode = vbTextCompare
+    For Each rowKey In rowsToRestore.Keys
+        restoreId = CStr(rowsToRestore.Item(CStr(rowKey)))
+        If Not ExcelRowIdNormalizeValue(restoreId, priorNormalizedId) Then
+            unsafeReason = "復元する既存IDが正規形式ではありません。"
+            GoTo UnsafeExit
+        End If
+        If usedIds.Exists(priorNormalizedId) Then
+            unsafeReason = "復元する既存IDが他の行に使われているため、安全に復元できません。"
+            GoTo UnsafeExit
+        End If
+        usedIds.Add priorNormalizedId, True
+        writeValues.Add CStr(rowKey), restoreId
+    Next rowKey
+    For Each rowKey In rowsToAssign.Keys
+        If writeValues.Exists(CStr(rowKey)) Then
+            unsafeReason = "同じ行に復元と新規発行の両方が必要になりました。"
+            GoTo UnsafeExit
+        End If
+        newId = ExcelRowIdGenerateUnique(usedIds)
+        writeValues.Add CStr(rowKey), newId
+    Next rowKey
+
     Set oldValues = CreateObject("Scripting.Dictionary")
     oldValues.CompareMode = vbTextCompare
     Set writtenRows = New Collection
-    For Each rowKey In assignmentRows.Keys
+    For Each rowKey In writeValues.Keys
         rowNo = CLng(rowKey)
-        newId = ExcelRowIdGenerateUnique(usedIds)
-        assignments.Add CStr(rowNo), newId
-        oldValues.Add CStr(rowNo), ws.Cells(rowNo, idCol).Value2
+        oldValues.Add CStr(rowKey), ws.Cells(rowNo, idCol).Value2
     Next rowKey
 
     Application.EnableEvents = False
-    For Each rowKey In assignments.Keys
+    For Each rowKey In writeValues.Keys
         rowNo = CLng(rowKey)
         writtenRows.Add rowNo
-        ws.Cells(rowNo, idCol).Value2 = CStr(assignments(CStr(rowNo)))
-        If StrComp(UCase$(CStr(ws.Cells(rowNo, idCol).Value2)), _
-            UCase$(CStr(assignments(CStr(rowNo)))), vbBinaryCompare) <> 0 Then _
-            Err.Raise vbObjectError + 6920, , "IDの自動発行後の照合に失敗しました（行 " & CStr(rowNo) & "）。"
+        ws.Cells(rowNo, idCol).Value2 = CStr(writeValues.Item(CStr(rowKey)))
+        If Not ExcelRowIdNormalizeValue(ws.Cells(rowNo, idCol).Value2, verifyId) Then
+            Err.Raise vbObjectError + 2701, "ExcelRowIdHandleWorksheetChange", "書き込み後のIDを検証できません。"
+        End If
+        If StrComp(verifyId, CStr(writeValues.Item(CStr(rowKey))), vbTextCompare) <> 0 Then
+            Err.Raise vbObjectError + 2702, "ExcelRowIdHandleWorksheetChange", "書き込み後のIDが一致しません。"
+        End If
     Next rowKey
     Application.EnableEvents = oldEnableEvents
+
+    If copyRangeHandled And targetIncludesSystemArea Then
+        MsgBox "管理行IDを安全に処理しました。" & vbCrLf & _
+            "ただし、管理行IDの処理では正式ファイルID・ファイル番号・バーコード番号を変更・再採番していません。登録予定行の既存クリア処理は従来どおりです。" & vbCrLf & _
+            "行全体のコピーではこれらも複製・上書きされた可能性があるため、登録前に確認してください。", _
+            vbExclamation, "システム識別番号の確認"
+    End If
+    GoTo SafeExit
+
+UnsafeExit:
+    If targetIncludesSystemArea Then
+        unsafeReason = unsafeReason & vbCrLf & _
+            "管理行IDの処理では正式識別番号を変更・再採番していませんが、コピーで複製・上書きされた可能性があります。"
+    End If
+    MsgBox "管理行IDの自動処理を停止しました。" & vbCrLf & unsafeReason & vbCrLf & _
+        "コピー元と変更先を安全に区別できないため、自動修復していません。" & vbCrLf & _
+        "直前のコピー操作であれば Ctrl+Z で取り消し、A～T列だけをコピーする方法を使ってください。", _
+        vbExclamation, "管理行IDの確認"
+    GoTo SafeExit
+
+SafeExit:
+    If eventsCaptured Then
+        On Error Resume Next
+        Application.EnableEvents = oldEnableEvents
+        On Error GoTo 0
+    End If
     Exit Sub
 
 ErrorHandler:
+    errNumber = Err.Number
     errDescription = Err.Description
     rollbackSucceeded = True
     On Error Resume Next
+    Application.EnableEvents = False
     If Not writtenRows Is Nothing Then
-        For Each rowKey In writtenRows
+        For Each rowValue In writtenRows
             Err.Clear
-            ws.Cells(CLng(rowKey), idCol).Value2 = oldValues(CStr(CLng(rowKey)))
+            ws.Cells(CLng(rowValue), idCol).Value2 = oldValues(CStr(rowValue))
             If Err.Number <> 0 Then rollbackSucceeded = False
-            Err.Clear
-            If StrComp(CStr(ws.Cells(CLng(rowKey), idCol).Value2), _
-                CStr(oldValues(CStr(CLng(rowKey)))), vbBinaryCompare) <> 0 Then rollbackSucceeded = False
-        Next rowKey
+        Next rowValue
     End If
     Application.EnableEvents = oldEnableEvents
     On Error GoTo 0
-    MsgBox "管理行IDを自動発行できませんでした。" & vbCrLf & _
-        IIf(rollbackSucceeded, "入力データは保持し、管理行IDを変更前に戻しました。", _
-            "管理行IDのロールバックに失敗しました。点検マクロで状態を確認し、管理者へ相談してください。") & vbCrLf & _
-        "原因: " & errDescription, vbExclamation, "管理行ID自動発行失敗"
+    If rollbackSucceeded Then
+        errDescription = "自動処理による書き込みをロールバックしました。コピー後のID重複が残る場合はCtrl+Zで操作を取り消し、点検してください。"
+    Else
+        errDescription = "ID書き込みのロールバックを確認できません。点検マクロで状態を確認してください。"
+    End If
+    If targetIncludesSystemArea Then
+        errDescription = errDescription & vbCrLf & _
+            "管理行IDの処理ではシステム識別番号を変更・再採番していません。コピーによる重複・上書きがないか確認してください。"
+    End If
+    MsgBox "管理行IDの自動処理に失敗しました: " & CStr(errNumber) & vbCrLf & errDescription, _
+        vbExclamation, "管理行ID"
+    Resume SafeExit
 
 End Sub
 

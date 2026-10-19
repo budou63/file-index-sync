@@ -59,6 +59,10 @@ Private Sub Worksheet_Change(ByVal Target As Range)
         ReindexSerial_NewFileStandard Me
     End If
 
+    If TypeName(Application.Selection) = "Range" Then
+        Set mRowIdSelectionSnapshot = ExcelRowIdCaptureSelection(Application.Selection, Me)
+    End If
+
 ExitHandler:
     Application.EnableEvents = oldEnableEvents
 

@@ -57,30 +57,90 @@ class ExcelManagementRowIdTests(unittest.TestCase):
         self.assertIn("ExcelRowIdGenerateUnique(usedIds)", procedure(ROW_ID, "ExcelRowIdPrepareBatch"))
         self.assertNotIn("通し番号", ROW_ID)
 
-    def test_new_rows_receive_ids_but_legacy_blank_rows_need_explicit_first_run(self):
+    def test_new_a_to_t_row_gets_id_when_folder_title_is_entered(self):
         event = procedure(ROW_ID, "ExcelRowIdHandleWorksheetChange")
-        self.assertIn("priorTitleState.Exists(CStr(rowNo))", event)
-        self.assertIn("If Not CBool(priorTitleState(CStr(rowNo))) Then", event)
-        self.assertIn("Application.CutCopyMode = xlCopy", event)
-        self.assertIn("ElseIf isCopyOperation And targetIncludesTitle Then", event)
-        self.assertIn("ElseIf CBool(priorTitleState(CStr(rowNo))) Then", event)
-        self.assertIn("コピー先の変更前状態を確認できません", event)
-        self.assertIn("groupRows.Count = 2", event)
-        self.assertIn("Target.Areas.Count = 1", event)
-        self.assertIn("IDは変更していません", event)
+        capture = procedure(ROW_ID, "ExcelRowIdCaptureSelection")
+        self.assertIn('ws.Range("A:T")', event)
+        self.assertIn("If Len(valueText) = 0 Then", event)
+        self.assertIn("If targetIncludesBusinessArea Then", event)
+        self.assertIn("rowsToAssign.Add CStr(rowNo), True", event)
+        self.assertIn("ROW_ID_STATE_HAS_TITLE", capture)
+        self.assertIn("ROW_ID_STATE_ID_VALUE", capture)
         self.assertIn("ExcelRowIdCaptureSelection(Target, Me)", SHEET)
-        self.assertIn("ExcelRowIdHandleWorksheetChange Target, Me, mRowIdSelectionSnapshot", SHEET)
-        self.assertLess(SHEET.index("ExcelRowIdHandleWorksheetChange Target"), SHEET.index("If ShouldReindexSerial(Target, Me)"))
+        self.assertIn("Set mRowIdSelectionSnapshot = ExcelRowIdCaptureSelection(Application.Selection, Me)", SHEET)
 
-    def test_existing_ids_are_not_reissued_for_moves_or_sorts(self):
+    def test_a_t_edit_reports_duplicate_ids_without_guessing_a_new_row(self):
         event = procedure(ROW_ID, "ExcelRowIdHandleWorksheetChange")
-        self.assertIn("isCopyOperation = (Application.CutCopyMode = xlCopy)", event)
-        self.assertIn("ElseIf targetIncludesId And idGroups.Exists(normalizedId) Then", event)
-        self.assertNotIn("Application.CutCopyMode = xlCut", event)
-        assignment = procedure(ROW_ID, "ExcelRowIdAssignGeneratedRow")
-        preserve = "If ExcelRowIdNormalizeValue(targetCell.Value2, normalizedId) Then"
-        self.assertIn(preserve, assignment)
-        self.assertLess(assignment.index(preserve), assignment.index("Set usedIds = ExcelRowIdBuildUsedIds"))
+        self.assertIn("targetIncludesId Or targetIncludesBusinessArea", event)
+        self.assertIn("A～T列の変更行に未解決の重複IDがあります", event)
+        self.assertIn("自動修復していません", event)
+
+    def test_ctrl_d_duplicate_resolution_uses_prechange_state_not_clipboard_flag(self):
+        event = procedure(ROW_ID, "ExcelRowIdHandleWorksheetChange")
+        resolver = procedure(ROW_ID, "ExcelRowIdResolveDuplicateGroup")
+        self.assertIn("If groupRows.Count > 1 Then", event)
+        duplicate_branch = event[event.index("If groupRows.Count > 1 Then"):event.index("ElseIf isCopyOperation")]
+        self.assertNotIn("isCopyOperation", duplicate_branch)
+        self.assertNotIn("Application.CutCopyMode", resolver)
+        self.assertIn("priorHadTitle", resolver)
+        self.assertIn("priorIdValue", resolver)
+        self.assertIn("rowsToAssign.Add candidateRowKey, True", resolver)
+        self.assertIn("groupRows.Count <> 2", resolver)
+
+    def test_existing_row_overwrite_restores_the_prechange_id(self):
+        resolver = procedure(ROW_ID, "ExcelRowIdResolveDuplicateGroup")
+        event = procedure(ROW_ID, "ExcelRowIdHandleWorksheetChange")
+        self.assertIn("candidateValue = CStr(priorIdValue)", resolver)
+        self.assertIn("rowsToRestore.Add candidateRowKey, candidateValue", resolver)
+        self.assertIn("If idGroups.Exists(candidateNormalizedId) Then", resolver)
+        self.assertIn("rowsToRestore.Add CStr(rowNo), CStr(priorIdValue)", event)
+        self.assertIn("ws.Cells(rowNo, idCol).Value2 = CStr(writeValues.Item(CStr(rowKey)))", event)
+        self.assertNotIn("Cells(rowNo, titleCol).Value2 =", event)
+
+    def test_a_t_and_whole_row_copy_paths_are_distinguished(self):
+        event = procedure(ROW_ID, "ExcelRowIdHandleWorksheetChange")
+        self.assertIn('targetIncludesBusinessArea = Not (Application.Intersect(Target, ws.Range("A:T")) Is Nothing)', event)
+        self.assertIn("If targetIncludesBusinessArea Then", event)
+        self.assertIn("targetIncludesId = Not (Application.Intersect(Target, ws.Columns(idCol)) Is Nothing)", event)
+        self.assertIn('targetIncludesSystemArea = Not (Application.Intersect(Target, ws.Range("U:XFD")) Is Nothing)', event)
+        self.assertIn("ExcelRowIdResolveDuplicateGroup", event)
+
+    def test_copy_cells_insert_can_detect_one_row_shift_from_prechange_ids(self):
+        resolver = procedure(ROW_ID, "ExcelRowIdResolveDuplicateGroup")
+        self.assertIn("ExcelRowIdGroupContainsRow(idGroups, normalizedId, rowNo + 1)", resolver)
+        self.assertIn("ExcelRowIdGroupContainsRow(idGroups, priorNormalizedId, rowNo + 1)", resolver)
+        self.assertIn("newCount = newCount + 1", resolver)
+        self.assertIn("groupRows.Count <> 2", resolver)
+
+    def test_ambiguous_or_inserted_copy_stops_without_auto_repair(self):
+        resolver = procedure(ROW_ID, "ExcelRowIdResolveDuplicateGroup")
+        event = procedure(ROW_ID, "ExcelRowIdHandleWorksheetChange")
+        self.assertIn("コピー先の変更前状態を確認できません", resolver)
+        self.assertIn("groupRows.Count <> 2", resolver)
+        self.assertIn("自動修復していません", event)
+        self.assertIn("Ctrl+Z", event)
+        self.assertNotIn("Application.Undo", event)
+
+    def test_cut_moves_and_sorts_do_not_trigger_id_reissue(self):
+        event = procedure(ROW_ID, "ExcelRowIdHandleWorksheetChange")
+        self.assertIn("isCutOperation = (Application.CutCopyMode = xlCut)", event)
+        self.assertIn("切り取り・行移動中にID重複", event)
+        self.assertIn("ElseIf isCopyOperation And targetIncludesTitle Then", event)
+        self.assertIn("If idGroups.Exists(priorNormalizedId) Then", event)
+        self.assertIn("並べ替え・移動との区別ができません", event)
+
+    def test_last_edit_tracking_order_and_internal_id_write_are_preserved(self):
+        event = procedure(ROW_ID, "ExcelRowIdHandleWorksheetChange")
+        self.assertLess(SHEET.index("新ファイル基準表_最終編集情報を記録 Target, Me"), SHEET.index("ExcelRowIdHandleWorksheetChange Target"))
+        self.assertIn("If Application.CutCopyMode = xlCut Then GoTo SafeExit", procedure(MODULE1, "新ファイル基準表_最終編集情報を記録"))
+        self.assertIn("Application.EnableEvents = False", event)
+        self.assertLess(SHEET.index("ExcelRowIdHandleWorksheetChange Target"), SHEET.index("If ShouldReindexSerial(Target, Me)"))
+        self.assertLess(SHEET.index("新ファイル基準表_登録予定識別番号を自動クリア Target, Me"), SHEET.index("ExcelRowIdHandleWorksheetChange Target"))
+        self.assertIn("正式ファイルID・ファイル番号・バーコード番号", event)
+        self.assertIn("ws.Cells(rowNo, idCol).Value2 = CStr(writeValues.Item(CStr(rowKey)))", event)
+        self.assertNotIn("最終編集者", event)
+        self.assertNotIn("最終編集日時", event)
+        self.assertIn("If ExcelRowIdIsHeaderName(CStr(changedArea.Worksheet.Cells(1, firstCol).Value2)) Then Exit Function", procedure(MODULE1, "LastEditAreaHasBusinessChanges"))
 
     def test_step2_and_annual_rows_assign_private_ids_not_transfer_them(self):
         step2 = procedure(MODULE1, "手順2_新ファイル基準表を作成する")
@@ -119,6 +179,10 @@ class ExcelManagementRowIdTests(unittest.TestCase):
         self.assertIn("Excel管理行ID_既存行へ初回付与", manual)
         self.assertIn("Excel内部専用", readme)
         self.assertIn("vba/modExcelRowId.txt", readme)
+        self.assertIn("Ctrl+D", manual)
+        self.assertIn("A～T列だけのコピー", manual)
+        self.assertIn("正式ファイルID・ファイル番号・バーコード番号", manual)
+        self.assertIn("管理行IDの自動発行だけでは", manual)
 
 
 if __name__ == "__main__":
