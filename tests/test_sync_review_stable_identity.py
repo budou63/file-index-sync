@@ -59,7 +59,7 @@ def exact_match(source, csv_rows, excel_rows):
     if len(matches) != 1:
         return None
     row = matches[0]
-    if row.get("year") != year or number_key(row.get("number")) != number or row.get("barcode") != barcode or row.get("status") != "同期済み":
+    if row.get("year") != year or number_key(row.get("number")) != number or row.get("barcode") != barcode or row.get("status") != "同期済":
         return None
     for other in excel_rows:
         if other is not row and other.get("id") != fid and (other.get("barcode") == barcode or number_key(other.get("number")) == number):
@@ -149,7 +149,7 @@ class StableIdentityTests(unittest.TestCase):
 
     def test_exact_formal_match_suppresses_weak_but_not_same_title_registration(self):
         source = dict(self.source, folder="正式名")
-        official = {"year": 2026, "id": "SYS-1", "number": "123", "barcode": "BC-9", "status": "同期済み"}
+        official = {"year": 2026, "id": "SYS-1", "number": "123", "barcode": "BC-9", "status": "同期済"}
         weak = {"status": "登録予定", "id": "", "folder": "似た名"}
         same_title = dict(weak, folder="正式名", guide="別ガイド")
         self.assertEqual(filter_candidates(source, self.csv, [official], [weak]), [])
@@ -165,9 +165,24 @@ class StableIdentityTests(unittest.TestCase):
         self.assertIn('Set folders = CreateObject("Scripting.Dictionary")', build)
         self.assertIn("ReviewMapAdd folders, ReviewTextKey", build)
 
+    def test_exact_formal_match_accepts_real_sync_status_and_rejects_old_label(self):
+        source = dict(self.source, folder="正式名")
+        official = {"year": 2026, "id": "SYS-1", "number": "123", "barcode": "BC-9", "status": "同期済"}
+        weak = {"status": "登録予定", "id": "", "folder": "似た名"}
+        self.assertIsNotNone(exact_match(source, self.csv, [official]))
+        self.assertEqual(filter_candidates(source, self.csv, [official], [weak]), [])
+        old_label = dict(official, status="同期済み")
+        self.assertIsNone(exact_match(source, self.csv, [old_label]))
+        self.assertEqual(filter_candidates(source, self.csv, [old_label], [weak]), [weak])
+        formal = proc(MODULE, "Private Function ReviewFindUniqueFormalMatch(")
+        candidates = proc(MODULE, "Public Function SyncReviewCandidates(")
+        self.assertIn('ReviewField(dst, matchedRow, "同期状態") <> "同期済"', formal)
+        self.assertIn('ReviewField(dst, matchedFormalRow, "同期状態") <> "同期済"', candidates)
+        self.assertNotIn('"同期済み"', formal + candidates)
+
     def test_duplicate_or_conflicting_identifiers_and_wrong_year_do_not_suppress(self):
         source = dict(self.source, folder="正式名")
-        official = {"year": 2026, "id": "SYS-1", "number": "123", "barcode": "BC-9", "status": "同期済み"}
+        official = {"year": 2026, "id": "SYS-1", "number": "123", "barcode": "BC-9", "status": "同期済"}
         weak = {"status": "登録予定", "id": "", "folder": "似た名"}
         cases = [(self.csv + [dict(self.source)], [official]),
                  (self.csv, [dict(official, barcode="wrong")]),
@@ -178,7 +193,7 @@ class StableIdentityTests(unittest.TestCase):
             self.assertEqual(filter_candidates(source, csv_rows, excel_rows, [weak]), [weak])
 
     def test_leading_zero_file_number_match_is_supported(self):
-        official = {"year": 2026, "id": "SYS-1", "number": "123", "barcode": "BC-9", "status": "同期済み"}
+        official = {"year": 2026, "id": "SYS-1", "number": "123", "barcode": "BC-9", "status": "同期済"}
         self.assertIsNotNone(exact_match(self.source, self.csv, [official]))
         self.assertIn("ReviewPadding(ReviewField(dst, matchedRow,", proc(MODULE, "Private Function ReviewFindUniqueFormalMatch("))
 

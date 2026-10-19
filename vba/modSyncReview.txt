@@ -509,7 +509,7 @@ Private Function ReviewFindUniqueFormalMatch(ByVal src As Worksheet, ByVal srcRo
     If ReviewField(dst, matchedRow, "ファイルID") <> fileId Then Exit Function
     If ReviewPadding(ReviewField(dst, matchedRow, "ファイル番号")) <> fileNumber Then Exit Function
     If ReviewField(dst, matchedRow, "バーコード番号") <> barcode Then Exit Function
-    If ReviewField(dst, matchedRow, "同期状態") <> "同期済み" Then Exit Function
+    If ReviewField(dst, matchedRow, "同期状態") <> "同期済" Then Exit Function
     ReviewFindUniqueFormalMatch = True
 End Function
 
@@ -667,7 +667,7 @@ Public Function SyncReviewCandidates(ByVal yearValue As Long) As Collection
                 collision = True: reason = "正式ファイルID一致行のファイル番号がCSVと一致しません。"
             ElseIf Len(bar) > 0 And ReviewField(dst, matchedFormalRow, "バーコード番号") <> bar Then
                 collision = True: reason = "正式ファイルID一致行のバーコード番号がCSVと一致しません。"
-            ElseIf ReviewField(dst, matchedFormalRow, "同期状態") <> "同期済み" Then
+            ElseIf ReviewField(dst, matchedFormalRow, "同期状態") <> "同期済" Then
                 collision = True: reason = "正式ファイルID一致行が同期済み状態ではありません。"
             End If
         End If
