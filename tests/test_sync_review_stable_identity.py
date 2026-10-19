@@ -1,5 +1,6 @@
 import unittest
 import uuid
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +20,18 @@ def guid_key(value):
         return str(uuid.UUID(str(value).strip("{}"))).upper()
     except (ValueError, TypeError, AttributeError):
         return None
+
+def review_text_key(value):
+    text = str(value or "").replace("　", " ").replace("（", "(").replace("）", ")")
+    text = text.replace("／", "/").replace("・", "/").replace("･", "/")
+    return unicodedata.normalize("NFKC", text).strip().replace(" ", "").casefold()
+
+def review_name(record):
+    created = record.get("created_year")
+    guide1, guide2, folder = record.get("guide1"), record.get("guide2"), record.get("folder")
+    if not created or not guide1 or not guide2 or not folder:
+        return None
+    return "{}|{}|{}|{}".format(created, review_text_key(guide1), review_text_key(guide2), review_text_key(folder))
 
 def stable_key(source, rows):
     file_id = source.get("id", "")
@@ -69,22 +82,21 @@ def exact_match(source, csv_rows, excel_rows):
 def filter_candidates(source, csv_rows, excel_rows, candidates):
     if exact_match(source, csv_rows, excel_rows) is None:
         return list(candidates)
-    title = "".join(str(source.get("folder", "")).split()).casefold()
-    return [r for r in candidates if r.get("status") == "登録予定" and not r.get("id") and
-            "".join(str(r.get("folder", "")).split()).casefold() == title]
+    source_name = review_name(source)
+    return [r for r in candidates if source_name and r.get("status") == "登録予定" and not r.get("id") and
+            review_name(r) == source_name]
 
 def assigned_title_conflicts(source, candidates):
-    title = "".join(str(source.get("folder", "")).split()).casefold()
-    return [row for row in candidates if row.get("status") == "登録予定" and row.get("id") and
-            row.get("id") != source.get("id") and
-            "".join(str(row.get("folder", "")).split()).casefold() == title]
+    source_name = review_name(source)
+    return [row for row in candidates if source_name and row.get("status") == "登録予定" and row.get("id") and
+            row.get("id") != source.get("id") and review_name(row) == source_name]
 
 
 class StableIdentityTests(unittest.TestCase):
     def setUp(self):
-        self.source = {"year": 2026, "id": "SYS-1", "number": "00123", "barcode": "BC-9", "folder": "旧名", "guide1": "第1", "guide2": "第2"}
+        self.source = {"year": 2026, "created_year": 2025, "id": "SYS-1", "number": "00123", "barcode": "BC-9", "folder": "旧名", "guide1": "第1", "guide2": "第2"}
         self.csv = [dict(self.source)]
-        self.row = {"id": "11111111-1111-4111-8111-111111111111", "folder": "候補", "guide1": "第1", "guide2": "第2", "status": "登録予定"}
+        self.row = {"id": "11111111-1111-4111-8111-111111111111", "created_year": 2025, "folder": "候補", "guide1": "第1", "guide2": "第2", "status": "登録予定"}
         self.excel = [self.row]
         self.history = [{"format": "IDv1", "csv_key": stable_key(self.source, self.csv),
                          "row_id": self.row["id"].upper(), "decision": "別物"}]
@@ -151,7 +163,8 @@ class StableIdentityTests(unittest.TestCase):
         source = dict(self.source, folder="正式名")
         official = {"year": 2026, "id": "SYS-1", "number": "123", "barcode": "BC-9", "status": "同期済"}
         weak = {"status": "登録予定", "id": "", "folder": "似た名"}
-        same_title = dict(weak, folder="正式名", guide="別ガイド")
+        same_title = dict(weak, created_year=source["created_year"], guide1=source["guide1"],
+                          guide2=source["guide2"], folder="正式名")
         self.assertEqual(filter_candidates(source, self.csv, [official], [weak]), [])
         self.assertEqual(filter_candidates(source, self.csv, [official], [weak, same_title]), [same_title])
         candidates = proc(MODULE, "Public Function SyncReviewCandidates(")
@@ -160,10 +173,28 @@ class StableIdentityTests(unittest.TestCase):
         self.assertIn('cases.Add NewCase("A"', candidates)
         helper = proc(MODULE, "Private Function ReviewExactFolderPlannedRows(")
         self.assertIn("ReviewRows(folderIndex, sourceFolder)", helper)
+        self.assertIn("ReviewName(src, srcRow, True, True)", helper)
+        self.assertIn("ReviewName(dst, CLng(rowValue), False, True) = sourceName", helper)
+        self.assertIn("If Len(sourceName) = 0 Then", helper)
         self.assertIn("ReviewFiscal(dst, CLng(rowValue)) = yearValue", helper)
         build = proc(MODULE, "Public Function SyncReviewCandidates(")
         self.assertIn('Set folders = CreateObject("Scripting.Dictionary")', build)
         self.assertIn("ReviewMapAdd folders, ReviewTextKey", build)
+
+    def test_same_folder_name_with_second_guide_first_guide_or_created_year_mismatch_is_excluded(self):
+        source = dict(self.source, folder="同じフォルダー")
+        official = {"year": 2026, "id": "SYS-1", "number": "123", "barcode": "BC-9", "status": "同期済"}
+        rows = [
+            {"status": "登録予定", "id": "", "created_year": 2025, "guide1": source["guide1"], "guide2": "別の第2ガイド", "folder": source["folder"]},
+            {"status": "登録予定", "id": "", "created_year": 2025, "guide1": "別の第1ガイド", "guide2": source["guide2"], "folder": source["folder"]},
+            {"status": "登録予定", "id": "", "created_year": 2024, "guide1": source["guide1"], "guide2": source["guide2"], "folder": source["folder"]},
+        ]
+        self.assertEqual(filter_candidates(source, self.csv, [official], rows), [])
+        exact = dict(rows[0], guide2=source["guide2"])
+        self.assertEqual(filter_candidates(source, self.csv, [official], [exact]), [exact])
+        for function in ("Private Function ReviewExactFolderPlannedRows(", "Private Function ReviewExactFolderAssignedRows("):
+            helper = proc(MODULE, function)
+            self.assertIn("ReviewName(dst, CLng(rowValue), False, True) = sourceName", helper)
 
     def test_exact_formal_match_accepts_real_sync_status_and_rejects_old_label(self):
         source = dict(self.source, folder="正式名")
@@ -192,6 +223,13 @@ class StableIdentityTests(unittest.TestCase):
         for csv_rows, excel_rows in cases:
             self.assertEqual(filter_candidates(source, csv_rows, excel_rows, [weak]), [weak])
 
+    def test_formal_duplicate_and_barcode_conflict_paths_still_create_a_candidates(self):
+        candidates = proc(MODULE, "Public Function SyncReviewCandidates(")
+        self.assertIn("ReviewRows(csvIds, fid).Count > 1 Or idRows.Count > 1", candidates)
+        self.assertIn('If collision Then reason = "別のExcel行とバーコードが競合します。"', candidates)
+        self.assertIn("If Not collision And idRows.Count = 1 Then", candidates)
+        self.assertIn('cases.Add NewCase("A", yearValue, src, sRow, dst, destRows, reason)', candidates)
+
     def test_leading_zero_file_number_match_is_supported(self):
         official = {"year": 2026, "id": "SYS-1", "number": "123", "barcode": "BC-9", "status": "同期済"}
         self.assertIsNotNone(exact_match(self.source, self.csv, [official]))
@@ -213,6 +251,7 @@ class StableIdentityTests(unittest.TestCase):
     def test_manual_documents_stable_ids_and_formal_match_rules(self):
         self.assertIn("Excel管理行ID", MANUAL)
         self.assertIn("正式識別", MANUAL)
+        self.assertIn("作成年度・第1ガイド・第2ガイド・個別フォルダー名が正規化一致", MANUAL)
 
     def test_exact_title_lookup_is_indexed_not_limited_to_weak_candidate_rows(self):
         helper = proc(MODULE, "Private Function ReviewExactFolderPlannedRows(")
@@ -222,13 +261,18 @@ class StableIdentityTests(unittest.TestCase):
         build = proc(MODULE, "Public Function SyncReviewCandidates(")
         self.assertLess(build.index("ReviewMapAdd folders"), build.index("For sRow = 2 To srcLast", build.index("ReviewMapAdd folders")))
 
-    def test_same_title_planned_row_with_another_id_remains_an_a_conflict(self):
+    def test_same_title_planned_row_with_another_id_remains_an_a_conflict_only_on_all_four_name_fields(self):
         source = dict(self.source, folder="正式名")
-        planned = {"status": "登録予定", "id": "SYS-2", "folder": "正式名"}
+        planned = {"status": "登録予定", "id": "SYS-2", "created_year": source["created_year"],
+                   "guide1": source["guide1"], "guide2": source["guide2"], "folder": "正式名"}
         self.assertEqual(assigned_title_conflicts(source, [planned]), [planned])
+        for mismatch in ({"guide2": "別の第2ガイド"}, {"guide1": "別の第1ガイド"}, {"created_year": 2024}):
+            self.assertEqual(assigned_title_conflicts(source, [dict(planned, **mismatch)]), [])
         helper = proc(MODULE, "Private Function ReviewExactFolderAssignedRows(")
         self.assertIn("rowFileId <> sourceFileId", helper)
         self.assertIn("ReviewRows(folderIndex, sourceFolder)", helper)
+        self.assertIn("ReviewName(src, srcRow, True, True)", helper)
+        self.assertIn("ReviewName(dst, CLng(rowValue), False, True) = sourceName", helper)
         self.assertIn("ReviewFiscal(dst, CLng(rowValue)) = yearValue", helper)
         build = proc(MODULE, "Public Function SyncReviewCandidates(")
         self.assertIn("ReviewExactFolderAssignedRows", build)

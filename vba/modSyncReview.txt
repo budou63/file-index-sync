@@ -515,11 +515,18 @@ End Function
 
 Private Function ReviewExactFolderPlannedRows(ByVal src As Worksheet, ByVal srcRow As Long, _
     ByVal dst As Worksheet, ByVal folderIndex As Object, ByVal yearValue As Long) As Collection
-    Dim exactRows As New Collection, rowValue As Variant, folderRows As Collection, sourceFolder As String
+    Dim exactRows As New Collection, rowValue As Variant, folderRows As Collection
+    Dim sourceFolder As String, sourceName As String
+    sourceName = ReviewName(src, srcRow, True, True)
+    If Len(sourceName) = 0 Then
+        Set ReviewExactFolderPlannedRows = exactRows
+        Exit Function
+    End If
     sourceFolder = ReviewTextKey(ReviewValue(src, srcRow, ReviewCol(src, "タイトル", "個別フォルダー")))
     Set folderRows = ReviewRows(folderIndex, sourceFolder)
     For Each rowValue In folderRows
         If ReviewFiscal(dst, CLng(rowValue)) = yearValue And _
+           ReviewName(dst, CLng(rowValue), False, True) = sourceName And _
            ReviewField(dst, CLng(rowValue), "同期状態") = "登録予定" And _
            Len(ReviewField(dst, CLng(rowValue), "ファイルID")) = 0 Then ReviewAppendUnique exactRows, CLng(rowValue)
     Next rowValue
@@ -530,11 +537,17 @@ Private Function ReviewExactFolderAssignedRows(ByVal src As Worksheet, ByVal src
     ByVal dst As Worksheet, ByVal folderIndex As Object, ByVal yearValue As Long, _
     ByVal sourceFileId As String) As Collection
     Dim conflictRows As New Collection, rowValue As Variant, folderRows As Collection
-    Dim sourceFolder As String, rowFileId As String
+    Dim sourceFolder As String, sourceName As String, rowFileId As String
+    sourceName = ReviewName(src, srcRow, True, True)
+    If Len(sourceName) = 0 Then
+        Set ReviewExactFolderAssignedRows = conflictRows
+        Exit Function
+    End If
     sourceFolder = ReviewTextKey(ReviewValue(src, srcRow, ReviewCol(src, "タイトル", "個別フォルダー")))
     Set folderRows = ReviewRows(folderIndex, sourceFolder)
     For Each rowValue In folderRows
         If ReviewFiscal(dst, CLng(rowValue)) = yearValue And _
+           ReviewName(dst, CLng(rowValue), False, True) = sourceName And _
            ReviewField(dst, CLng(rowValue), "同期状態") = "登録予定" Then
             rowFileId = ReviewField(dst, CLng(rowValue), "ファイルID")
             If Len(rowFileId) > 0 And rowFileId <> sourceFileId Then ReviewAppendUnique conflictRows, CLng(rowValue)
@@ -678,10 +691,10 @@ Public Function SyncReviewCandidates(ByVal yearValue As Long) As Collection
                 Set assignedConflictRows = ReviewExactFolderAssignedRows(src, sRow, dst, folders, yearValue, fid)
                 If assignedConflictRows.Count > 0 Then _
                     cases.Add NewCase("A", yearValue, src, sRow, dst, assignedConflictRows, _
-                        "正式IDの一致先とは別に、同名の登録予定行へ別の正式IDがあります。統合せず確認してください。")
+                        "正式IDの一致先とは別に、作成年度・第1/第2ガイド・個別フォルダー名が一致する登録予定行へ別の正式IDがあります。統合せず確認してください。")
                 Set plannedRows = ReviewExactFolderPlannedRows(src, sRow, dst, folders, yearValue)
                 If plannedRows.Count > 0 Then
-                    reason = "正式ID・年度・ファイル番号・バーコードが一意一致するため弱い類似候補は除外しました。同一フォルダー名の登録予定行は独立候補として確認します。"
+                    reason = "正式ID・年度・ファイル番号・バーコードが一意一致するため弱い類似候補は除外しました。作成年度・第1/第2ガイド・個別フォルダー名が正規化一致する登録予定行は独立候補として確認します。"
                     cases.Add NewCase("B", yearValue, src, sRow, dst, plannedRows, reason, sourceStableKey)
                 End If
             Else
