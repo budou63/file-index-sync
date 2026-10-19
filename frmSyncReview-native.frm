@@ -265,6 +265,67 @@ Private Function SelectedRow() As Long
     SelectedRow = CLng(Split(CStr(mLstRows.List(mLstRows.ListIndex)), " ")(0))
 End Function
 
+Private Function BNextUnconfirmedRow(ByVal item As Object, ByVal afterRow As Long) As Long
+    Dim parts As Variant, i As Long, rowNo As Long, count As Long, currentIndex As Long
+    Dim foundCurrent As Boolean
+    If item Is Nothing Then Exit Function
+    If CStr(item("category")) <> "B" Or Len(CStr(item("rows"))) = 0 Then Exit Function
+    parts = Split(CStr(item("rows")), ";")
+    count = UBound(parts) - LBound(parts) + 1
+    If count <= 0 Then Exit Function
+    If afterRow >= 2 Then
+        For i = LBound(parts) To UBound(parts)
+            If CLng(parts(i)) = afterRow Then
+                currentIndex = i
+                foundCurrent = True
+                Exit For
+            End If
+        Next i
+    End If
+    If Not foundCurrent Then
+        For i = LBound(parts) To UBound(parts)
+            rowNo = CLng(parts(i))
+            If Len(SyncReviewDecision(item, rowNo)) = 0 Then
+                BNextUnconfirmedRow = rowNo
+                Exit Function
+            End If
+        Next i
+        Exit Function
+    End If
+    For i = 1 To count - 1
+        rowNo = CLng(parts((currentIndex + i) Mod count))
+        If Len(SyncReviewDecision(item, rowNo)) = 0 Then
+            BNextUnconfirmedRow = rowNo
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Sub UpdateBRowJudgments(ByVal item As Object)
+    Dim parts As Variant, i As Long, rowNo As Long, totalCount As Long, confirmedCount As Long
+    Dim rowDecision As String
+    If item Is Nothing Then Exit Sub
+    If CStr(item("category")) <> "B" Or Len(CStr(item("rows"))) = 0 Then Exit Sub
+    parts = Split(CStr(item("rows")), ";")
+    totalCount = UBound(parts) - LBound(parts) + 1
+    mLblRows.Caption = "候補Excel行／判断"
+    For i = LBound(parts) To UBound(parts)
+        rowNo = CLng(parts(i))
+        rowDecision = SyncReviewDecision(item, rowNo)
+        If rowDecision = "別物" Then
+            confirmedCount = confirmedCount + 1
+        Else
+            rowDecision = "未確認"
+        End If
+        If i < mLstRows.ListCount Then mLstRows.List(i) = CStr(rowNo) & " 行 [" & rowDecision & "]"
+    Next i
+    mLblStatus.Caption = "CSV" & CStr(item("sourceRow")) & "行：候補" & totalCount & "行／別物確認済" & _
+        confirmedCount & "行／未確認" & (totalCount - confirmedCount) & "行"
+    If SyncReviewDecision(item) = "保留" Then mLblStatus.Caption = mLblStatus.Caption & "／案件保留"
+    If SyncReviewLegacyCaseDecision(item) = "別物" Then _
+        mLblStatus.Caption = mLblStatus.Caption & "／旧方式判断あり"
+End Sub
+
 Private Sub CompareFieldSpec(ByVal fieldIndex As Long, ByRef fieldCaption As String, _
                               ByRef csvAliases As Variant, ByRef excelAliases As Variant)
     Select Case fieldIndex
@@ -377,6 +438,7 @@ Private Sub RenderComparison(ByVal item As Object, ByVal excelRow As Long)
     Dim csvAliases As Variant, excelAliases As Variant
     Dim csvHeaderFound As Boolean, excelHeaderFound As Boolean
     Dim previousDecision As String, decisionComment As String, fillColor As Long
+    Dim selectedDecision As String, selectedComment As String, legacyDecision As String
     If item Is Nothing Then
         mLblCompareRows.Caption = "CSV行: ― / 新ファイル基準表行: ―"
         mTxtDetails.Text = ""
@@ -440,9 +502,24 @@ Private Sub RenderComparison(ByVal item As Object, ByVal excelRow As Long)
         decisionComment = SyncReviewDecisionComment(item)
     End If
     If Len(previousDecision) = 0 Then previousDecision = "未確認"
-    If Len(decisionComment) > 0 Then previousDecision = previousDecision & " / " & decisionComment
-    mTxtDetails.Text = "【保留理由】" & CStr(item("reason")) & vbCrLf & _
-        "【前回判断】" & previousDecision
+    If CStr(item("category")) = "B" Then
+        selectedDecision = SyncReviewDecision(item, excelRow)
+        selectedComment = SyncReviewDecisionComment(item, excelRow)
+        legacyDecision = SyncReviewLegacyCaseDecision(item)
+        If Len(selectedDecision) = 0 Then selectedDecision = "未確認"
+        mTxtDetails.Text = "【保留理由】" & CStr(item("reason")) & vbCrLf & _
+            "【案件の判断】" & previousDecision & IIf(previousDecision = "保留" And Len(decisionComment) > 0, " / " & decisionComment, "") & vbCrLf & _
+            "【選択Excel行の判断】" & selectedDecision & IIf(Len(selectedComment) > 0, " / " & selectedComment, "")
+        If legacyDecision = "別物" Then
+            mTxtDetails.Text = mTxtDetails.Text & vbCrLf & _
+                "【旧方式の案件単位判断】別物（候補行ごとの判断としては扱いません）" & _
+                IIf(Len(decisionComment) > 0, " / " & decisionComment, "")
+        End If
+    Else
+        If Len(decisionComment) > 0 Then previousDecision = previousDecision & " / " & decisionComment
+        mTxtDetails.Text = "【保留理由】" & CStr(item("reason")) & vbCrLf & _
+            "【前回判断】" & previousDecision
+    End If
 End Sub
 
 Private Sub ShowCategory()
@@ -498,7 +575,7 @@ End Sub
 Private Sub ShowCurrent()
     Dim item As Object, v As Variant, rows As String, category As String
     Dim candidates As Collection, candidate As Variant, keeper As Long, rowNo As Long
-    Dim decision As String
+    Dim decision As String, rowDecision As String
     Set item = SelectedCase()
     rendering = True
     mLstRows.Clear
@@ -532,7 +609,13 @@ Private Sub ShowCurrent()
         rows = CStr(item("rows"))
         If Len(rows) > 0 Then
             For Each v In Split(rows, ";")
-                mLstRows.AddItem CStr(v) & " 行"
+                If category = "B" Then
+                    rowDecision = SyncReviewDecision(item, CLng(v))
+                    If Len(rowDecision) = 0 Then rowDecision = "未確認"
+                    mLstRows.AddItem CStr(v) & " 行 [" & rowDecision & "]"
+                Else
+                    mLstRows.AddItem CStr(v) & " 行"
+                End If
             Next v
         End If
     End If
@@ -550,7 +633,10 @@ Private Sub ShowCurrent()
     If mChkDelete.Visible Then mChkDelete.Value = (Len(decision) = 0 And deletionSelection.Exists(CStr(item("key"))))
     If category = "D" Then
         mLblStatus.Caption = "D候補：保持行はクリアできません。選択した候補行のみ専用APIで再検証します。"
+    ElseIf category = "B" Then
+        UpdateBRowJudgments item
     Else
+        mLblRows.Caption = "候補のExcel行"
         mLblStatus.Caption = "Aの重複ID・複数行の統合は自動承認不可。Cはチェック後に件数を確認します。"
     End If
     rendering = False
@@ -703,10 +789,24 @@ Private Sub mCmdHold_Click()
     RecordChoice "保留"
 End Sub
 Private Sub RecordChoice(ByVal decision As String)
-    Dim item As Object
+    Dim item As Object, rowNo As Long, nextRow As Long
     Set item = SelectedCase()
     If item Is Nothing Then Exit Sub
     If CStr(item("category")) = "D" Then Exit Sub
+    If CStr(item("category")) = "B" And decision = "別物" Then
+        rowNo = SelectedRow()
+        If SyncReviewDecide(item, decision, rowNo) Then
+            UpdateBRowJudgments item
+            RenderComparison item, rowNo
+            nextRow = BNextUnconfirmedRow(item, rowNo)
+            If nextRow > 0 Then
+                SelectCaseRow nextRow
+            Else
+                mCmdNext_Click
+            End If
+        End If
+        Exit Sub
+    End If
     If SyncReviewDecide(item, decision) Then
         If CStr(item("category")) = "C" Then
             If deletionSelection.Exists(CStr(item("key"))) Then deletionSelection.Remove CStr(item("key"))
@@ -750,6 +850,12 @@ Private Sub mCmdNext_Click()
             Next i
             mLblStatus.Caption = "このカテゴリの未処理クリア候補はありません。"
             Exit Sub
+        ElseIf CStr(item("category")) = "B" And Len(SyncReviewDecision(item)) = 0 Then
+            rowNo = BNextUnconfirmedRow(item, SelectedRow())
+            If rowNo > 0 Then
+                SelectCaseRow rowNo
+                Exit Sub
+            End If
         End If
     End If
     startAt = mLstCases.ListIndex

@@ -964,7 +964,8 @@ Private Function ReviewDigest(ByVal text As String) As String
     ReviewDigest = CStr(Len(text)) & ":" & CStr(CLng(h1)) & ":" & CStr(CLng(h2))
 End Function
 
-Private Function ReviewAudit(ByVal createIfMissing As Boolean) As Worksheet
+Private Function ReviewAudit(ByVal createIfMissing As Boolean, _
+                             Optional ByVal ensureRowColumns As Boolean = False) As Worksheet
     Dim ws As Worksheet, columns As Variant, i As Long
     On Error Resume Next
     Set ws = ThisWorkbook.Worksheets(REVIEW_SHEET)
@@ -976,7 +977,70 @@ Private Function ReviewAudit(ByVal createIfMissing As Boolean) As Worksheet
         For i = 0 To UBound(columns): ws.Cells(1, i + 1).Value2 = columns(i): Next i
         ws.Rows(1).Font.Bold = True
     End If
+    If Not ws Is Nothing And createIfMissing And ensureRowColumns Then
+        Call ReviewAuditColumn(ws, "判断単位", True)
+        Call ReviewAuditColumn(ws, "選択Excel行署名", True)
+    End If
     Set ReviewAudit = ws
+End Function
+
+Private Function ReviewAuditColumn(ByVal ws As Worksheet, ByVal headerText As String, _
+                                   Optional ByVal createIfMissing As Boolean = False) As Long
+    Dim col As Long, lastHeaderCol As Long, foundCol As Long, foundCount As Long
+    Dim lastCell As Range
+    If ws Is Nothing Then Exit Function
+    lastHeaderCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For col = 1 To lastHeaderCol
+        If Not IsError(ws.Cells(1, col).Value2) Then
+            If StrComp(CStr(ws.Cells(1, col).Value2), headerText, vbBinaryCompare) = 0 Then
+                foundCount = foundCount + 1
+                foundCol = col
+            End If
+        End If
+    Next col
+    If foundCount > 1 Then
+        If createIfMissing Then Err.Raise vbObjectError + 6143, , "同期候補確認履歴の見出しが重複しています: " & headerText
+        ReviewAuditColumn = -1
+        Exit Function
+    End If
+    If foundCol = 0 And createIfMissing Then
+        Set lastCell = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+            LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:=xlPrevious, SearchFormat:=False)
+        If lastCell Is Nothing Then
+            foundCol = 1
+        Else
+            foundCol = lastCell.Column + 1
+        End If
+        ws.Cells(1, foundCol).Value2 = headerText
+        ws.Cells(1, foundCol).Font.Bold = True
+    End If
+    ReviewAuditColumn = foundCol
+End Function
+
+Private Function ReviewAuditScopeAt(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal scopeCol As Long) As String
+    Dim storedScope As String
+    If scopeCol < 0 Then
+        ReviewAuditScopeAt = "不明"
+    ElseIf scopeCol = 0 Then
+        ReviewAuditScopeAt = "案件単位"
+    ElseIf IsError(ws.Cells(rowNo, scopeCol).Value2) Then
+        ReviewAuditScopeAt = "不明"
+    Else
+        storedScope = Trim$(CStr(ws.Cells(rowNo, scopeCol).Value2))
+        If Len(storedScope) = 0 Then storedScope = "案件単位"
+        ReviewAuditScopeAt = storedScope
+    End If
+End Function
+
+Private Function ReviewItemContainsRow(ByVal item As Object, ByVal rowNo As Long) As Boolean
+    Dim parts As Variant, part As Variant
+    If item Is Nothing Or rowNo < 2 Then Exit Function
+    If Not item.Exists("rows") Then Exit Function
+    If Len(CStr(item("rows"))) = 0 Then Exit Function
+    parts = Split(CStr(item("rows")), ";")
+    For Each part In parts
+        If CLng(part) = rowNo Then ReviewItemContainsRow = True: Exit Function
+    Next part
 End Function
 
 Private Function ReviewAuditHashMatches(ByVal stored As Variant, ByVal expected As String) As Boolean
@@ -991,33 +1055,106 @@ Private Function ReviewAuditHashMatches(ByVal stored As Variant, ByVal expected 
     End If
 End Function
 
-Public Function SyncReviewDecision(ByVal item As Object) As String
-    Dim ws As Worksheet, r As Long, sourceHash As String, destHash As String
+Public Function SyncReviewDecision(ByVal item As Object, Optional ByVal selectedRow As Long = 0) As String
+    Dim ws As Worksheet, dst As Worksheet, r As Long, sourceHash As String, destHash As String
+    Dim selectedHash As String, storedDecision As String, category As String
+    Dim scopeCol As Long, selectedSignatureCol As Long, parts As Variant, part As Variant
+    Dim allRowsDecided As Boolean, rowCount As Long
+    If item Is Nothing Then Exit Function
+    category = CStr(item("category"))
     Set ws = ReviewAudit(False)
     If ws Is Nothing Then Exit Function
     sourceHash = ReviewDigest(CStr(item("sourceSignature")))
+    If category = "B" And selectedRow >= 2 Then
+        If Not ReviewItemContainsRow(item, selectedRow) Then Exit Function
+        scopeCol = ReviewAuditColumn(ws, "判断単位")
+        selectedSignatureCol = ReviewAuditColumn(ws, "選択Excel行署名")
+        If scopeCol <= 0 Or selectedSignatureCol <= 0 Then Exit Function
+        Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
+        selectedHash = ReviewDigest(ReviewSignature(dst, selectedRow))
+        For r = ReviewLast(ws) To 2 Step -1
+            If ReviewAuditScopeAt(ws, r, scopeCol) = "候補行" And _
+               CStr(ws.Cells(r, 2).Value2) = CStr(item("year")) And _
+               CStr(ws.Cells(r, 3).Value2) = "B" And _
+               CStr(ws.Cells(r, 6).Value2) = CStr(item("sourceRow")) And _
+               CStr(ws.Cells(r, 7).Value2) = CStr(selectedRow) And _
+               ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
+               ReviewAuditHashMatches(ws.Cells(r, selectedSignatureCol).Value2, selectedHash) Then
+                If CStr(ws.Cells(r, 5).Value2) = "別物" Then SyncReviewDecision = "別物"
+                Exit Function
+            End If
+        Next r
+        Exit Function
+    End If
+    If selectedRow <> 0 Then Exit Function
     destHash = ReviewDigest(CStr(item("destinationSignature")))
+    scopeCol = ReviewAuditColumn(ws, "判断単位")
     For r = ReviewLast(ws) To 2 Step -1
-        If CStr(ws.Cells(r, 4).Value2) = CStr(item("key")) And _
+        If ReviewAuditScopeAt(ws, r, scopeCol) = "案件単位" And _
+           CStr(ws.Cells(r, 4).Value2) = CStr(item("key")) And _
            ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
-            ReviewAuditHashMatches(ws.Cells(r, 10).Value2, destHash) Then
-            Select Case CStr(ws.Cells(r, 5).Value2)
+           ReviewAuditHashMatches(ws.Cells(r, 10).Value2, destHash) Then
+            storedDecision = CStr(ws.Cells(r, 5).Value2)
+            Select Case storedDecision
                 Case "別物", "保留", "同一として処理", "削除完了"
-                    SyncReviewDecision = CStr(ws.Cells(r, 5).Value2)
+                    If category = "B" And storedDecision = "別物" Then Exit For
+                    SyncReviewDecision = storedDecision
                     Exit Function
             End Select
         End If
     Next r
+    If category <> "B" Or Len(CStr(item("rows"))) = 0 Then Exit Function
+    parts = Split(CStr(item("rows")), ";")
+    rowCount = UBound(parts) - LBound(parts) + 1
+    allRowsDecided = (rowCount > 0)
+    For Each part In parts
+        If Len(Trim$(CStr(part))) = 0 Then
+            allRowsDecided = False
+            Exit For
+        End If
+        If SyncReviewDecision(item, CLng(part)) <> "別物" Then
+            allRowsDecided = False
+            Exit For
+        End If
+    Next part
+    If allRowsDecided Then SyncReviewDecision = "候補行確認済"
 End Function
 
-Public Function SyncReviewDecisionComment(ByVal item As Object) As String
-    Dim ws As Worksheet, r As Long, sourceHash As String, destHash As String, storedDecision As String
+Public Function SyncReviewDecisionComment(ByVal item As Object, Optional ByVal selectedRow As Long = 0) As String
+    Dim ws As Worksheet, dst As Worksheet, r As Long, sourceHash As String, destHash As String
+    Dim selectedHash As String, storedDecision As String, scopeCol As Long, selectedSignatureCol As Long
+    If item Is Nothing Then Exit Function
     Set ws = ReviewAudit(False)
     If ws Is Nothing Then Exit Function
     sourceHash = ReviewDigest(CStr(item("sourceSignature")))
+    If CStr(item("category")) = "B" And selectedRow >= 2 Then
+        If Not ReviewItemContainsRow(item, selectedRow) Then Exit Function
+        scopeCol = ReviewAuditColumn(ws, "判断単位")
+        selectedSignatureCol = ReviewAuditColumn(ws, "選択Excel行署名")
+        If scopeCol <= 0 Or selectedSignatureCol <= 0 Then Exit Function
+        Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
+        selectedHash = ReviewDigest(ReviewSignature(dst, selectedRow))
+        For r = ReviewLast(ws) To 2 Step -1
+            If ReviewAuditScopeAt(ws, r, scopeCol) = "候補行" And _
+               CStr(ws.Cells(r, 2).Value2) = CStr(item("year")) And _
+               CStr(ws.Cells(r, 3).Value2) = "B" And _
+               CStr(ws.Cells(r, 6).Value2) = CStr(item("sourceRow")) And _
+               CStr(ws.Cells(r, 7).Value2) = CStr(selectedRow) And _
+               ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
+               ReviewAuditHashMatches(ws.Cells(r, selectedSignatureCol).Value2, selectedHash) Then
+                If CStr(ws.Cells(r, 5).Value2) = "別物" And Not IsError(ws.Cells(r, 11).Value2) Then _
+                    SyncReviewDecisionComment = CStr(ws.Cells(r, 11).Value2)
+                Exit Function
+            End If
+        Next r
+        Exit Function
+    End If
+    If selectedRow <> 0 Then Exit Function
     destHash = ReviewDigest(CStr(item("destinationSignature")))
+    scopeCol = ReviewAuditColumn(ws, "判断単位")
     For r = ReviewLast(ws) To 2 Step -1
-        If CStr(ws.Cells(r, 4).Value2) = CStr(item("key")) And _
+        If ReviewAuditScopeAt(ws, r, scopeCol) = "案件単位" And _
+           CStr(ws.Cells(r, 4).Value2) = CStr(item("key")) And _
            ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
            ReviewAuditHashMatches(ws.Cells(r, 10).Value2, destHash) Then
             storedDecision = CStr(ws.Cells(r, 5).Value2)
@@ -1031,9 +1168,50 @@ Public Function SyncReviewDecisionComment(ByVal item As Object) As String
     Next r
 End Function
 
-Private Sub ReviewWriteAudit(ByVal item As Object, ByVal decision As String, ByVal detail As String, ByVal backup As String)
-    Dim ws As Worksheet, r As Long
-    Set ws = ReviewAudit(True)
+Public Function SyncReviewLegacyCaseDecision(ByVal item As Object) As String
+    Dim ws As Worksheet, r As Long, sourceHash As String, destHash As String
+    Dim scopeCol As Long, storedDecision As String
+    If item Is Nothing Then Exit Function
+    If CStr(item("category")) <> "B" Then Exit Function
+    Set ws = ReviewAudit(False)
+    If ws Is Nothing Then Exit Function
+    sourceHash = ReviewDigest(CStr(item("sourceSignature")))
+    destHash = ReviewDigest(CStr(item("destinationSignature")))
+    scopeCol = ReviewAuditColumn(ws, "判断単位")
+    For r = ReviewLast(ws) To 2 Step -1
+        If ReviewAuditScopeAt(ws, r, scopeCol) = "案件単位" And _
+           CStr(ws.Cells(r, 4).Value2) = CStr(item("key")) And _
+           ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
+           ReviewAuditHashMatches(ws.Cells(r, 10).Value2, destHash) Then
+            storedDecision = CStr(ws.Cells(r, 5).Value2)
+            Select Case storedDecision
+                Case "別物"
+                    SyncReviewLegacyCaseDecision = "別物"
+                    Exit Function
+                Case "保留", "同一として処理", "削除完了"
+                    Exit Function
+            End Select
+        End If
+    Next r
+End Function
+
+Private Sub ReviewWriteAudit(ByVal item As Object, ByVal decision As String, ByVal detail As String, _
+                             ByVal backup As String, Optional ByVal selectedRow As Long = 0)
+    Dim ws As Worksheet, dst As Worksheet, r As Long, scopeCol As Long, selectedSignatureCol As Long
+    Dim selectedHash As String
+    If selectedRow > 0 Then
+        If CStr(item("category")) <> "B" Or decision <> "別物" Then _
+            Err.Raise vbObjectError + 6144, , "候補行単位で記録できるのはB候補の「別物」だけです。"
+        If Not ReviewItemContainsRow(item, selectedRow) Then _
+            Err.Raise vbObjectError + 6145, , "選択したExcel行は現在の候補に含まれていません。"
+        Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
+        selectedHash = ReviewDigest(ReviewSignature(dst, selectedRow))
+    End If
+    Set ws = ReviewAudit(True, selectedRow > 0)
+    scopeCol = ReviewAuditColumn(ws, "判断単位")
+    selectedSignatureCol = ReviewAuditColumn(ws, "選択Excel行署名")
+    If selectedRow > 0 And (scopeCol <= 0 Or selectedSignatureCol <= 0) Then _
+        Err.Raise vbObjectError + 6146, , "同期候補確認履歴の行別判断列を確認できません。"
     r = ReviewLast(ws) + 1
     ws.Cells(r, 1).Value2 = Now
     ws.Cells(r, 2).Value2 = CLng(item("year"))
@@ -1043,12 +1221,25 @@ Private Sub ReviewWriteAudit(ByVal item As Object, ByVal decision As String, ByV
     ws.Cells(r, 4).Value2 = CStr(item("key"))
     ws.Cells(r, 5).Value2 = decision
     ws.Cells(r, 6).Value2 = CLng(item("sourceRow"))
-    ws.Cells(r, 7).Value2 = CStr(item("rows"))
+    If selectedRow > 0 Then
+        ws.Cells(r, 7).NumberFormat = "@"
+        ws.Cells(r, 7).Value2 = CStr(selectedRow)
+    Else
+        ws.Cells(r, 7).Value2 = CStr(item("rows"))
+    End If
     ws.Cells(r, 8).Value2 = CStr(item("reason"))
     ws.Cells(r, 9).Value2 = ReviewDigest(CStr(item("sourceSignature")))
     ws.Cells(r, 10).Value2 = ReviewDigest(CStr(item("destinationSignature")))
     ws.Cells(r, 11).Value2 = detail
     ws.Cells(r, 12).Value2 = backup
+    If selectedRow > 0 Then
+        ws.Cells(r, scopeCol).Value2 = "候補行"
+        ws.Cells(r, selectedSignatureCol).NumberFormat = "@"
+        ws.Cells(r, selectedSignatureCol).Value2 = selectedHash
+    Else
+        If scopeCol > 0 Then ws.Cells(r, scopeCol).Value2 = "案件単位"
+        If selectedSignatureCol > 0 Then ws.Cells(r, selectedSignatureCol).Value2 = ""
+    End If
 End Sub
 
 Private Function ReviewCurrent(ByVal item As Object, Optional ByVal current As Collection) As Boolean
@@ -1075,11 +1266,22 @@ Public Sub SyncReviewNavigate(ByVal item As Object, ByVal selectedRow As Long)
     Application.Goto dst.Cells(selectedRow, 1), True
 End Sub
 
-Public Function SyncReviewDecide(ByVal item As Object, ByVal decision As String) As Boolean
+Public Function SyncReviewDecide(ByVal item As Object, ByVal decision As String, _
+                                 Optional ByVal selectedRow As Long = 0) As Boolean
     On Error GoTo Failed
     If decision <> "別物" And decision <> "保留" Then Err.Raise vbObjectError + 6108, , "記録できない判断です。"
+    If CStr(item("category")) = "B" And decision = "別物" Then
+        If selectedRow < 2 Or Not ReviewItemContainsRow(item, selectedRow) Then _
+            Err.Raise vbObjectError + 6147, , "B候補の「別物」は選択したExcel候補行を指定してください。"
+    ElseIf selectedRow <> 0 Then
+        Err.Raise vbObjectError + 6148, , "選択行単位で記録できるのはB候補の「別物」だけです。"
+    End If
     If Not ReviewCurrent(item) Then Err.Raise vbObjectError + 6109, , "CSVまたはExcelの行・内容・候補が変わりました。再読み込みしてください。"
-    ReviewWriteAudit item, decision, "データ変更なし。次回の変更時には再判定", ""
+    If selectedRow > 0 Then
+        ReviewWriteAudit item, decision, "データ変更なし。選択したExcel行だけを別物として記録。次回の変更時には再判定", "", selectedRow
+    Else
+        ReviewWriteAudit item, decision, "データ変更なし。次回の変更時には再判定", ""
+    End If
     SyncReviewDecide = True
     Exit Function
 Failed:
