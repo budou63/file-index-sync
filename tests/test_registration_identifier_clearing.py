@@ -23,11 +23,13 @@ class RegistrationIdentifierClearingTests(unittest.TestCase):
         event = procedure(SHEET, "Worksheet_Change")
         for existing_call in (
             "新ファイル基準表_表示名からID自動補完 Target",
-            "新ファイル基準表_廃棄年月日自動計算 Target",
             "ShouldReindexSerial(Target, Me)",
             "ReindexSerial_NewFileStandard Me",
         ):
             self.assertIn(existing_call, event)
+        self.assertNotIn("新ファイル基準表_廃棄年月日自動計算 Target", event)
+        auto_complete = procedure(MODULE, "新ファイル基準表_表示名からID自動補完")
+        self.assertEqual(auto_complete.count("Call 新ファイル基準表_廃棄年月日自動計算(Target)"), 1)
         self.assertIn("新ファイル基準表_登録予定識別番号を自動クリア Target, Me", event)
         self.assertIn("oldEnableEvents = Application.EnableEvents", event)
         self.assertIn("Application.EnableEvents = oldEnableEvents", event)

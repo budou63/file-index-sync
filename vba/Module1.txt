@@ -11143,6 +11143,40 @@ End Function
 '========================================================
 ' 新ファイル基準表: Worksheet_Changeから呼び出す処理本体
 '========================================================
+Private Function FindUniqueHeaderColumn(ByVal ws As Worksheet, ByVal candidates As Variant) As Long
+
+    Dim lastCol As Long
+    Dim colNo As Long
+    Dim candidateNo As Long
+    Dim matchedCol As Long
+    Dim headerValue As String
+
+    FindUniqueHeaderColumn = 0
+    If ws Is Nothing Then Exit Function
+
+    On Error GoTo ErrorHandler
+    lastCol = GetLastHeaderCol(ws)
+    If lastCol <= 0 Then Exit Function
+
+    For colNo = 1 To lastCol
+        headerValue = Trim$(CStr(ws.Cells(1, colNo).Value2))
+        For candidateNo = LBound(candidates) To UBound(candidates)
+            If StrComp(CanonicalHeaderName(headerValue), CanonicalHeaderName(CStr(candidates(candidateNo))), vbTextCompare) = 0 Then
+                If matchedCol > 0 Then Exit Function
+                matchedCol = colNo
+                Exit For
+            End If
+        Next candidateNo
+    Next colNo
+
+    FindUniqueHeaderColumn = matchedCol
+    Exit Function
+
+ErrorHandler:
+    FindUniqueHeaderColumn = 0
+
+End Function
+
 Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target As Range)
 
     Dim wsEdit As Worksheet
@@ -11158,10 +11192,15 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
     Dim codeValue As String
     Dim warekiCol As Long
     Dim seirekiCol As Long
+    Dim createdWarekiCol As Long
+    Dim createdYearCol As Long
+    Dim haikiDateCol As Long
     Dim westernYear As String
+    Dim previousEnableEvents As Boolean
 
     If Target Is Nothing Then Exit Sub
 
+    previousEnableEvents = Application.EnableEvents
     On Error GoTo ExitHandler
     Application.EnableEvents = False
 
@@ -11182,8 +11221,11 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
     )
 
     ' 追加機能: 年度（和暦）→ 年度（西暦）自動反映
-    warekiCol = GetHeaderColumnExact(wsEdit, "年度（和暦）")
-    seirekiCol = GetHeaderColumnExact(wsEdit, "年度")
+    warekiCol = FindUniqueHeaderColumn(wsEdit, GetStep2HeaderCandidates("年度（和暦）"))
+    seirekiCol = FindUniqueHeaderColumn(wsEdit, Array("年度"))
+    createdWarekiCol = FindUniqueHeaderColumn(wsEdit, GetStep2HeaderCandidates("作成年度（和暦）"))
+    createdYearCol = FindUniqueHeaderColumn(wsEdit, Array("作成年度"))
+    haikiDateCol = FindUniqueHeaderColumn(wsEdit, Array("廃棄年月日"))
 
     ' 対象表示列だけを監視対象にする（見出し未存在はスキップ）
     For i = LBound(pairDefs) To UBound(pairDefs)
@@ -11208,6 +11250,24 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
         End If
     End If
 
+    If createdWarekiCol > 0 Then
+        Set workRange = wsEdit.Range(wsEdit.Cells(2, createdWarekiCol), wsEdit.Cells(wsEdit.Rows.Count, createdWarekiCol))
+        If watchRange Is Nothing Then
+            Set watchRange = workRange
+        Else
+            Set watchRange = Union(watchRange, workRange)
+        End If
+    End If
+
+    If haikiDateCol > 0 Then
+        Set workRange = wsEdit.Range(wsEdit.Cells(2, haikiDateCol), wsEdit.Cells(wsEdit.Rows.Count, haikiDateCol))
+        If watchRange Is Nothing Then
+            Set watchRange = workRange
+        Else
+            Set watchRange = Union(watchRange, workRange)
+        End If
+    End If
+
     If watchRange Is Nothing Then GoTo ExitHandler
     Set workRange = Intersect(Target, watchRange)
     If workRange Is Nothing Then GoTo ExitHandler
@@ -11219,8 +11279,32 @@ Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target A
         '--------------------------------------------------------
         If warekiCol > 0 And seirekiCol > 0 Then
             If changedCell.Column = warekiCol Then
-                westernYear = ConvertReiwaToWesternYear(CStr(changedCell.value))
-                wsEdit.Cells(changedCell.row, seirekiCol).value = westernYear
+                If IsError(changedCell.Value2) Then
+                    wsEdit.Cells(changedCell.Row, seirekiCol).ClearContents
+                Else
+                    westernYear = ConvertReiwaToWesternYear(CStr(changedCell.Value2))
+                    If Len(westernYear) = 0 Then
+                        wsEdit.Cells(changedCell.Row, seirekiCol).ClearContents
+                    Else
+                        wsEdit.Cells(changedCell.Row, seirekiCol).Value2 = CLng(westernYear)
+                    End If
+                End If
+                GoTo ContinueCellLoop
+            End If
+        End If
+
+        If createdWarekiCol > 0 And createdYearCol > 0 Then
+            If changedCell.Column = createdWarekiCol Then
+                If IsError(changedCell.Value2) Then
+                    wsEdit.Cells(changedCell.Row, createdYearCol).ClearContents
+                Else
+                    westernYear = ConvertReiwaToWesternYear(CStr(changedCell.Value2))
+                    If Len(westernYear) = 0 Then
+                        wsEdit.Cells(changedCell.Row, createdYearCol).ClearContents
+                    Else
+                        wsEdit.Cells(changedCell.Row, createdYearCol).Value2 = CLng(westernYear)
+                    End If
+                End If
                 GoTo ContinueCellLoop
             End If
         End If
@@ -11255,7 +11339,7 @@ ContinueCellLoop:
     Call 新ファイル基準表_廃棄年月日自動計算(Target)
 
 ExitHandler:
-    Application.EnableEvents = True
+    Application.EnableEvents = previousEnableEvents
 
 End Sub
 
@@ -11991,44 +12075,94 @@ Public Sub 新ファイル基準表_廃棄年月日自動計算(ByVal Target As 
     Dim wsEdit As Worksheet
     Dim warekiCol As Long
     Dim saveTermCol As Long
+    Dim haikiDateCol As Long
+    Dim scheduledYearCol As Long
+    Dim scheduledWarekiCol As Long
+    Dim extensionYearCol As Long
+    Dim extensionReasonCol As Long
     Dim monitorRange As Range
     Dim workRange As Range
     Dim changedCell As Range
-    Dim rowMap As Object
-    Dim prevEnableEvents As Boolean
+    Dim recalculateRows As Object
+    Dim dateOnlyRows As Object
+    Dim skippedExtensionRows As Object
+    Dim previousEnableEvents As Boolean
+    Dim key As Variant
+    Dim rowNo As Long
+    Dim dateValue As Variant
 
     If Target Is Nothing Then Exit Sub
-
+    previousEnableEvents = Application.EnableEvents
     On Error GoTo SafeExit
-    prevEnableEvents = Application.EnableEvents
 
     Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
-    If wsEdit Is Nothing Then Exit Sub
-    If Target.Worksheet.Name <> wsEdit.Name Then Exit Sub
+    If wsEdit Is Nothing Then GoTo SafeExit
+    If Target.Worksheet.Name <> wsEdit.Name Then GoTo SafeExit
 
-    warekiCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates("年度（和暦）"))
-    saveTermCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates("保存期間"))
+    warekiCol = FindUniqueHeaderColumn(wsEdit, GetStep2HeaderCandidates("年度（和暦）"))
+    saveTermCol = FindUniqueHeaderColumn(wsEdit, GetStep2HeaderCandidates("保存期間"))
+    haikiDateCol = FindUniqueHeaderColumn(wsEdit, Array("廃棄年月日"))
+    scheduledYearCol = FindUniqueHeaderColumn(wsEdit, Array("廃棄予定年"))
+    scheduledWarekiCol = FindUniqueHeaderColumn(wsEdit, Array("廃棄予定年（和暦）", "廃棄予定年(和暦)"))
+    extensionYearCol = FindUniqueHeaderColumn(wsEdit, Array("廃棄延長年"))
+    extensionReasonCol = FindUniqueHeaderColumn(wsEdit, Array("廃棄延長理由"))
 
-    If warekiCol <= 0 Or saveTermCol <= 0 Then Exit Sub
+    If haikiDateCol <= 0 Then GoTo SafeExit
 
-    ' 監視対象（年度（和暦）列 / 保存期間列）のみを処理
-    Set monitorRange = Union( _
-        wsEdit.Range(wsEdit.Cells(2, warekiCol), wsEdit.Cells(wsEdit.Rows.Count, warekiCol)), _
-        wsEdit.Range(wsEdit.Cells(2, saveTermCol), wsEdit.Cells(wsEdit.Rows.Count, saveTermCol)))
+    Set monitorRange = wsEdit.Range(wsEdit.Cells(2, haikiDateCol), wsEdit.Cells(wsEdit.Rows.Count, haikiDateCol))
+    If warekiCol > 0 And saveTermCol > 0 Then
+        Set workRange = Union( _
+            wsEdit.Range(wsEdit.Cells(2, warekiCol), wsEdit.Cells(wsEdit.Rows.Count, warekiCol)), _
+            wsEdit.Range(wsEdit.Cells(2, saveTermCol), wsEdit.Cells(wsEdit.Rows.Count, saveTermCol)))
+        Set monitorRange = Union(monitorRange, workRange)
+    End If
+
     Set workRange = Intersect(Target, monitorRange)
-    If workRange Is Nothing Then Exit Sub
+    If workRange Is Nothing Then GoTo SafeExit
 
-    Set rowMap = CreateObject("Scripting.Dictionary")
+    Set recalculateRows = CreateObject("Scripting.Dictionary")
+    Set dateOnlyRows = CreateObject("Scripting.Dictionary")
+    Set skippedExtensionRows = CreateObject("Scripting.Dictionary")
+
     For Each changedCell In workRange.Cells
-        If Not rowMap.Exists(CStr(changedCell.Row)) Then
-            rowMap.Add CStr(changedCell.Row), CLng(changedCell.Row)
+        If changedCell.Row >= 2 Then
+            If changedCell.Column = haikiDateCol Then
+                If Not dateOnlyRows.Exists(CStr(changedCell.Row)) Then
+                    dateOnlyRows.Add CStr(changedCell.Row), CLng(changedCell.Row)
+                End If
+            ElseIf warekiCol > 0 And saveTermCol > 0 Then
+                If changedCell.Column = warekiCol Or changedCell.Column = saveTermCol Then
+                    If Not recalculateRows.Exists(CStr(changedCell.Row)) Then
+                        recalculateRows.Add CStr(changedCell.Row), CLng(changedCell.Row)
+                    End If
+                End If
+            End If
         End If
     Next changedCell
 
-    Call RecalculateHaikiDateByRowMap(wsEdit, rowMap)
+    Application.EnableEvents = False
+
+    If recalculateRows.Count > 0 Then
+        Call RecalculateHaikiDateByRowMap(wsEdit, recalculateRows, skippedExtensionRows, True)
+    End If
+
+    For Each key In dateOnlyRows.Keys
+        If Not recalculateRows.Exists(CStr(key)) Then
+            rowNo = CLng(dateOnlyRows(CStr(key)))
+            If HasHaikiExtension(wsEdit, rowNo, extensionYearCol, extensionReasonCol) Then
+                AddHaikiExtensionWarningRow skippedExtensionRows, rowNo
+            Else
+                dateValue = wsEdit.Cells(rowNo, haikiDateCol).Value
+                Call WriteHaikiYearFieldsFromDateValue(wsEdit, rowNo, dateValue, scheduledYearCol, scheduledWarekiCol)
+            End If
+        End If
+    Next key
 
 SafeExit:
-    Application.EnableEvents = prevEnableEvents
+    Application.EnableEvents = previousEnableEvents
+    If Not skippedExtensionRows Is Nothing Then
+        If skippedExtensionRows.Count > 0 Then ShowHaikiExtensionWarning skippedExtensionRows
+    End If
 
 End Sub
 
@@ -12063,67 +12197,95 @@ Private Function RecalculateHaikiDateAllRows_NewFileStandard(ByVal wsEdit As Wor
         rowMap.Add CStr(rowNo), rowNo
     Next rowNo
 
-    RecalculateHaikiDateAllRows_NewFileStandard = RecalculateHaikiDateByRowMap(wsEdit, rowMap)
+    RecalculateHaikiDateAllRows_NewFileStandard = RecalculateHaikiDateByRowMap(wsEdit, rowMap, Nothing, False)
 
 End Function
 
-Private Function RecalculateHaikiDateByRowMap(ByVal wsEdit As Worksheet, ByVal rowMap As Object) As Long
+Private Function RecalculateHaikiDateByRowMap(ByVal wsEdit As Worksheet, ByVal rowMap As Object, ByVal skippedExtensionRows As Object, ByVal updateScheduledYears As Boolean) As Long
 
     Dim warekiCol As Long
     Dim saveTermCol As Long
     Dim haikiCol As Long
+    Dim scheduledYearCol As Long
+    Dim scheduledWarekiCol As Long
+    Dim extensionYearCol As Long
+    Dim extensionReasonCol As Long
     Dim rowNo As Long
     Dim warekiText As String
     Dim saveTermText As String
     Dim calcResult As String
-    Dim prevEnableEvents As Boolean
-    Dim prevScreenUpdating As Boolean
-    Dim prevCalculation As XlCalculation
+    Dim previousEnableEvents As Boolean
+    Dim previousScreenUpdating As Boolean
+    Dim previousCalculation As XlCalculation
+    Dim stateCaptured As Boolean
     Dim errNo As Long
     Dim errDesc As String
     Dim key As Variant
 
     On Error GoTo ErrorHandler
 
-    If wsEdit Is Nothing Then Exit Function
-    If rowMap Is Nothing Then Exit Function
-    If rowMap.Count = 0 Then Exit Function
+    previousCalculation = Application.Calculation
+    previousEnableEvents = Application.EnableEvents
+    previousScreenUpdating = Application.ScreenUpdating
+    stateCaptured = True
 
-    warekiCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates("年度（和暦）"))
-    saveTermCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates("保存期間"))
-    haikiCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), Array("廃棄年月日"))
+    If wsEdit Is Nothing Then GoTo SafeExit
+    If rowMap Is Nothing Then GoTo SafeExit
+    If rowMap.Count = 0 Then GoTo SafeExit
 
-    If warekiCol <= 0 Or saveTermCol <= 0 Or haikiCol <= 0 Then
-        Err.Raise vbObjectError + 2121, , "年度（和暦）/保存期間/廃棄年月日 の見出しが見つかりません。"
-    End If
+    warekiCol = FindUniqueHeaderColumn(wsEdit, GetStep2HeaderCandidates("年度（和暦）"))
+    saveTermCol = FindUniqueHeaderColumn(wsEdit, GetStep2HeaderCandidates("保存期間"))
+    haikiCol = FindUniqueHeaderColumn(wsEdit, Array("廃棄年月日"))
+    scheduledYearCol = FindUniqueHeaderColumn(wsEdit, Array("廃棄予定年"))
+    scheduledWarekiCol = FindUniqueHeaderColumn(wsEdit, Array("廃棄予定年（和暦）", "廃棄予定年(和暦)"))
+    extensionYearCol = FindUniqueHeaderColumn(wsEdit, Array("廃棄延長年"))
+    extensionReasonCol = FindUniqueHeaderColumn(wsEdit, Array("廃棄延長理由"))
 
-    prevCalculation = Application.Calculation
-    prevEnableEvents = Application.EnableEvents
-    prevScreenUpdating = Application.ScreenUpdating
+    If warekiCol <= 0 Or saveTermCol <= 0 Or haikiCol <= 0 Then GoTo SafeExit
+
     TrySetManualCalculation
     Application.EnableEvents = False
     Application.ScreenUpdating = False
 
     For Each key In rowMap.Keys
         rowNo = CLng(rowMap(CStr(key)))
-        warekiText = CStr(wsEdit.Cells(rowNo, warekiCol).Value)
-        saveTermText = CStr(wsEdit.Cells(rowNo, saveTermCol).Value)
+        If IsError(wsEdit.Cells(rowNo, warekiCol).Value2) Then
+            warekiText = vbNullString
+        Else
+            warekiText = CStr(wsEdit.Cells(rowNo, warekiCol).Value2)
+        End If
+        If IsError(wsEdit.Cells(rowNo, saveTermCol).Value2) Then
+            saveTermText = vbNullString
+        Else
+            saveTermText = CStr(wsEdit.Cells(rowNo, saveTermCol).Value2)
+        End If
 
         calcResult = CalculateHaikiDateText(warekiText, saveTermText)
-        wsEdit.Cells(rowNo, haikiCol).Value = calcResult
+        wsEdit.Cells(rowNo, haikiCol).Value2 = calcResult
+
+        If updateScheduledYears Then
+            If HasHaikiExtension(wsEdit, rowNo, extensionYearCol, extensionReasonCol) Then
+                AddHaikiExtensionWarningRow skippedExtensionRows, rowNo
+            Else
+                Call WriteHaikiYearFieldsFromDateValue(wsEdit, rowNo, calcResult, scheduledYearCol, scheduledWarekiCol)
+            End If
+        End If
+
         RecalculateHaikiDateByRowMap = RecalculateHaikiDateByRowMap + 1
     Next key
 
 SafeExit:
-    RestoreCalculationIfPossible prevCalculation
-    Application.EnableEvents = prevEnableEvents
-    Application.ScreenUpdating = prevScreenUpdating
+    If stateCaptured Then
+        RestoreCalculationIfPossible previousCalculation
+        Application.EnableEvents = previousEnableEvents
+        Application.ScreenUpdating = previousScreenUpdating
+    End If
     Exit Function
 
 ErrorHandler:
     errNo = Err.Number
     errDesc = Err.Description
-    RestoreAppState prevCalculation, prevEnableEvents, prevScreenUpdating
+    If stateCaptured Then RestoreAppState previousCalculation, previousEnableEvents, previousScreenUpdating
     Err.Raise errNo, "RecalculateHaikiDateByRowMap", errDesc
 
 End Function
@@ -12255,63 +12417,7 @@ End Function
 '========================================================
 Public Sub UpdateHaikiDate(ByVal Target As Range)
 
-    Dim wsEdit As Worksheet
-    Dim warekiCol As Long
-    Dim saveTermCol As Long
-    Dim haikiCol As Long
-    Dim monitorRange As Range
-    Dim workRange As Range
-    Dim changedCell As Range
-    Dim rowMap As Object
-    Dim rowNo As Long
-    Dim warekiText As String
-    Dim saveTermText As String
-    Dim calcResult As String
-    Dim prevEnableEvents As Boolean
-    Dim key As Variant
-
-    If Target Is Nothing Then Exit Sub
-
-    On Error GoTo SafeExit
-    prevEnableEvents = Application.EnableEvents
-
-    Set wsEdit = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
-    If wsEdit Is Nothing Then Exit Sub
-    If Target.Worksheet.Name <> wsEdit.Name Then Exit Sub
-
-    warekiCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates("年度（和暦）"))
-    saveTermCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), GetStep2HeaderCandidates("保存期間"))
-    haikiCol = FindHeaderColumn(wsEdit, GetLastUsedCol(wsEdit), Array("廃棄年月日"))
-
-    If warekiCol <= 0 Or saveTermCol <= 0 Or haikiCol <= 0 Then Exit Sub
-
-    ' 監視対象（年度（和暦）列 / 保存期間列）のみを処理
-    Set monitorRange = Union( _
-        wsEdit.Range(wsEdit.Cells(2, warekiCol), wsEdit.Cells(wsEdit.Rows.Count, warekiCol)), _
-        wsEdit.Range(wsEdit.Cells(2, saveTermCol), wsEdit.Cells(wsEdit.Rows.Count, saveTermCol)))
-    Set workRange = Intersect(Target, monitorRange)
-    If workRange Is Nothing Then Exit Sub
-
-    Set rowMap = CreateObject("Scripting.Dictionary")
-    For Each changedCell In workRange.Cells
-        If Not rowMap.Exists(CStr(changedCell.Row)) Then
-            rowMap.Add CStr(changedCell.Row), CLng(changedCell.Row)
-        End If
-    Next changedCell
-
-    Application.EnableEvents = False
-
-    For Each key In rowMap.Keys
-        rowNo = CLng(rowMap(CStr(key)))
-        warekiText = CStr(wsEdit.Cells(rowNo, warekiCol).Value)
-        saveTermText = CStr(wsEdit.Cells(rowNo, saveTermCol).Value)
-
-        calcResult = CalculateHaikiDateText(warekiText, saveTermText)
-        wsEdit.Cells(rowNo, haikiCol).Value = calcResult
-    Next key
-
-SafeExit:
-    Application.EnableEvents = prevEnableEvents
+    Call 新ファイル基準表_廃棄年月日自動計算(Target)
 
 End Sub
 
@@ -12323,6 +12429,170 @@ End Sub
 ' - 保存期間が随時: 年度末（翌年 3/31）
 ' - 変換不能: 空文字
 '--------------------------------------------------------
+Private Function HasHaikiExtension(ByVal wsEdit As Worksheet, ByVal rowNo As Long, ByVal extensionYearCol As Long, ByVal extensionReasonCol As Long) As Boolean
+
+    Dim cellValue As Variant
+
+    If wsEdit Is Nothing Or rowNo < 2 Then Exit Function
+
+    If extensionYearCol > 0 Then
+        cellValue = wsEdit.Cells(rowNo, extensionYearCol).Value2
+        If IsError(cellValue) Then
+            HasHaikiExtension = True
+            Exit Function
+        End If
+        If Len(NormalizeBasicText(CStr(cellValue))) > 0 Then
+            HasHaikiExtension = True
+            Exit Function
+        End If
+    End If
+
+    If extensionReasonCol > 0 Then
+        cellValue = wsEdit.Cells(rowNo, extensionReasonCol).Value2
+        If IsError(cellValue) Then
+            HasHaikiExtension = True
+            Exit Function
+        End If
+        If Len(NormalizeBasicText(CStr(cellValue))) > 0 Then HasHaikiExtension = True
+    End If
+
+End Function
+
+Private Sub AddHaikiExtensionWarningRow(ByVal skippedRows As Object, ByVal rowNo As Long)
+
+    If skippedRows Is Nothing Then Exit Sub
+    If rowNo < 2 Then Exit Sub
+    If Not skippedRows.Exists(CStr(rowNo)) Then skippedRows.Add CStr(rowNo), CLng(rowNo)
+
+End Sub
+
+Private Function WriteHaikiYearFieldsFromDateValue(ByVal wsEdit As Worksheet, ByVal rowNo As Long, ByVal dateValue As Variant, ByVal scheduledYearCol As Long, ByVal scheduledWarekiCol As Long) As Boolean
+
+    Dim westernYear As Long
+    Dim warekiLabel As String
+    Dim normalizedText As String
+
+    If wsEdit Is Nothing Or rowNo < 2 Then Exit Function
+    If scheduledYearCol <= 0 Or scheduledWarekiCol <= 0 Then Exit Function
+    If IsError(dateValue) Then Exit Function
+
+    If IsEmpty(dateValue) Then
+        wsEdit.Cells(rowNo, scheduledYearCol).ClearContents
+        wsEdit.Cells(rowNo, scheduledWarekiCol).ClearContents
+        WriteHaikiYearFieldsFromDateValue = True
+        Exit Function
+    End If
+
+    If VarType(dateValue) = vbString Then
+        normalizedText = NormalizeBasicText(CStr(dateValue))
+        If Len(normalizedText) = 0 Then
+            wsEdit.Cells(rowNo, scheduledYearCol).ClearContents
+            wsEdit.Cells(rowNo, scheduledWarekiCol).ClearContents
+            WriteHaikiYearFieldsFromDateValue = True
+            Exit Function
+        End If
+    End If
+
+    If Not TryParseHaikiDateValue(dateValue, westernYear, warekiLabel) Then Exit Function
+
+    wsEdit.Cells(rowNo, scheduledYearCol).Value2 = westernYear
+    wsEdit.Cells(rowNo, scheduledWarekiCol).Value2 = warekiLabel
+    WriteHaikiYearFieldsFromDateValue = True
+
+End Function
+
+Private Function TryParseHaikiDateValue(ByVal dateValue As Variant, ByRef westernYear As Long, ByRef warekiLabel As String) As Boolean
+
+    Dim dateText As String
+    Dim parts As Variant
+    Dim yearPart As String
+    Dim monthPart As String
+    Dim dayPart As String
+    Dim eraName As String
+    Dim eraYear As Long
+    Dim monthNo As Long
+    Dim dayNo As Long
+    Dim hasExplicitEra As Boolean
+
+    TryParseHaikiDateValue = False
+    westernYear = 0
+    warekiLabel = vbNullString
+
+    If IsError(dateValue) Or IsEmpty(dateValue) Then Exit Function
+
+    If VarType(dateValue) = vbDate Then
+        westernYear = Year(CDate(dateValue))
+        warekiLabel = WesternYearToWarekiLabel(westernYear)
+        TryParseHaikiDateValue = (Len(warekiLabel) > 0)
+        Exit Function
+    End If
+
+    On Error GoTo InvalidDate
+    dateText = NormalizeBasicText(CStr(dateValue))
+    If Len(dateText) = 0 Then Exit Function
+    dateText = Replace(dateText, "．", ".")
+    dateText = Replace(dateText, "／", ".")
+    dateText = Replace(dateText, "/", ".")
+    dateText = Replace(dateText, "－", ".")
+    dateText = Replace(dateText, "-", ".")
+    parts = Split(dateText, ".")
+    If UBound(parts) <> 2 Then Exit Function
+
+    yearPart = CStr(parts(0))
+    monthPart = CStr(parts(1))
+    dayPart = CStr(parts(2))
+    If Not IsDigitsOnly(monthPart) Or Not IsDigitsOnly(dayPart) Then Exit Function
+
+    hasExplicitEra = (Left$(UCase$(yearPart), 1) = "R" Or Left$(UCase$(yearPart), 1) = "H" Or Left$(yearPart, 2) = "令和" Or Left$(yearPart, 2) = "平成")
+    If Not hasExplicitEra Then
+        If Not IsDigitsOnly(yearPart) Then Exit Function
+        If Len(ToHalfWidthAlphaNumeric(yearPart)) <> 4 Then Exit Function
+    End If
+    If Not ParseWarekiYear(yearPart, eraName, eraYear, westernYear) Then Exit Function
+
+    monthNo = CLng(monthPart)
+    dayNo = CLng(dayPart)
+    If monthNo < 1 Or monthNo > 12 Then Exit Function
+    If dayNo < 1 Or dayNo > 31 Then Exit Function
+    If dayNo > Day(DateSerial(westernYear, monthNo + 1, 0)) Then Exit Function
+
+    If hasExplicitEra Then
+        warekiLabel = eraName & CStr(eraYear)
+    Else
+        warekiLabel = WesternYearToWarekiLabel(westernYear)
+    End If
+    If Len(warekiLabel) = 0 Then Exit Function
+    TryParseHaikiDateValue = True
+    Exit Function
+
+InvalidDate:
+    TryParseHaikiDateValue = False
+    westernYear = 0
+    warekiLabel = vbNullString
+
+End Function
+
+Private Sub ShowHaikiExtensionWarning(ByVal skippedRows As Object)
+
+    Dim key As Variant
+    Dim rowList As String
+    Dim shownCount As Long
+
+    If skippedRows Is Nothing Then Exit Sub
+    If skippedRows.Count = 0 Then Exit Sub
+
+    For Each key In skippedRows.Keys
+        If shownCount >= 10 Then Exit For
+        If Len(rowList) > 0 Then rowList = rowList & ", "
+        rowList = rowList & CStr(skippedRows(CStr(key)))
+        shownCount = shownCount + 1
+    Next key
+
+    If skippedRows.Count > shownCount Then rowList = rowList & "、ほか " & CStr(skippedRows.Count - shownCount) & " 件"
+    MsgBox "廃棄延長年または廃棄延長理由が入力された行は、廃棄予定年を自動更新していません。廃棄年月日と予定年を確認してください。行: " & rowList, vbExclamation
+
+End Sub
+
 Private Function CalculateHaikiDateText(ByVal warekiText As String, ByVal saveTermText As String) As String
 
     Dim eraName As String
@@ -12335,6 +12605,7 @@ Private Function CalculateHaikiDateText(ByVal warekiText As String, ByVal saveTe
     Dim haikiWarekiLabel As String
 
     CalculateHaikiDateText = ""
+    On Error GoTo InvalidInput
 
     If Len(NormalizeBasicText(warekiText)) = 0 Then Exit Function
     If Len(NormalizeBasicText(saveTermText)) = 0 Then Exit Function
@@ -12362,6 +12633,10 @@ Private Function CalculateHaikiDateText(ByVal warekiText As String, ByVal saveTe
     If Len(haikiWarekiLabel) = 0 Then Exit Function
 
     CalculateHaikiDateText = haikiWarekiLabel & ".4.1"
+    Exit Function
+
+InvalidInput:
+    CalculateHaikiDateText = vbNullString
 
 End Function
 
@@ -12839,10 +13114,15 @@ Private Function ConvertReiwaToWesternYear(ByVal warekiText As String) As String
     Dim eraYear As Long
     Dim westernYear As Long
 
-    ConvertReiwaToWesternYear = ""
+    ConvertReiwaToWesternYear = vbNullString
+    On Error GoTo ErrorHandler
     If ParseWarekiYear(warekiText, eraName, eraYear, westernYear) Then
         ConvertReiwaToWesternYear = CStr(westernYear)
     End If
+    Exit Function
+
+ErrorHandler:
+    ConvertReiwaToWesternYear = vbNullString
 
 End Function
 
