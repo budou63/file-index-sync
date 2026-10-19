@@ -48,6 +48,13 @@ class SyncReviewComparisonTableTests(unittest.TestCase):
         self.assertIn('item("reason")', render)
         self.assertIn("SyncReviewDecision(item)", render)
 
+    def test_show_current_uses_the_saved_decision_for_delete_checkbox_state(self):
+        show = procedure(FORM, "ShowCurrent")
+        self.assertRegex(show, r"(?m)^\s*Dim[^\n]*\bdecision\s+As\s+String\b")
+        self.assertRegex(show, r'(?m)^\s*If category <> "D" Then decision = SyncReviewDecision\(item\)\s*$')
+        self.assertIn("Len(decision) = 0 And deletionSelection.Exists", show)
+        self.assertIn('mChkDelete.Visible = (category = "C")', show)
+
     def test_selecting_an_excel_candidate_refreshes_the_comparison(self):
         click = procedure(FORM, "mLstRows_Click")
         select = procedure(FORM, "ShowCurrentSelection")

@@ -611,6 +611,7 @@ End Sub
 Private Sub ShowCurrent()
     Dim item As Object, v As Variant, rows As String, category As String
     Dim candidates As Collection, candidate As Variant, keeper As Long, rowNo As Long
+    Dim decision As String
     Set item = SelectedCase()
     rendering = True
     mLstRows.Clear
@@ -625,6 +626,8 @@ Private Sub ShowCurrent()
         Exit Sub
     End If
     category = CStr(item("category"))
+    decision = ""
+    If category <> "D" Then decision = SyncReviewDecision(item)
     If category = "C" Then
         mLstRows.MultiSelect = fmMultiSelectMulti
     Else
