@@ -91,7 +91,7 @@ class SyncReviewComparisonTableTests(unittest.TestCase):
         reader = match.group()
         self.assertIn("ReviewAudit(False)", reader)
         self.assertIn("ReviewAuditHashMatches", reader)
-        self.assertIn("ws.Cells(r, 11).Value2", reader)
+        self.assertIn("ReviewAuditTextAt(ws, r, 11)", reader)
         self.assertNotRegex(reader, r"(?:\.Value2|\.Value|\.ClearContents)\s*=")
 
     def test_code_values_are_rendered_as_text_without_numeric_coercion(self):

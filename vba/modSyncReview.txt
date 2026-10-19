@@ -5,6 +5,9 @@ Private Const CSV_SHEET As String = "目録CSV"
 Private Const DEST_SHEET As String = "新ファイル基準表"
 Private reviewHeaderCache As Object
 Private reviewLastCache As Object
+Private reviewManagementIdCounts As Object
+Private reviewManagementIdColumn As Long
+Private reviewManagementIdIndexReady As Boolean
 Private autoReviewBatchDepth As Long
 Private autoReviewPending As Boolean
 Private autoReviewPendingYear As Long
@@ -335,7 +338,8 @@ Private Function ReviewDescription(ByVal ws As Worksheet, ByVal r As Long, ByVal
 End Function
 
 Private Function NewCase(ByVal category As String, ByVal yearValue As Long, ByVal src As Worksheet, _
-    ByVal srcRow As Long, ByVal dst As Worksheet, ByVal rows As Collection, ByVal reason As String) As Object
+    ByVal srcRow As Long, ByVal dst As Worksheet, ByVal rows As Collection, ByVal reason As String, _
+    Optional ByVal sourceStableKey As String = "") As Object
     Dim item As Object, v As Variant, rowText As String, rowSignatures As String, details As String
     Set item = CreateObject("Scripting.Dictionary")
     For Each v In rows
@@ -350,6 +354,8 @@ Private Function NewCase(ByVal category As String, ByVal yearValue As Long, ByVa
     item.Add "reason", reason
     item.Add "sourceSignature", IIf(srcRow > 0, ReviewSignature(src, srcRow), "")
     item.Add "destinationSignature", rowSignatures
+    item.Add "destinationIdSnapshot", ReviewManagementIdSnapshot(dst, rows)
+    item.Add "sourceStableKey", sourceStableKey
     item.Add "details", IIf(srcRow > 0, ReviewDescription(src, srcRow, True), "CSV対象なし") & vbCrLf & reason & vbCrLf & details
     item.Add "key", category & "|" & CStr(yearValue) & "|" & CStr(srcRow) & "|" & rowText
     Set NewCase = item
@@ -385,6 +391,78 @@ Private Function ReviewRows(ByVal map As Object, ByVal key As String) As Collect
     Set ReviewRows = rows
 End Function
 
+Private Function ReviewYearIndexKey(ByVal yearValue As Long, ByVal valueText As String) As String
+    ReviewYearIndexKey = CStr(yearValue) & Chr$(30) & valueText
+End Function
+
+Private Function ReviewNormalizeManagementId(ByVal rawValue As Variant, ByRef normalizedId As String) As Boolean
+    Dim textValue As String, position As Long, oneChar As String
+    normalizedId = ""
+    If IsError(rawValue) Then Exit Function
+    If IsNull(rawValue) Then Exit Function
+    textValue = Trim$(CStr(rawValue))
+    If Len(textValue) = 38 And Left$(textValue, 1) = "{" And Right$(textValue, 1) = "}" Then _
+        textValue = Mid$(textValue, 2, 36)
+    If Len(textValue) <> 36 Then Exit Function
+    For position = 1 To 36
+        oneChar = Mid$(textValue, position, 1)
+        If position = 9 Or position = 14 Or position = 19 Or position = 24 Then
+            If oneChar <> "-" Then Exit Function
+        ElseIf InStr(1, "0123456789abcdefABCDEF", oneChar, vbBinaryCompare) = 0 Then
+            Exit Function
+        End If
+    Next position
+    normalizedId = UCase$(textValue)
+    ReviewNormalizeManagementId = True
+End Function
+
+Private Sub ReviewBuildManagementIdIndex(ByVal ws As Worksheet)
+    Dim rowNo As Long, lastRow As Long, normalizedId As String
+    On Error GoTo Failed
+    Set reviewManagementIdCounts = CreateObject("Scripting.Dictionary")
+    reviewManagementIdColumn = 0
+    reviewManagementIdIndexReady = False
+    reviewManagementIdColumn = ReviewCol(ws, "Excel管理行ID")
+    If reviewManagementIdColumn = 0 Then Exit Sub
+    lastRow = ReviewLast(ws)
+    For rowNo = 2 To lastRow
+        If ReviewNormalizeManagementId(ws.Cells(rowNo, reviewManagementIdColumn).Value2, normalizedId) Then
+            If reviewManagementIdCounts.Exists(normalizedId) Then
+                reviewManagementIdCounts(normalizedId) = CLng(reviewManagementIdCounts(normalizedId)) + 1
+            Else
+                reviewManagementIdCounts.Add normalizedId, 1
+            End If
+        End If
+    Next rowNo
+    reviewManagementIdIndexReady = True
+    Exit Sub
+Failed:
+    Set reviewManagementIdCounts = Nothing
+    reviewManagementIdColumn = 0
+    reviewManagementIdIndexReady = False
+    Err.Clear
+End Sub
+
+Private Function ReviewManagementRowId(ByVal ws As Worksheet, ByVal rowNo As Long) As String
+    Dim normalizedId As String
+    If Not reviewManagementIdIndexReady Then Exit Function
+    If reviewManagementIdCounts Is Nothing Or rowNo < 2 Or rowNo > ReviewLast(ws) Then Exit Function
+    If reviewManagementIdColumn < 1 Then Exit Function
+    If Not ReviewNormalizeManagementId(ws.Cells(rowNo, reviewManagementIdColumn).Value2, normalizedId) Then Exit Function
+    If Not reviewManagementIdCounts.Exists(normalizedId) Then Exit Function
+    If CLng(reviewManagementIdCounts(normalizedId)) <> 1 Then Exit Function
+    ReviewManagementRowId = normalizedId
+End Function
+
+Private Function ReviewManagementIdSnapshot(ByVal ws As Worksheet, ByVal rows As Collection) As String
+    Dim rowValue As Variant, managementId As String
+    For Each rowValue In rows
+        managementId = ReviewManagementRowId(ws, CLng(rowValue))
+        ReviewManagementIdSnapshot = ReviewManagementIdSnapshot & CStr(rowValue) & "|" & _
+            CStr(Len(managementId)) & ":" & managementId & ";"
+    Next rowValue
+End Function
+
 Private Sub ReviewAppendUnique(ByVal rows As Collection, ByVal rowNo As Long)
     Dim v As Variant
     For Each v In rows
@@ -392,6 +470,78 @@ Private Sub ReviewAppendUnique(ByVal rows As Collection, ByVal rowNo As Long)
     Next v
     rows.Add rowNo
 End Sub
+
+Private Function ReviewSourceStableKey(ByVal src As Worksheet, ByVal srcRow As Long, ByVal yearValue As Long, _
+    ByVal csvIds As Object, ByVal csvYearBars As Object, ByVal csvYearNumbers As Object) As String
+    Dim fileId As String, barcode As String, fileNumber As String
+    If srcRow < 2 Or ReviewFiscal(src, srcRow) <> yearValue Then Exit Function
+    fileId = ReviewField(src, srcRow, "ファイルID")
+    barcode = ReviewField(src, srcRow, "バーコード番号")
+    fileNumber = ReviewPadding(ReviewField(src, srcRow, "ファイル番号"))
+    If Len(fileId) = 0 Or Len(fileNumber) = 0 Or Len(barcode) = 0 Then Exit Function
+    If ReviewRows(csvIds, fileId).Count <> 1 Then Exit Function
+    If ReviewRows(csvYearBars, ReviewYearIndexKey(yearValue, barcode)).Count <> 1 Then Exit Function
+    If ReviewRows(csvYearNumbers, ReviewYearIndexKey(yearValue, fileNumber)).Count <> 1 Then Exit Function
+    ReviewSourceStableKey = "SR1|" & CStr(yearValue) & "|" & _
+        CStr(Len(fileId)) & ":" & fileId & "|" & _
+        CStr(Len(fileNumber)) & ":" & fileNumber & "|" & _
+        CStr(Len(barcode)) & ":" & barcode
+End Function
+
+Private Function ReviewFindUniqueFormalMatch(ByVal src As Worksheet, ByVal srcRow As Long, _
+    ByVal dst As Worksheet, ByVal yearValue As Long, ByVal idIndex As Object, ByVal csvIds As Object, _
+    ByVal csvYearBars As Object, ByVal csvYearNumbers As Object, ByVal sourceStableKey As String, _
+    ByRef matchedRow As Long) As Boolean
+    Dim fileId As String, barcode As String, fileNumber As String, idRows As Collection
+    matchedRow = 0
+    If Len(sourceStableKey) = 0 Then Exit Function
+    fileId = ReviewField(src, srcRow, "ファイルID")
+    barcode = ReviewField(src, srcRow, "バーコード番号")
+    fileNumber = ReviewPadding(ReviewField(src, srcRow, "ファイル番号"))
+    If Len(fileId) = 0 Or Len(barcode) = 0 Or Len(fileNumber) = 0 Then Exit Function
+    If ReviewRows(csvIds, fileId).Count <> 1 Then Exit Function
+    If ReviewRows(csvYearBars, ReviewYearIndexKey(yearValue, barcode)).Count <> 1 Then Exit Function
+    If ReviewRows(csvYearNumbers, ReviewYearIndexKey(yearValue, fileNumber)).Count <> 1 Then Exit Function
+    Set idRows = ReviewRows(idIndex, fileId)
+    If idRows.Count <> 1 Then Exit Function
+    matchedRow = CLng(idRows(1))
+    If ReviewFiscal(dst, matchedRow) <> yearValue Then Exit Function
+    If ReviewField(dst, matchedRow, "ファイルID") <> fileId Then Exit Function
+    If ReviewPadding(ReviewField(dst, matchedRow, "ファイル番号")) <> fileNumber Then Exit Function
+    If ReviewField(dst, matchedRow, "バーコード番号") <> barcode Then Exit Function
+    If ReviewField(dst, matchedRow, "同期状態") <> "同期済み" Then Exit Function
+    ReviewFindUniqueFormalMatch = True
+End Function
+
+Private Function ReviewExactFolderPlannedRows(ByVal src As Worksheet, ByVal srcRow As Long, _
+    ByVal dst As Worksheet, ByVal folderIndex As Object, ByVal yearValue As Long) As Collection
+    Dim exactRows As New Collection, rowValue As Variant, folderRows As Collection, sourceFolder As String
+    sourceFolder = ReviewTextKey(ReviewValue(src, srcRow, ReviewCol(src, "タイトル", "個別フォルダー")))
+    Set folderRows = ReviewRows(folderIndex, sourceFolder)
+    For Each rowValue In folderRows
+        If ReviewFiscal(dst, CLng(rowValue)) = yearValue And _
+           ReviewField(dst, CLng(rowValue), "同期状態") = "登録予定" And _
+           Len(ReviewField(dst, CLng(rowValue), "ファイルID")) = 0 Then ReviewAppendUnique exactRows, CLng(rowValue)
+    Next rowValue
+    Set ReviewExactFolderPlannedRows = exactRows
+End Function
+
+Private Function ReviewExactFolderAssignedRows(ByVal src As Worksheet, ByVal srcRow As Long, _
+    ByVal dst As Worksheet, ByVal folderIndex As Object, ByVal yearValue As Long, _
+    ByVal sourceFileId As String) As Collection
+    Dim conflictRows As New Collection, rowValue As Variant, folderRows As Collection
+    Dim sourceFolder As String, rowFileId As String
+    sourceFolder = ReviewTextKey(ReviewValue(src, srcRow, ReviewCol(src, "タイトル", "個別フォルダー")))
+    Set folderRows = ReviewRows(folderIndex, sourceFolder)
+    For Each rowValue In folderRows
+        If ReviewFiscal(dst, CLng(rowValue)) = yearValue And _
+           ReviewField(dst, CLng(rowValue), "同期状態") = "登録予定" Then
+            rowFileId = ReviewField(dst, CLng(rowValue), "ファイルID")
+            If Len(rowFileId) > 0 And rowFileId <> sourceFileId Then ReviewAppendUnique conflictRows, CLng(rowValue)
+        End If
+    Next rowValue
+    Set ReviewExactFolderAssignedRows = conflictRows
+End Function
 
 Private Function ReviewCandidateRows(ByVal src As Worksheet, ByVal sRow As Long, ByVal dst As Worksheet, _
     ByVal idIndex As Object, ByVal barIndex As Object, ByVal noIndex As Object, ByVal nameIndex As Object, _
@@ -422,11 +572,13 @@ End Function
 
 Public Function SyncReviewCandidates(ByVal yearValue As Long) As Collection
     Dim src As Worksheet, dst As Worksheet, cases As New Collection
-    Dim ids As Object, bars As Object, numbers As Object, names As Object, guides As Object, csvIds As Object
+    Dim ids As Object, bars As Object, numbers As Object, names As Object, guides As Object, folders As Object, csvIds As Object
     Dim csvBars As Object, csvNumbers As Object, csvNames As Object, csvFolders As Object, targetCount As Long, dRow As Long, sRow As Long
-    Dim srcLast As Long, dstLast As Long, destRows As Collection, idRows As Collection, v As Variant
+    Dim csvYearBars As Object, csvYearNumbers As Object, sourceFiscalYear As Long
+    Dim srcLast As Long, dstLast As Long, destRows As Collection, idRows As Collection, plannedRows As Collection, v As Variant
     Dim fid As String, bar As String, no As String, name As String, guide As String
     Dim reason As String, collision As Boolean, planned As Boolean, chosen As Collection
+    Dim sourceStableKey As String, matchedFormalRow As Long, assignedConflictRows As Collection
     If yearValue < 1900 Or yearValue > 2200 Then Err.Raise vbObjectError + 6104, , "対象年度が不正です。"
     Set reviewHeaderCache = CreateObject("Scripting.Dictionary")
     Set reviewLastCache = CreateObject("Scripting.Dictionary")
@@ -441,27 +593,40 @@ Public Function SyncReviewCandidates(ByVal yearValue As Long) As Collection
     Set numbers = CreateObject("Scripting.Dictionary")
     Set names = CreateObject("Scripting.Dictionary")
     Set guides = CreateObject("Scripting.Dictionary")
+    Set folders = CreateObject("Scripting.Dictionary")
     Set csvIds = CreateObject("Scripting.Dictionary")
     Set csvBars = CreateObject("Scripting.Dictionary")
     Set csvNumbers = CreateObject("Scripting.Dictionary")
     Set csvNames = CreateObject("Scripting.Dictionary")
     Set csvFolders = CreateObject("Scripting.Dictionary")
+    Set csvYearBars = CreateObject("Scripting.Dictionary")
+    Set csvYearNumbers = CreateObject("Scripting.Dictionary")
     srcLast = ReviewLast(src)
     dstLast = ReviewLast(dst)
+    ReviewBuildManagementIdIndex dst
     For dRow = 2 To dstLast
         ReviewMapAdd ids, ReviewField(dst, dRow, "ファイルID"), dRow
         ReviewMapAdd bars, ReviewField(dst, dRow, "バーコード番号"), dRow
         ReviewMapAdd numbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), dRow
         ReviewMapAdd names, ReviewName(dst, dRow, False, True), dRow
         ReviewMapAdd guides, ReviewName(dst, dRow, False, False), dRow
+        ReviewMapAdd folders, ReviewTextKey(ReviewValue(dst, dRow, ReviewCol(dst, "個別フォルダー", "個別フォルダ", "タイトル"))), dRow
     Next dRow
     For sRow = 2 To srcLast
-        ReviewMapAdd csvIds, ReviewField(src, sRow, "ファイルID"), sRow
-        ReviewMapAdd csvBars, ReviewField(src, sRow, "バーコード番号"), sRow
-        ReviewMapAdd csvNumbers, ReviewPadding(ReviewField(src, sRow, "ファイル番号")), sRow
+        fid = ReviewField(src, sRow, "ファイルID")
+        bar = ReviewField(src, sRow, "バーコード番号")
+        no = ReviewPadding(ReviewField(src, sRow, "ファイル番号"))
+        sourceFiscalYear = ReviewFiscal(src, sRow)
+        ReviewMapAdd csvIds, fid, sRow
+        ReviewMapAdd csvBars, bar, sRow
+        ReviewMapAdd csvNumbers, no, sRow
         ReviewMapAdd csvNames, ReviewName(src, sRow, True, True), sRow
         ReviewMapAdd csvFolders, ReviewTextKey(ReviewValue(src, sRow, ReviewCol(src, "タイトル", "個別フォルダー"))), sRow
-        If ReviewFiscal(src, sRow) = yearValue Then targetCount = targetCount + 1
+        If sourceFiscalYear > 0 Then
+            If Len(bar) > 0 Then ReviewMapAdd csvYearBars, ReviewYearIndexKey(sourceFiscalYear, bar), sRow
+            If Len(no) > 0 Then ReviewMapAdd csvYearNumbers, ReviewYearIndexKey(sourceFiscalYear, no), sRow
+        End If
+        If sourceFiscalYear = yearValue Then targetCount = targetCount + 1
     Next sRow
     If targetCount = 0 Then Err.Raise vbObjectError + 6136, , "対象年度の目録CSVが0行です。最新CSVを取り込んでください。"
     For sRow = 2 To srcLast
@@ -473,11 +638,15 @@ Public Function SyncReviewCandidates(ByVal yearValue As Long) As Collection
         guide = ReviewName(src, sRow, True, False)
         Set idRows = ReviewRows(ids, fid)
         Set destRows = ReviewCandidateRows(src, sRow, dst, ids, bars, numbers, names, guides)
-        collision = False: planned = False: reason = ""
+        collision = False: planned = False: reason = "": sourceStableKey = "": matchedFormalRow = 0
         If Len(fid) = 0 Then
             collision = True: reason = "CSVに正式ファイルIDがありません。"
         ElseIf ReviewRows(csvIds, fid).Count > 1 Or idRows.Count > 1 Then
             collision = True: reason = "正式IDがCSVまたはExcelに複数あります。自動統合禁止。"
+        ElseIf Len(bar) > 0 And ReviewRows(csvYearBars, ReviewYearIndexKey(yearValue, bar)).Count > 1 Then
+            collision = True: reason = "対象年度のCSVでバーコード番号が重複しています。正式レコードを一意に特定できません。"
+        ElseIf Len(no) > 0 And ReviewRows(csvYearNumbers, ReviewYearIndexKey(yearValue, no)).Count > 1 Then
+            collision = True: reason = "対象年度のCSVでファイル番号が重複しています。正式レコードを一意に特定できません。"
         ElseIf Len(bar) > 0 And ReviewRows(bars, bar).Count > 0 Then
             For Each v In ReviewRows(bars, bar)
                 If ReviewField(dst, CLng(v), "ファイルID") <> fid Then collision = True
@@ -490,14 +659,40 @@ Public Function SyncReviewCandidates(ByVal yearValue As Long) As Collection
             Next v
             If collision Then reason = "別のExcel行とファイル番号が競合します。"
         End If
+        If Not collision And idRows.Count = 1 Then
+            matchedFormalRow = CLng(idRows(1))
+            If ReviewFiscal(dst, matchedFormalRow) <> yearValue Then
+                collision = True: reason = "正式ファイルIDの一致行が別年度にあります。"
+            ElseIf Len(no) > 0 And ReviewPadding(ReviewField(dst, matchedFormalRow, "ファイル番号")) <> no Then
+                collision = True: reason = "正式ファイルID一致行のファイル番号がCSVと一致しません。"
+            ElseIf Len(bar) > 0 And ReviewField(dst, matchedFormalRow, "バーコード番号") <> bar Then
+                collision = True: reason = "正式ファイルID一致行のバーコード番号がCSVと一致しません。"
+            ElseIf ReviewField(dst, matchedFormalRow, "同期状態") <> "同期済み" Then
+                collision = True: reason = "正式ファイルID一致行が同期済み状態ではありません。"
+            End If
+        End If
         If Not collision Then
-            For Each v In destRows
-                If ReviewField(dst, CLng(v), "同期状態") = "登録予定" And _
-                    Len(ReviewField(dst, CLng(v), "ファイルID")) = 0 Then planned = True
-            Next v
-            If planned Then
-                reason = "同名または同一作成年度・第1/第2ガイドの類似候補です。名前だけで統合しません。"
-                cases.Add NewCase("B", yearValue, src, sRow, dst, destRows, reason)
+            sourceStableKey = ReviewSourceStableKey(src, sRow, yearValue, csvIds, csvYearBars, csvYearNumbers)
+            If ReviewFindUniqueFormalMatch(src, sRow, dst, yearValue, ids, csvIds, _
+                csvYearBars, csvYearNumbers, sourceStableKey, matchedFormalRow) Then
+                Set assignedConflictRows = ReviewExactFolderAssignedRows(src, sRow, dst, folders, yearValue, fid)
+                If assignedConflictRows.Count > 0 Then _
+                    cases.Add NewCase("A", yearValue, src, sRow, dst, assignedConflictRows, _
+                        "正式IDの一致先とは別に、同名の登録予定行へ別の正式IDがあります。統合せず確認してください。")
+                Set plannedRows = ReviewExactFolderPlannedRows(src, sRow, dst, folders, yearValue)
+                If plannedRows.Count > 0 Then
+                    reason = "正式ID・年度・ファイル番号・バーコードが一意一致するため弱い類似候補は除外しました。同一フォルダー名の登録予定行は独立候補として確認します。"
+                    cases.Add NewCase("B", yearValue, src, sRow, dst, plannedRows, reason, sourceStableKey)
+                End If
+            Else
+                For Each v In destRows
+                    If ReviewField(dst, CLng(v), "同期状態") = "登録予定" And _
+                        Len(ReviewField(dst, CLng(v), "ファイルID")) = 0 Then planned = True
+                Next v
+                If planned Then
+                    reason = "同名または同一作成年度・第1/第2ガイドの類似候補です。名前だけで統合しません。"
+                    cases.Add NewCase("B", yearValue, src, sRow, dst, destRows, reason, sourceStableKey)
+                End If
             End If
         Else
             cases.Add NewCase("A", yearValue, src, sRow, dst, destRows, reason)
@@ -984,8 +1179,19 @@ Private Function ReviewAudit(ByVal createIfMissing As Boolean, _
     If Not ws Is Nothing And createIfMissing And ensureRowColumns Then
         Call ReviewAuditColumn(ws, "判断単位", True)
         Call ReviewAuditColumn(ws, "選択Excel行署名", True)
+        Call ReviewAuditColumn(ws, "判断キー形式", True)
+        Call ReviewAuditColumn(ws, "選択Excel管理行ID", True)
+        Call ReviewAuditColumn(ws, "CSV安定識別キー", True)
     End If
     Set ReviewAudit = ws
+End Function
+
+Private Function ReviewAuditTextAt(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal colNo As Long) As String
+    If ws Is Nothing Then Exit Function
+    If rowNo < 1 Or colNo < 1 Then Exit Function
+    If IsError(ws.Cells(rowNo, colNo).Value2) Then Exit Function
+    If IsNull(ws.Cells(rowNo, colNo).Value2) Then Exit Function
+    ReviewAuditTextAt = CStr(ws.Cells(rowNo, colNo).Value2)
 End Function
 
 Private Function ReviewAuditColumn(ByVal ws As Worksheet, ByVal headerText As String, _
@@ -1048,6 +1254,8 @@ Private Function ReviewItemContainsRow(ByVal item As Object, ByVal rowNo As Long
 End Function
 
 Private Function ReviewAuditHashMatches(ByVal stored As Variant, ByVal expected As String) As Boolean
+    If IsError(stored) Then Exit Function
+    If IsNull(stored) Then Exit Function
     If CStr(stored) = expected Then ReviewAuditHashMatches = True: Exit Function
     If expected = ReviewDigest("") Then
         If IsEmpty(stored) Then ReviewAuditHashMatches = True: Exit Function
@@ -1062,7 +1270,10 @@ End Function
 Public Function SyncReviewDecision(ByVal item As Object, Optional ByVal selectedRow As Long = 0) As String
     Dim ws As Worksheet, dst As Worksheet, r As Long, sourceHash As String, destHash As String
     Dim selectedHash As String, storedDecision As String, category As String
-    Dim scopeCol As Long, selectedSignatureCol As Long, parts As Variant, part As Variant
+    Dim scopeCol As Long, selectedSignatureCol As Long, keyVersionCol As Long
+    Dim managementIdCol As Long, stableKeyCol As Long, managementId As String, stableKey As String
+    Dim storedManagementId As String, storedStableKey As String, keyVersion As String
+    Dim parts As Variant, part As Variant
     Dim allRowsDecided As Boolean, rowCount As Long
     If item Is Nothing Then Exit Function
     category = CStr(item("category"))
@@ -1073,20 +1284,54 @@ Public Function SyncReviewDecision(ByVal item As Object, Optional ByVal selected
         If Not ReviewItemContainsRow(item, selectedRow) Then Exit Function
         scopeCol = ReviewAuditColumn(ws, "判断単位")
         selectedSignatureCol = ReviewAuditColumn(ws, "選択Excel行署名")
-        If scopeCol <= 0 Or selectedSignatureCol <= 0 Then Exit Function
+        keyVersionCol = ReviewAuditColumn(ws, "判断キー形式")
+        managementIdCol = ReviewAuditColumn(ws, "選択Excel管理行ID")
+        stableKeyCol = ReviewAuditColumn(ws, "CSV安定識別キー")
+        If scopeCol <= 0 Or selectedSignatureCol <= 0 Or keyVersionCol < 0 Or _
+            managementIdCol < 0 Or stableKeyCol < 0 Then Exit Function
+        If Not item.Exists("sourceStableKey") Then Exit Function
+        stableKey = CStr(item("sourceStableKey"))
+        If Len(stableKey) = 0 Then Exit Function
         Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
+        managementId = ReviewManagementRowId(dst, selectedRow)
+        If Len(managementId) = 0 Then Exit Function
         selectedHash = ReviewDigest(ReviewSignature(dst, selectedRow))
         For r = ReviewLast(ws) To 2 Step -1
             If ReviewAuditScopeAt(ws, r, scopeCol) = "候補行" And _
-               CStr(ws.Cells(r, 2).Value2) = CStr(item("year")) And _
-               CStr(ws.Cells(r, 3).Value2) = "B" And _
-               CStr(ws.Cells(r, 6).Value2) = CStr(item("sourceRow")) And _
-               CStr(ws.Cells(r, 7).Value2) = CStr(selectedRow) And _
-               ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
-               ReviewAuditHashMatches(ws.Cells(r, selectedSignatureCol).Value2, selectedHash) Then
-                If CStr(ws.Cells(r, 5).Value2) = "別物" Then SyncReviewDecision = "別物"
-                Exit Function
+               ReviewAuditTextAt(ws, r, 2) = CStr(item("year")) And _
+               ReviewAuditTextAt(ws, r, 3) = "B" Then
+                keyVersion = "": storedManagementId = "": storedStableKey = ""
+                If keyVersionCol > 0 Then
+                    If IsError(ws.Cells(r, keyVersionCol).Value2) Then GoTo NextRowAudit
+                    If IsNull(ws.Cells(r, keyVersionCol).Value2) Then GoTo NextRowAudit
+                    keyVersion = Trim$(ReviewAuditTextAt(ws, r, keyVersionCol))
+                End If
+                If managementIdCol > 0 Then
+                    If IsError(ws.Cells(r, managementIdCol).Value2) Then GoTo NextRowAudit
+                    If IsNull(ws.Cells(r, managementIdCol).Value2) Then GoTo NextRowAudit
+                    storedManagementId = Trim$(ReviewAuditTextAt(ws, r, managementIdCol))
+                End If
+                If stableKeyCol > 0 Then
+                    If IsError(ws.Cells(r, stableKeyCol).Value2) Then GoTo NextRowAudit
+                    If IsNull(ws.Cells(r, stableKeyCol).Value2) Then GoTo NextRowAudit
+                    storedStableKey = ReviewAuditTextAt(ws, r, stableKeyCol)
+                End If
+                If keyVersion = "IDv1" Then
+                    If storedManagementId = managementId And storedStableKey = stableKey Then
+                        If ReviewAuditTextAt(ws, r, 5) = "別物" Then SyncReviewDecision = "別物"
+                        Exit Function
+                    End If
+                ElseIf Len(keyVersion) = 0 And Len(storedManagementId) = 0 And Len(storedStableKey) = 0 Then
+                    If ReviewAuditTextAt(ws, r, 6) = CStr(item("sourceRow")) And _
+                       ReviewAuditTextAt(ws, r, 7) = CStr(selectedRow) And _
+                       ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
+                       ReviewAuditHashMatches(ws.Cells(r, selectedSignatureCol).Value2, selectedHash) Then
+                        If ReviewAuditTextAt(ws, r, 5) = "別物" Then SyncReviewDecision = "別物"
+                        Exit Function
+                    End If
+                End If
             End If
+NextRowAudit:
         Next r
         Exit Function
     End If
@@ -1095,10 +1340,10 @@ Public Function SyncReviewDecision(ByVal item As Object, Optional ByVal selected
     scopeCol = ReviewAuditColumn(ws, "判断単位")
     For r = ReviewLast(ws) To 2 Step -1
         If ReviewAuditScopeAt(ws, r, scopeCol) = "案件単位" And _
-           CStr(ws.Cells(r, 4).Value2) = CStr(item("key")) And _
+           ReviewAuditTextAt(ws, r, 4) = CStr(item("key")) And _
            ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
            ReviewAuditHashMatches(ws.Cells(r, 10).Value2, destHash) Then
-            storedDecision = CStr(ws.Cells(r, 5).Value2)
+            storedDecision = ReviewAuditTextAt(ws, r, 5)
             Select Case storedDecision
                 Case "別物", "保留", "同一として処理", "削除完了"
                     If category = "B" And storedDecision = "別物" Then Exit For
@@ -1127,6 +1372,9 @@ End Function
 Public Function SyncReviewDecisionComment(ByVal item As Object, Optional ByVal selectedRow As Long = 0) As String
     Dim ws As Worksheet, dst As Worksheet, r As Long, sourceHash As String, destHash As String
     Dim selectedHash As String, storedDecision As String, scopeCol As Long, selectedSignatureCol As Long
+    Dim keyVersionCol As Long, managementIdCol As Long, stableKeyCol As Long
+    Dim managementId As String, stableKey As String, storedManagementId As String
+    Dim storedStableKey As String, keyVersion As String
     If item Is Nothing Then Exit Function
     Set ws = ReviewAudit(False)
     If ws Is Nothing Then Exit Function
@@ -1135,21 +1383,56 @@ Public Function SyncReviewDecisionComment(ByVal item As Object, Optional ByVal s
         If Not ReviewItemContainsRow(item, selectedRow) Then Exit Function
         scopeCol = ReviewAuditColumn(ws, "判断単位")
         selectedSignatureCol = ReviewAuditColumn(ws, "選択Excel行署名")
-        If scopeCol <= 0 Or selectedSignatureCol <= 0 Then Exit Function
+        keyVersionCol = ReviewAuditColumn(ws, "判断キー形式")
+        managementIdCol = ReviewAuditColumn(ws, "選択Excel管理行ID")
+        stableKeyCol = ReviewAuditColumn(ws, "CSV安定識別キー")
+        If scopeCol <= 0 Or selectedSignatureCol <= 0 Or keyVersionCol < 0 Or _
+            managementIdCol < 0 Or stableKeyCol < 0 Then Exit Function
+        If Not item.Exists("sourceStableKey") Then Exit Function
+        stableKey = CStr(item("sourceStableKey"))
+        If Len(stableKey) = 0 Then Exit Function
         Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
+        managementId = ReviewManagementRowId(dst, selectedRow)
+        If Len(managementId) = 0 Then Exit Function
         selectedHash = ReviewDigest(ReviewSignature(dst, selectedRow))
         For r = ReviewLast(ws) To 2 Step -1
             If ReviewAuditScopeAt(ws, r, scopeCol) = "候補行" And _
-               CStr(ws.Cells(r, 2).Value2) = CStr(item("year")) And _
-               CStr(ws.Cells(r, 3).Value2) = "B" And _
-               CStr(ws.Cells(r, 6).Value2) = CStr(item("sourceRow")) And _
-               CStr(ws.Cells(r, 7).Value2) = CStr(selectedRow) And _
-               ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
-               ReviewAuditHashMatches(ws.Cells(r, selectedSignatureCol).Value2, selectedHash) Then
-                If CStr(ws.Cells(r, 5).Value2) = "別物" And Not IsError(ws.Cells(r, 11).Value2) Then _
-                    SyncReviewDecisionComment = CStr(ws.Cells(r, 11).Value2)
-                Exit Function
+               ReviewAuditTextAt(ws, r, 2) = CStr(item("year")) And _
+               ReviewAuditTextAt(ws, r, 3) = "B" Then
+                keyVersion = "": storedManagementId = "": storedStableKey = ""
+                If keyVersionCol > 0 Then
+                    If IsError(ws.Cells(r, keyVersionCol).Value2) Then GoTo NextCommentAudit
+                    If IsNull(ws.Cells(r, keyVersionCol).Value2) Then GoTo NextCommentAudit
+                    keyVersion = Trim$(ReviewAuditTextAt(ws, r, keyVersionCol))
+                End If
+                If managementIdCol > 0 Then
+                    If IsError(ws.Cells(r, managementIdCol).Value2) Then GoTo NextCommentAudit
+                    If IsNull(ws.Cells(r, managementIdCol).Value2) Then GoTo NextCommentAudit
+                    storedManagementId = Trim$(ReviewAuditTextAt(ws, r, managementIdCol))
+                End If
+                If stableKeyCol > 0 Then
+                    If IsError(ws.Cells(r, stableKeyCol).Value2) Then GoTo NextCommentAudit
+                    If IsNull(ws.Cells(r, stableKeyCol).Value2) Then GoTo NextCommentAudit
+                    storedStableKey = ReviewAuditTextAt(ws, r, stableKeyCol)
+                End If
+                If keyVersion = "IDv1" Then
+                    If storedManagementId = managementId And storedStableKey = stableKey Then
+                        If ReviewAuditTextAt(ws, r, 5) = "別物" Then _
+                            SyncReviewDecisionComment = ReviewAuditTextAt(ws, r, 11)
+                        Exit Function
+                    End If
+                ElseIf Len(keyVersion) = 0 And Len(storedManagementId) = 0 And Len(storedStableKey) = 0 Then
+                    If ReviewAuditTextAt(ws, r, 6) = CStr(item("sourceRow")) And _
+                       ReviewAuditTextAt(ws, r, 7) = CStr(selectedRow) And _
+                       ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
+                       ReviewAuditHashMatches(ws.Cells(r, selectedSignatureCol).Value2, selectedHash) Then
+                        If ReviewAuditTextAt(ws, r, 5) = "別物" Then _
+                            SyncReviewDecisionComment = ReviewAuditTextAt(ws, r, 11)
+                        Exit Function
+                    End If
+                End If
             End If
+NextCommentAudit:
         Next r
         Exit Function
     End If
@@ -1158,14 +1441,13 @@ Public Function SyncReviewDecisionComment(ByVal item As Object, Optional ByVal s
     scopeCol = ReviewAuditColumn(ws, "判断単位")
     For r = ReviewLast(ws) To 2 Step -1
         If ReviewAuditScopeAt(ws, r, scopeCol) = "案件単位" And _
-           CStr(ws.Cells(r, 4).Value2) = CStr(item("key")) And _
+           ReviewAuditTextAt(ws, r, 4) = CStr(item("key")) And _
            ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
            ReviewAuditHashMatches(ws.Cells(r, 10).Value2, destHash) Then
-            storedDecision = CStr(ws.Cells(r, 5).Value2)
+            storedDecision = ReviewAuditTextAt(ws, r, 5)
             Select Case storedDecision
                 Case "別物", "保留", "同一として処理", "削除完了"
-                    If Not IsError(ws.Cells(r, 11).Value2) Then _
-                        SyncReviewDecisionComment = CStr(ws.Cells(r, 11).Value2)
+                    SyncReviewDecisionComment = ReviewAuditTextAt(ws, r, 11)
                     Exit Function
             End Select
         End If
@@ -1184,10 +1466,10 @@ Public Function SyncReviewLegacyCaseDecision(ByVal item As Object) As String
     scopeCol = ReviewAuditColumn(ws, "判断単位")
     For r = ReviewLast(ws) To 2 Step -1
         If ReviewAuditScopeAt(ws, r, scopeCol) = "案件単位" And _
-           CStr(ws.Cells(r, 4).Value2) = CStr(item("key")) And _
+           ReviewAuditTextAt(ws, r, 4) = CStr(item("key")) And _
            ReviewAuditHashMatches(ws.Cells(r, 9).Value2, sourceHash) And _
            ReviewAuditHashMatches(ws.Cells(r, 10).Value2, destHash) Then
-            storedDecision = CStr(ws.Cells(r, 5).Value2)
+            storedDecision = ReviewAuditTextAt(ws, r, 5)
             Select Case storedDecision
                 Case "別物"
                     SyncReviewLegacyCaseDecision = "別物"
@@ -1202,21 +1484,42 @@ End Function
 Private Sub ReviewWriteAudit(ByVal item As Object, ByVal decision As String, ByVal detail As String, _
                              ByVal backup As String, Optional ByVal selectedRow As Long = 0)
     Dim ws As Worksheet, dst As Worksheet, r As Long, scopeCol As Long, selectedSignatureCol As Long
-    Dim selectedHash As String
+    Dim keyVersionCol As Long, managementIdCol As Long, stableKeyCol As Long
+    Dim selectedHash As String, managementId As String, stableKey As String
     If selectedRow > 0 Then
         If CStr(item("category")) <> "B" Or decision <> "別物" Then _
             Err.Raise vbObjectError + 6144, , "候補行単位で記録できるのはB候補の「別物」だけです。"
         If Not ReviewItemContainsRow(item, selectedRow) Then _
             Err.Raise vbObjectError + 6145, , "選択したExcel行は現在の候補に含まれていません。"
         Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
+        managementId = ReviewManagementRowId(dst, selectedRow)
+        If Len(managementId) = 0 Then _
+            Err.Raise vbObjectError + 6149, , "選択行のExcel管理行IDが未付与・不正・重複しています。IDを点検してから判断を記録してください。"
+        If Not item.Exists("sourceStableKey") Then _
+            Err.Raise vbObjectError + 6150, , "CSV側の正式識別情報を安全に一意特定できません。"
+        stableKey = CStr(item("sourceStableKey"))
+        If Len(stableKey) = 0 Then _
+            Err.Raise vbObjectError + 6150, , "CSV側の正式識別情報が欠損・重複しています。判断を記録できません。"
         selectedHash = ReviewDigest(ReviewSignature(dst, selectedRow))
     End If
     Set ws = ReviewAudit(True, selectedRow > 0)
     scopeCol = ReviewAuditColumn(ws, "判断単位")
     selectedSignatureCol = ReviewAuditColumn(ws, "選択Excel行署名")
-    If selectedRow > 0 And (scopeCol <= 0 Or selectedSignatureCol <= 0) Then _
+    keyVersionCol = ReviewAuditColumn(ws, "判断キー形式")
+    managementIdCol = ReviewAuditColumn(ws, "選択Excel管理行ID")
+    stableKeyCol = ReviewAuditColumn(ws, "CSV安定識別キー")
+    If selectedRow > 0 And (scopeCol <= 0 Or selectedSignatureCol <= 0 Or _
+        keyVersionCol <= 0 Or managementIdCol <= 0 Or stableKeyCol <= 0) Then _
         Err.Raise vbObjectError + 6146, , "同期候補確認履歴の行別判断列を確認できません。"
     r = ReviewLast(ws) + 1
+    If selectedRow > 0 Then
+        ws.Cells(r, keyVersionCol).Value2 = "IDv1"
+        ws.Cells(r, scopeCol).Value2 = "候補行"
+        ws.Cells(r, managementIdCol).NumberFormat = "@"
+        ws.Cells(r, managementIdCol).Value2 = managementId
+        ws.Cells(r, stableKeyCol).NumberFormat = "@"
+        ws.Cells(r, stableKeyCol).Value2 = stableKey
+    End If
     ws.Cells(r, 1).Value2 = Now
     ws.Cells(r, 2).Value2 = CLng(item("year"))
     ws.Cells(r, 3).Value2 = CStr(item("category"))
@@ -1237,15 +1540,16 @@ Private Sub ReviewWriteAudit(ByVal item As Object, ByVal decision As String, ByV
     ws.Cells(r, 11).Value2 = detail
     ws.Cells(r, 12).Value2 = backup
     If selectedRow > 0 Then
-        ws.Cells(r, scopeCol).Value2 = "候補行"
         ws.Cells(r, selectedSignatureCol).NumberFormat = "@"
         ws.Cells(r, selectedSignatureCol).Value2 = selectedHash
     Else
         If scopeCol > 0 Then ws.Cells(r, scopeCol).Value2 = "案件単位"
         If selectedSignatureCol > 0 Then ws.Cells(r, selectedSignatureCol).Value2 = ""
+        If keyVersionCol > 0 Then ws.Cells(r, keyVersionCol).Value2 = ""
+        If managementIdCol > 0 Then ws.Cells(r, managementIdCol).Value2 = ""
+        If stableKeyCol > 0 Then ws.Cells(r, stableKeyCol).Value2 = ""
     End If
 End Sub
-
 Private Function ReviewCurrent(ByVal item As Object, Optional ByVal current As Collection) As Boolean
     Dim candidate As Object, i As Long
     If current Is Nothing Then Set current = SyncReviewCandidates(CLng(item("year")))
@@ -1253,7 +1557,9 @@ Private Function ReviewCurrent(ByVal item As Object, Optional ByVal current As C
         Set candidate = current(i)
         If CStr(candidate("key")) = CStr(item("key")) And _
            CStr(candidate("sourceSignature")) = CStr(item("sourceSignature")) And _
-           CStr(candidate("destinationSignature")) = CStr(item("destinationSignature")) Then
+           CStr(candidate("destinationSignature")) = CStr(item("destinationSignature")) And _
+           CStr(candidate("destinationIdSnapshot")) = CStr(item("destinationIdSnapshot")) And _
+           CStr(candidate("sourceStableKey")) = CStr(item("sourceStableKey")) Then
             ReviewCurrent = True
             Exit Function
         End If
