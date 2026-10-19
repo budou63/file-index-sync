@@ -16,6 +16,7 @@
 | `vba/modSealShared.txt` | `modSealShared` | 標準モジュール。旧・新フォームと`Module1`のシール共通処理。旧フォームを置換しない |
 | `vba/modFrmSealNewLayout.txt` | `modFrmSealNewLayout` | 標準モジュール。`frmSealNew`部品生成と起動 |
 | `vba/modSyncReview.txt` | `modSyncReview` | 標準モジュール。同期候補の判定・承認・D番号クリア。フォームの導入手順も参照 |
+| `vba/modExcelRowId.txt` | `modExcelRowId` | 標準モジュール。Excel内部の行ID、初回付与・点検、行生成時の発行 |
 | `vba/固定印刷設定.txt` | `固定印刷設定` | 標準モジュール。印刷のPC別設定と出力先に注意 |
 | `vba/modDummyExport.txt` | `modDummyExport` | 標準モジュール。ダミーブック出力用。実データを公開しない |
 | `vba/新ファイル基準表.txt` | シート「新ファイル基準表」 | **シートのコード画面**。タブ名で特定し、既存イベントがあれば差分を確認。職場ブックのVBEコードネームは未確認（標準モジュールへ貼らない） |
@@ -72,6 +73,7 @@
 - `手順3_コード管理CSVを作成する`: `目録CSV` からコード⇔表示名を抽出（項目名/コード/表示名）し、固定選択肢マスタ（毎年度利用区分、年度暦年区分、完結区分、公開区分、歴史資料区分、廃棄区分、履歴ファイル区分、機密ファイル区分）も重複除外して `コード管理CSV` に出力
 - `手順4_差分インポートCSVを作成する`: `目録CSV` と `新ファイル基準表` をキー（ファイルID/ファイル番号/バーコード番号）で比較し、更新行と条件一致する新規追加行のみを固定見出しレイアウトで `差分インポートCSV` へ出力（同名見出しがない列は空白。`所管所属` は `原課ID`、`毎年度利用区分` は `毎年度利用区分1:毎年作成 2:単年のみ` から取得）
 - `nプラス1_毎年作成年度補正を実行する`: CSV 整形とは別に、毎年作成行のタイトル年度表現を n+1 用に補正する分離マクロ
+- `Excel管理行ID_点検` / `Excel管理行ID_既存行へ初回付与`: 新しい内部行IDの状態点検と、既存行への確認付き初回付与（導入・復旧時のみ）
 - 通常は「1. CSV取込 → 2. 新ファイル基準表作成」の順で使用
 
 ## 管理対象
@@ -84,28 +86,20 @@
 ## 補足
 一時ファイル（`~$*.xls*`, `*.tmp`, `Thumbs.db`, `.DS_Store` など）は `.gitignore` で除外しています。
 
-## 新ファイル基準表のID自動補完（Worksheet_Change）設定
-- `新ファイル基準表` で表示名入力時にID列へ自動補完するには、**シートモジュール**に `Worksheet_Change` が必要です。
-- 貼り付け先: `VBAProject > Microsoft Excel Objects > 新ファイル基準表`
-- コードは `vba/新ファイル基準表.txt` を使用してください（標準モジュールでは発火しません）。
+## 新ファイル基準表の行ID・表示名ID補完
 
-```vb
-Private Sub Worksheet_Change(ByVal Target As Range)
-    On Error GoTo ExitHandler
-    Application.EnableEvents = False
+- `新ファイル基準表` の `Worksheet_Change` と行選択前の状態確認は、`vba/新ファイル基準表.txt` のシートコード正本に含まれます。短い別の `Worksheet_Change` を追加せず、既存イベントがある場合は差分を統合してください。
+- `vba/modExcelRowId.txt` は標準モジュール `modExcelRowId` へ貼り付けます。表示名から分類コード等を補完する従来の処理は `Module1` に残ります。
+- 既存ブックで初めて導入するときは、見出し `Excel管理行ID` の列を一つだけ用意した後、`Excel管理行ID_点検`、`Excel管理行ID_既存行へ初回付与` の順に実行します。初回付与は確認後にバックアップを作り、空欄の既存フォルダー行だけを対象にします。詳細は運用説明書の「4-2. Excel管理行ID」を参照してください。
+- 以降のCSV整形、n+1行生成、旧基準表移行、新規行入力・安全に判定できる行コピーで新しいIDを発行します。並べ替え・行移動は既存IDを保持します。曖昧な重複や不正値は自動修復しません。
+- Excel管理行IDはExcel内部専用です。Step2の同期照合キーや差分CSV・管理システムへの出力項目には使いません。
 
-    新ファイル基準表_表示名からID自動補完 Target
+### 表示名ID補完が動かないとき
 
-ExitHandler:
-    Application.EnableEvents = True
-End Sub
-```
-
-### 動かないときの確認
-1. 上記 `Worksheet_Change` が「新ファイル基準表」シートモジュールに存在するか
-2. 標準モジュール `Module1` に `Public Sub 新ファイル基準表_表示名からID自動補完(ByVal Target As Range)` が存在するか
-3. 即時ウィンドウで `Application.EnableEvents = True` を実行し、イベント無効化が残っていないか
-4. `コード管理CSV` の構成が `A列=項目名 / B列=コード / C列=表示名` になっているか
+1. `vba/新ファイル基準表.txt` の全コードが「新ファイル基準表」シートモジュールに貼られているか
+2. 標準モジュール `Module1` に `新ファイル基準表_表示名からID自動補完` があるか
+3. Excelのイベントが有効か（VBEの即時ウィンドウで `Application.EnableEvents = True` を確認）
+4. `コード管理CSV` が `A列=項目名 / B列=コード / C列=表示名` の構成か
 
 ## 固定印刷設定（土木課C4476R）
 固定印刷設定の詳細手順は `README_固定印刷設定.md` を参照してください。現在の実装では、固定印刷プロファイルをExcelブック内のVeryHiddenシートではなく、各PC・各Windowsユーザーの `%LOCALAPPDATA%\file-index-sync\固定印刷設定\土木課C4476R.dat` に保存します。

@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 STANDARD = ("Module1", "modSealShared", "modFrmSealNewLayout", "modSyncReview",
-            "固定印刷設定", "modDummyExport")
+            "modExcelRowId", "固定印刷設定", "modDummyExport")
 OTHER_CODE = ("clsFrmSealNewEvent", "frmSeal", "frmSealNew", "frmSyncReview", "新ファイル基準表")
 FORM_ARTIFACTS = ("frmSyncReview.frm", "frmSyncReview-native.frm", "frmSyncReview-native.frx")
 

@@ -305,6 +305,10 @@ End Function
 
 Private Function ReviewIsInternalMetadataHeader(ByVal headerValue As Variant) As Boolean
     If IsError(headerValue) Then Exit Function
+    If ExcelRowIdIsHeaderName(Trim$(CStr(headerValue))) Then
+        ReviewIsInternalMetadataHeader = True
+        Exit Function
+    End If
     Select Case Trim$(CStr(headerValue))
         Case "最終編集者", "最終編集日時"
             ReviewIsInternalMetadataHeader = True

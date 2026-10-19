@@ -1,0 +1,856 @@
+Option Explicit
+
+Private Type ExcelRowIdGuid
+    Data1 As Long
+    Data2 As Integer
+    Data3 As Integer
+    Data4(0 To 7) As Byte
+End Type
+
+#If VBA7 Then
+Private Declare PtrSafe Function CoCreateGuid Lib "ole32.dll" (ByRef pGuid As ExcelRowIdGuid) As Long
+#Else
+Private Declare Function CoCreateGuid Lib "ole32.dll" (ByRef pGuid As ExcelRowIdGuid) As Long
+#End If
+
+Private Const ROW_ID_HEADER As String = "Excel管理行ID"
+Private Const ROW_ID_SHEET As String = "新ファイル基準表"
+Private Const ROW_ID_DETAIL_LIMIT As Long = 2200
+
+Public Sub Excel管理行ID_既存行へ初回付与()
+
+    Dim ws As Worksheet
+    Dim idCol As Long
+    Dim titleCol As Long
+    Dim lastRow As Long
+    Dim eligibleCount As Long
+    Dim invalidCount As Long
+    Dim unexpectedCount As Long
+    Dim duplicateCount As Long
+    Dim missingRows As Collection
+    Dim writtenRows As Collection
+    Dim assignments As Object
+    Dim usedIds As Object
+    Dim rowValue As Variant
+    Dim idValue As String
+    Dim detailText As String
+    Dim backupPath As String
+    Dim oldEnableEvents As Boolean
+    Dim oldScreenUpdating As Boolean
+    Dim rollbackSucceeded As Boolean
+    Dim errDescription As String
+
+    oldEnableEvents = Application.EnableEvents
+    oldScreenUpdating = Application.ScreenUpdating
+    On Error GoTo ErrorHandler
+    Set ws = ThisWorkbook.Worksheets(ROW_ID_SHEET)
+    idCol = ExcelRowIdRequireColumn(ws)
+    titleCol = ExcelRowIdRequireFolderTitleColumn(ws)
+    lastRow = ExcelRowIdLastUsedRow(ws)
+    ExcelRowIdInspect ws, idCol, titleCol, lastRow, eligibleCount, missingRows, _
+        invalidCount, unexpectedCount, duplicateCount, detailText
+
+    If invalidCount > 0 Or unexpectedCount > 0 Or duplicateCount > 0 Then
+        MsgBox "管理行IDの初回付与は行いませんでした。" & vbCrLf & _
+            "不正値・数式: " & CStr(invalidCount) & " 件 / フォルダー行以外のID: " & _
+            CStr(unexpectedCount) & " 件 / 重複ID: " & CStr(duplicateCount) & " 組" & _
+            vbCrLf & vbCrLf & detailText & vbCrLf & _
+            "「Excel管理行ID_点検」を実行し、該当行を確認してください。", _
+            vbExclamation, "管理行IDを確認してください"
+        Exit Sub
+    End If
+
+    If missingRows.Count = 0 Then
+        MsgBox "管理行IDの空欄はありません。既存IDは変更していません。" & vbCrLf & _
+            "対象フォルダー行: " & CStr(eligibleCount) & " 件", _
+            vbInformation, "管理行ID初回付与"
+        Exit Sub
+    End If
+
+    If MsgBox("管理行IDが空欄のフォルダー行へ、新しいIDを " & _
+        CStr(missingRows.Count) & " 件付与します。" & vbCrLf & _
+        "既存IDは変更しません。実行前にブックのバックアップを作成します。" & _
+        vbCrLf & "続行しますか？", vbYesNo Or vbQuestion Or vbDefaultButton2, _
+        "管理行ID初回付与の確認") <> vbYes Then Exit Sub
+
+    Set usedIds = ExcelRowIdBuildUsedIds(ws, idCol, lastRow)
+    Set assignments = CreateObject("Scripting.Dictionary")
+    assignments.CompareMode = vbTextCompare
+    For Each rowValue In missingRows
+        idValue = ExcelRowIdGenerateUnique(usedIds)
+        assignments.Add CStr(CLng(rowValue)), idValue
+    Next rowValue
+
+    backupPath = ExcelRowIdCreateBackup()
+    Set writtenRows = New Collection
+    Application.EnableEvents = False
+    Application.ScreenUpdating = False
+
+    For Each rowValue In missingRows
+        writtenRows.Add CLng(rowValue)
+        ws.Cells(CLng(rowValue), idCol).Value2 = CStr(assignments(CStr(CLng(rowValue))))
+        If StrComp(CStr(ws.Cells(CLng(rowValue), idCol).Value2), _
+            CStr(assignments(CStr(CLng(rowValue)))), vbBinaryCompare) <> 0 Then
+            Err.Raise vbObjectError + 6910, , "書込後のID照合に失敗しました（行 " & CStr(rowValue) & "）。"
+        End If
+    Next rowValue
+
+    Application.EnableEvents = oldEnableEvents
+    Application.ScreenUpdating = oldScreenUpdating
+    MsgBox "管理行IDを " & CStr(missingRows.Count) & " 件付与しました。" & vbCrLf & _
+        "対象フォルダー行: " & CStr(eligibleCount) & " 件" & vbCrLf & _
+        "バックアップ: " & backupPath & vbCrLf & _
+        "もう一度実行しても既存IDは変更されません。", _
+        vbInformation, "管理行ID初回付与完了"
+    Exit Sub
+
+ErrorHandler:
+    errDescription = Err.Description
+    rollbackSucceeded = True
+    On Error Resume Next
+    If Not writtenRows Is Nothing Then
+        For Each rowValue In writtenRows
+            Err.Clear
+            ws.Cells(CLng(rowValue), idCol).ClearContents
+            If Err.Number <> 0 Then rollbackSucceeded = False
+            If Not ExcelRowIdCellIsBlank(ws.Cells(CLng(rowValue), idCol)) Then rollbackSucceeded = False
+        Next rowValue
+    End If
+    Application.EnableEvents = oldEnableEvents
+    Application.ScreenUpdating = oldScreenUpdating
+    On Error GoTo 0
+    If Len(backupPath) > 0 Then
+        MsgBox "管理行IDの付与中にエラーが発生しました。" & vbCrLf & _
+            "原因: " & errDescription & vbCrLf & _
+            "書込行のロールバック: " & IIf(rollbackSucceeded, "確認済み", "失敗。バックアップから復旧してください") & _
+            vbCrLf & "バックアップ: " & backupPath, vbCritical, "管理行ID付与失敗"
+    Else
+        MsgBox "管理行IDの付与前に中止しました。シートの値は変更していません。" & _
+            vbCrLf & "原因: " & errDescription, vbExclamation, "管理行ID付与失敗"
+    End If
+
+End Sub
+
+Public Sub Excel管理行ID_点検()
+
+    Dim ws As Worksheet
+    Dim idCol As Long
+    Dim titleCol As Long
+    Dim lastRow As Long
+    Dim eligibleCount As Long
+    Dim invalidCount As Long
+    Dim unexpectedCount As Long
+    Dim duplicateCount As Long
+    Dim missingRows As Collection
+    Dim detailText As String
+
+    On Error GoTo ErrorHandler
+    Set ws = ThisWorkbook.Worksheets(ROW_ID_SHEET)
+    idCol = ExcelRowIdRequireColumn(ws)
+    titleCol = ExcelRowIdRequireFolderTitleColumn(ws)
+    lastRow = ExcelRowIdLastUsedRow(ws)
+    ExcelRowIdInspect ws, idCol, titleCol, lastRow, eligibleCount, missingRows, _
+        invalidCount, unexpectedCount, duplicateCount, detailText
+    MsgBox "管理行ID点検結果" & vbCrLf & _
+        "対象フォルダー行: " & CStr(eligibleCount) & " 件" & vbCrLf & _
+        "ID空欄: " & CStr(missingRows.Count) & " 件" & vbCrLf & _
+        "不正値・数式: " & CStr(invalidCount) & " 件" & vbCrLf & _
+        "フォルダー行以外のID: " & CStr(unexpectedCount) & " 件" & vbCrLf & _
+        "重複ID: " & CStr(duplicateCount) & " 組" & vbCrLf & vbCrLf & _
+        IIf(Len(detailText) = 0, "問題は見つかりませんでした。", detailText) & _
+        IIf(duplicateCount > 0 Or invalidCount > 0 Or unexpectedCount > 0, _
+            vbCrLf & "重複・不正値は自動修正していません。行を確認してください。", ""), _
+        IIf(duplicateCount > 0 Or invalidCount > 0 Or unexpectedCount > 0, vbExclamation, vbInformation), _
+        "管理行ID点検"
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "管理行IDを点検できませんでした。" & vbCrLf & Err.Description, _
+        vbExclamation, "管理行ID点検"
+
+End Sub
+
+Public Function ExcelRowIdCaptureSelection(ByVal Target As Range, ByVal ws As Worksheet) As Object
+
+    Dim snapshots As Object
+    Dim titleCol As Long
+    Dim lastRow As Long
+    Dim captureLastRow As Long
+    Dim area As Range
+    Dim firstRow As Long
+    Dim finalRow As Long
+    Dim rowNo As Long
+
+    If Target Is Nothing Or ws Is Nothing Then Exit Function
+    If Not (Target.Worksheet Is ws) Then Exit Function
+    titleCol = ExcelRowIdTryFindFolderTitleColumn(ws)
+    If titleCol <= 0 Then Exit Function
+    lastRow = ExcelRowIdLastUsedRow(ws)
+    captureLastRow = Application.Max(lastRow + 1, Target.Row + Target.Rows.Count - 1)
+    Set snapshots = CreateObject("Scripting.Dictionary")
+    snapshots.CompareMode = vbTextCompare
+
+    For Each area In Target.Areas
+        firstRow = Application.Max(2, area.Row)
+        finalRow = Application.Min(captureLastRow, area.Row + area.Rows.Count - 1)
+        If finalRow - firstRow > 5000 Then Exit Function
+        For rowNo = firstRow To finalRow
+            If Not snapshots.Exists(CStr(rowNo)) Then _
+                snapshots.Add CStr(rowNo), ExcelRowIdHasFolderTitle(ws, rowNo, titleCol)
+        Next rowNo
+    Next area
+    Set ExcelRowIdCaptureSelection = snapshots
+
+End Function
+
+Public Function ExcelRowIdIsHeaderName(ByVal headerName As String) As Boolean
+
+    Dim normalized As String
+    normalized = ExcelRowIdNormalizeHeader(headerName)
+    ExcelRowIdIsHeaderName = (StrComp(normalized, ExcelRowIdNormalizeHeader(ROW_ID_HEADER), vbTextCompare) = 0)
+
+End Function
+
+Public Function ExcelRowIdValidateSheet(ByVal ws As Worksheet) As Long
+
+    ExcelRowIdValidateSheet = ExcelRowIdRequireColumn(ws)
+    Call ExcelRowIdRequireFolderTitleColumn(ws)
+
+End Function
+
+Public Function ExcelRowIdCreateNewValue(ByVal ws As Worksheet) As String
+
+    Dim idCol As Long
+    Dim lastRow As Long
+    Dim usedIds As Object
+
+    If ws Is Nothing Then Err.Raise vbObjectError + 6911, , "管理行IDの対象シートがありません。"
+    idCol = ExcelRowIdRequireColumn(ws)
+    lastRow = ExcelRowIdLastUsedRow(ws)
+    Set usedIds = ExcelRowIdBuildUsedIds(ws, idCol, lastRow)
+    ExcelRowIdCreateNewValue = ExcelRowIdGenerateUnique(usedIds)
+
+End Function
+
+Public Function ExcelRowIdPrepareBatch(ByVal ws As Worksheet, ByVal count As Long) As Collection
+
+    Dim result As Collection
+    Dim idCol As Long
+    Dim lastRow As Long
+    Dim usedIds As Object
+    Dim i As Long
+
+    If count < 0 Then Err.Raise vbObjectError + 6912, , "管理行IDの生成件数が不正です。"
+    idCol = ExcelRowIdValidateSheet(ws)
+    lastRow = ExcelRowIdLastUsedRow(ws)
+    Set usedIds = ExcelRowIdBuildUsedIds(ws, idCol, lastRow)
+    Set result = New Collection
+    For i = 1 To count
+        result.Add ExcelRowIdGenerateUnique(usedIds)
+    Next i
+    Set ExcelRowIdPrepareBatch = result
+
+End Function
+
+Public Function ExcelRowIdAssignGeneratedRow( _
+    ByVal ws As Worksheet, ByVal rowNo As Long, Optional ByVal preparedId As String = "") As Boolean
+
+    Dim idCol As Long
+    Dim titleCol As Long
+    Dim usedIds As Object
+    Dim newId As String
+    Dim normalizedId As String
+    Dim oldEnableEvents As Boolean
+    Dim targetCell As Range
+    Dim writeErrNumber As Long
+    Dim writeErrDescription As String
+    Dim rollbackSucceeded As Boolean
+
+    ExcelRowIdAssignGeneratedRow = False
+    If ws Is Nothing Then Err.Raise vbObjectError + 6913, , "管理行IDの対象シートがありません。"
+    If rowNo < 2 Then Exit Function
+    idCol = ExcelRowIdRequireColumn(ws)
+    titleCol = ExcelRowIdRequireFolderTitleColumn(ws)
+    If Not ExcelRowIdHasFolderTitle(ws, rowNo, titleCol) Then Exit Function
+    Set targetCell = ws.Cells(rowNo, idCol)
+    If targetCell.HasFormula Then Err.Raise vbObjectError + 6914, , "管理行ID欄に数式があります（行 " & CStr(rowNo) & "）。"
+
+    If Not ExcelRowIdCellIsBlank(targetCell) Then
+        If ExcelRowIdNormalizeValue(targetCell.Value2, normalizedId) Then
+            ExcelRowIdAssignGeneratedRow = True
+            Exit Function
+        End If
+        Err.Raise vbObjectError + 6915, , "管理行ID欄に不正な既存値があります（行 " & CStr(rowNo) & "）。"
+    End If
+
+    Set usedIds = ExcelRowIdBuildUsedIds(ws, idCol, ExcelRowIdLastUsedRow(ws))
+    If Len(Trim$(preparedId)) > 0 Then
+        If Not ExcelRowIdNormalizeValue(preparedId, normalizedId) Then _
+            Err.Raise vbObjectError + 6916, , "事前生成した管理行IDがUUID形式ではありません。"
+        If usedIds.Exists(normalizedId) Then _
+            Err.Raise vbObjectError + 6917, , "事前生成した管理行IDが既存IDと重複しています。"
+        newId = preparedId
+    Else
+        newId = ExcelRowIdGenerateUnique(usedIds)
+    End If
+
+    oldEnableEvents = Application.EnableEvents
+    On Error GoTo WriteError
+    Application.EnableEvents = False
+    targetCell.Value2 = newId
+    If Not ExcelRowIdNormalizeValue(targetCell.Value2, normalizedId) Then _
+        Err.Raise vbObjectError + 6918, , "管理行IDを書き込んだ後の値を確認できません。"
+    If StrComp(normalizedId, UCase$(newId), vbBinaryCompare) <> 0 Then _
+        Err.Raise vbObjectError + 6919, , "管理行IDを書き込んだ後の値が一致しません。"
+    ExcelRowIdAssignGeneratedRow = True
+
+WriteExit:
+    Application.EnableEvents = oldEnableEvents
+    Exit Function
+
+WriteError:
+    writeErrNumber = Err.Number
+    writeErrDescription = Err.Description
+    rollbackSucceeded = True
+    On Error Resume Next
+    Err.Clear
+    targetCell.ClearContents
+    If Err.Number <> 0 Then rollbackSucceeded = False
+    Err.Clear
+    If Not ExcelRowIdCellIsBlank(targetCell) Then rollbackSucceeded = False
+    Application.EnableEvents = oldEnableEvents
+    On Error GoTo 0
+    If Not rollbackSucceeded Then
+        Err.Raise vbObjectError + 6931, "ExcelRowIdAssignGeneratedRow", _
+            writeErrDescription & " ID書込のロールバックにも失敗しました。"
+    Else
+        Err.Raise writeErrNumber, "ExcelRowIdAssignGeneratedRow", writeErrDescription
+    End If
+
+End Function
+
+Public Sub ExcelRowIdHandleWorksheetChange(ByVal Target As Range, ByVal ws As Worksheet, ByVal priorTitleState As Object)
+
+    Dim idCol As Long
+    Dim titleCol As Long
+    Dim lastRow As Long
+    Dim targetRows As Object
+    Dim idGroups As Object
+    Dim assignmentRows As Object
+    Dim assignments As Object
+    Dim oldValues As Object
+    Dim usedIds As Object
+    Dim writtenRows As Collection
+    Dim area As Range
+    Dim rowNo As Long
+    Dim firstRow As Long
+    Dim finalRow As Long
+    Dim rowKey As Variant
+    Dim occurrence As Variant
+    Dim groupRows As Collection
+    Dim targetOccurrenceCount As Long
+    Dim changedDuplicateRow As Long
+    Dim valueText As String
+    Dim normalizedId As String
+    Dim newId As String
+    Dim targetIncludesId As Boolean
+    Dim targetIncludesTitle As Boolean
+    Dim isCopyOperation As Boolean
+    Dim unsafeReason As String
+    Dim oldEnableEvents As Boolean
+    Dim errDescription As String
+    Dim rollbackSucceeded As Boolean
+
+    If Target Is Nothing Or ws Is Nothing Then Exit Sub
+    If Not (Target.Worksheet Is ws) Then Exit Sub
+    oldEnableEvents = Application.EnableEvents
+    On Error GoTo ErrorHandler
+    idCol = ExcelRowIdTryFindColumn(ws)
+    titleCol = ExcelRowIdTryFindFolderTitleColumn(ws)
+    If idCol <= 0 Or titleCol <= 0 Then Exit Sub
+    lastRow = ExcelRowIdLastUsedRow(ws)
+    If lastRow < 2 Then Exit Sub
+
+    targetIncludesId = Not (Application.Intersect(Target, ws.Columns(idCol)) Is Nothing)
+    targetIncludesTitle = Not (Application.Intersect(Target, ws.Columns(titleCol)) Is Nothing)
+    isCopyOperation = (Application.CutCopyMode = xlCopy)
+    Set targetRows = CreateObject("Scripting.Dictionary")
+    targetRows.CompareMode = vbTextCompare
+
+    For Each area In Target.Areas
+        firstRow = Application.Max(2, area.Row)
+        finalRow = Application.Min(lastRow, area.Row + area.Rows.Count - 1)
+        If finalRow - firstRow > 10000 Then
+            MsgBox "変更範囲が大きすぎるため、管理行IDを自動処理しませんでした。" & _
+                vbCrLf & "「Excel管理行ID_点検」で確認してください。", vbExclamation, "管理行ID確認"
+            Exit Sub
+        End If
+        For rowNo = firstRow To finalRow
+            If Not targetRows.Exists(CStr(rowNo)) Then targetRows.Add CStr(rowNo), rowNo
+        Next rowNo
+    Next area
+    If targetRows.Count = 0 Then Exit Sub
+
+    Set idGroups = CreateObject("Scripting.Dictionary")
+    idGroups.CompareMode = vbTextCompare
+    If targetIncludesId Then ExcelRowIdBuildGroups ws, idCol, lastRow, idGroups
+
+    Set assignmentRows = CreateObject("Scripting.Dictionary")
+    assignmentRows.CompareMode = vbTextCompare
+    For Each rowKey In targetRows.Keys
+        rowNo = CLng(rowKey)
+        If Not ExcelRowIdHasFolderTitle(ws, rowNo, titleCol) Then GoTo ContinueTargetRow
+        If ws.Cells(rowNo, idCol).HasFormula Then
+            If targetIncludesId Then unsafeReason = "管理行ID欄に数式がある行が含まれています（行 " & CStr(rowNo) & "）。"
+            GoTo ContinueTargetRow
+        End If
+        If IsError(ws.Cells(rowNo, idCol).Value2) Then
+            If targetIncludesId Then unsafeReason = "管理行ID欄にエラー値があります（行 " & CStr(rowNo) & "）。"
+            GoTo ContinueTargetRow
+        End If
+        valueText = Trim$(CStr(ws.Cells(rowNo, idCol).Value2))
+        If Len(valueText) = 0 Then
+            If Not priorTitleState Is Nothing Then
+                If priorTitleState.Exists(CStr(rowNo)) Then
+                    If Not CBool(priorTitleState(CStr(rowNo))) Then assignmentRows(CStr(rowNo)) = True
+                End If
+            End If
+        ElseIf Not ExcelRowIdNormalizeValue(valueText, normalizedId) Then
+            If targetIncludesId Then unsafeReason = "不正な管理行IDを検出しました（行 " & CStr(rowNo) & "）。"
+        ElseIf targetIncludesId And idGroups.Exists(normalizedId) Then
+            Set groupRows = idGroups(normalizedId)
+            If groupRows.Count > 1 Then
+                targetOccurrenceCount = 0
+                changedDuplicateRow = 0
+                For Each occurrence In groupRows
+                    If targetRows.Exists(CStr(CLng(occurrence))) Then
+                        targetOccurrenceCount = targetOccurrenceCount + 1
+                        changedDuplicateRow = CLng(occurrence)
+                    End If
+                Next occurrence
+                If isCopyOperation And targetIncludesTitle And Target.Areas.Count = 1 And _
+                    groupRows.Count = 2 And targetOccurrenceCount = 1 And _
+                    changedDuplicateRow = rowNo And _
+                    ExcelRowIdHasFolderTitle(ws, CLng(groupRows(1)), titleCol) And _
+                    ExcelRowIdHasFolderTitle(ws, CLng(groupRows(2)), titleCol) Then
+                    If priorTitleState Is Nothing Then
+                        unsafeReason = "コピー先の変更前状態を確認できません（ID=" & normalizedId & "）。"
+                    ElseIf Not priorTitleState.Exists(CStr(rowNo)) Then
+                        unsafeReason = "コピー先の変更前状態を確認できません（ID=" & normalizedId & "）。"
+                    ElseIf CBool(priorTitleState(CStr(rowNo))) Then
+                        unsafeReason = "変更先が新規行か確認できません（ID=" & normalizedId & "）。"
+                    Else
+                        assignmentRows(CStr(rowNo)) = True
+                    End If
+                Else
+                    unsafeReason = "重複IDの元行を安全に特定できません（ID=" & normalizedId & "）。"
+                End If
+            ElseIf isCopyOperation And targetIncludesTitle Then
+                If priorTitleState Is Nothing Then
+                    unsafeReason = "コピー先の変更前状態を確認できません（ID=" & normalizedId & "）。"
+                ElseIf Not priorTitleState.Exists(CStr(rowNo)) Then
+                    unsafeReason = "コピー先の変更前状態を確認できません（ID=" & normalizedId & "）。"
+                ElseIf Not CBool(priorTitleState(CStr(rowNo))) Then
+                    assignmentRows(CStr(rowNo)) = True
+                End If
+            End If
+        End If
+ContinueTargetRow:
+    Next rowKey
+
+    If Len(unsafeReason) > 0 Then
+        MsgBox unsafeReason & vbCrLf & "IDは変更していません。" & vbCrLf & _
+            "行移動・並べ替えとの誤認を避けるため、自動修正を中止しました。" & vbCrLf & _
+            "「Excel管理行ID_点検」で重複・欠損を確認してください。", _
+            vbExclamation, "管理行IDの確認が必要です"
+        Exit Sub
+    End If
+    If assignmentRows.Count = 0 Then Exit Sub
+
+    Set usedIds = ExcelRowIdBuildUsedIds(ws, idCol, lastRow)
+    Set assignments = CreateObject("Scripting.Dictionary")
+    assignments.CompareMode = vbTextCompare
+    Set oldValues = CreateObject("Scripting.Dictionary")
+    oldValues.CompareMode = vbTextCompare
+    Set writtenRows = New Collection
+    For Each rowKey In assignmentRows.Keys
+        rowNo = CLng(rowKey)
+        newId = ExcelRowIdGenerateUnique(usedIds)
+        assignments.Add CStr(rowNo), newId
+        oldValues.Add CStr(rowNo), ws.Cells(rowNo, idCol).Value2
+    Next rowKey
+
+    Application.EnableEvents = False
+    For Each rowKey In assignments.Keys
+        rowNo = CLng(rowKey)
+        writtenRows.Add rowNo
+        ws.Cells(rowNo, idCol).Value2 = CStr(assignments(CStr(rowNo)))
+        If StrComp(UCase$(CStr(ws.Cells(rowNo, idCol).Value2)), _
+            UCase$(CStr(assignments(CStr(rowNo)))), vbBinaryCompare) <> 0 Then _
+            Err.Raise vbObjectError + 6920, , "IDの自動発行後の照合に失敗しました（行 " & CStr(rowNo) & "）。"
+    Next rowKey
+    Application.EnableEvents = oldEnableEvents
+    Exit Sub
+
+ErrorHandler:
+    errDescription = Err.Description
+    rollbackSucceeded = True
+    On Error Resume Next
+    If Not writtenRows Is Nothing Then
+        For Each rowKey In writtenRows
+            Err.Clear
+            ws.Cells(CLng(rowKey), idCol).Value2 = oldValues(CStr(CLng(rowKey)))
+            If Err.Number <> 0 Then rollbackSucceeded = False
+            Err.Clear
+            If StrComp(CStr(ws.Cells(CLng(rowKey), idCol).Value2), _
+                CStr(oldValues(CStr(CLng(rowKey)))), vbBinaryCompare) <> 0 Then rollbackSucceeded = False
+        Next rowKey
+    End If
+    Application.EnableEvents = oldEnableEvents
+    On Error GoTo 0
+    MsgBox "管理行IDを自動発行できませんでした。" & vbCrLf & _
+        IIf(rollbackSucceeded, "入力データは保持し、管理行IDを変更前に戻しました。", _
+            "管理行IDのロールバックに失敗しました。点検マクロで状態を確認し、管理者へ相談してください。") & vbCrLf & _
+        "原因: " & errDescription, vbExclamation, "管理行ID自動発行失敗"
+
+End Sub
+
+Private Sub ExcelRowIdInspect( _
+    ByVal ws As Worksheet, ByVal idCol As Long, ByVal titleCol As Long, ByVal lastRow As Long, _
+    ByRef eligibleCount As Long, ByRef missingRows As Collection, _
+    ByRef invalidCount As Long, ByRef unexpectedCount As Long, _
+    ByRef duplicateCount As Long, ByRef detailText As String)
+
+    Dim idGroups As Object
+    Dim groupRows As Collection
+    Dim rowNo As Long
+    Dim normalizedId As String
+    Dim idKey As Variant
+    Dim rowValue As Variant
+    Dim rowList As String
+
+    Set missingRows = New Collection
+    Set idGroups = CreateObject("Scripting.Dictionary")
+    idGroups.CompareMode = vbTextCompare
+    eligibleCount = 0
+    invalidCount = 0
+    unexpectedCount = 0
+    duplicateCount = 0
+    detailText = ""
+
+    For rowNo = 2 To lastRow
+        If ExcelRowIdHasFolderTitle(ws, rowNo, titleCol) Then eligibleCount = eligibleCount + 1
+        If ws.Cells(rowNo, idCol).HasFormula Then
+            invalidCount = invalidCount + 1
+            ExcelRowIdAppendDetail detailText, "数式: 行 " & CStr(rowNo)
+        ElseIf ExcelRowIdCellIsBlank(ws.Cells(rowNo, idCol)) Then
+            If ExcelRowIdHasFolderTitle(ws, rowNo, titleCol) Then missingRows.Add rowNo
+        ElseIf Not ExcelRowIdNormalizeValue(ws.Cells(rowNo, idCol).Value2, normalizedId) Then
+            invalidCount = invalidCount + 1
+            ExcelRowIdAppendDetail detailText, "UUID形式でない値: 行 " & CStr(rowNo)
+        Else
+            If Not ExcelRowIdHasFolderTitle(ws, rowNo, titleCol) Then
+                unexpectedCount = unexpectedCount + 1
+                ExcelRowIdAppendDetail detailText, "フォルダー行以外にID: 行 " & CStr(rowNo)
+            End If
+            If Not idGroups.Exists(normalizedId) Then
+                Set groupRows = New Collection
+                idGroups.Add normalizedId, groupRows
+            End If
+            Set groupRows = idGroups(normalizedId)
+            groupRows.Add rowNo
+        End If
+    Next rowNo
+
+    For Each idKey In idGroups.Keys
+        Set groupRows = idGroups(CStr(idKey))
+        If groupRows.Count > 1 Then
+            duplicateCount = duplicateCount + 1
+            rowList = ""
+            For Each rowValue In groupRows
+                If Len(rowList) > 0 Then rowList = rowList & ", "
+                rowList = rowList & CStr(rowValue)
+            Next rowValue
+            ExcelRowIdAppendDetail detailText, "重複ID " & CStr(idKey) & " / 行 " & rowList
+        End If
+    Next idKey
+
+End Sub
+
+Private Function ExcelRowIdRequireColumn(ByVal ws As Worksheet) As Long
+
+    Dim lastCol As Long
+    Dim colNo As Long
+    Dim matchCol As Long
+    Dim matchCount As Long
+    Dim headerValue As String
+
+    If ws Is Nothing Then Err.Raise vbObjectError + 6921, , "管理行IDの対象シートがありません。"
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For colNo = 1 To lastCol
+        If Not IsError(ws.Cells(1, colNo).Value2) Then
+            headerValue = CStr(ws.Cells(1, colNo).Value2)
+            If ExcelRowIdIsHeaderName(headerValue) Then
+                matchCol = colNo
+                matchCount = matchCount + 1
+            End If
+        End If
+    Next colNo
+    If matchCount = 0 Then Err.Raise vbObjectError + 6922, , _
+        "見出し「Excel管理行ID」がありません。列を自動追加せず、既存見出しを確認してください。"
+    If matchCount > 1 Then Err.Raise vbObjectError + 6923, , _
+        "管理行IDに該当する見出しが複数あります。重複列を自動選択せず、見出しを確認してください。"
+    ExcelRowIdRequireColumn = matchCol
+
+End Function
+
+Private Function ExcelRowIdTryFindColumn(ByVal ws As Worksheet) As Long
+
+    On Error Resume Next
+    ExcelRowIdTryFindColumn = ExcelRowIdRequireColumn(ws)
+    If Err.Number <> 0 Then ExcelRowIdTryFindColumn = 0
+    Err.Clear
+    On Error GoTo 0
+
+End Function
+
+Private Function ExcelRowIdRequireFolderTitleColumn(ByVal ws As Worksheet) As Long
+
+    Dim colNo As Long
+    colNo = ExcelRowIdFindUniqueHeader(ws, "個別フォルダー")
+    If colNo = 0 Then Err.Raise vbObjectError + 6924, , _
+        "フォルダー名の見出し「個別フォルダー」がありません。"
+    ExcelRowIdRequireFolderTitleColumn = colNo
+
+End Function
+
+Private Function ExcelRowIdTryFindFolderTitleColumn(ByVal ws As Worksheet) As Long
+
+    On Error Resume Next
+    ExcelRowIdTryFindFolderTitleColumn = ExcelRowIdRequireFolderTitleColumn(ws)
+    If Err.Number <> 0 Then ExcelRowIdTryFindFolderTitleColumn = 0
+    Err.Clear
+    On Error GoTo 0
+
+End Function
+
+Private Function ExcelRowIdFindUniqueHeader(ByVal ws As Worksheet, ByVal headerName As String) As Long
+
+    Dim lastCol As Long
+    Dim colNo As Long
+    Dim matchCol As Long
+    Dim matchCount As Long
+
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For colNo = 1 To lastCol
+        If Not IsError(ws.Cells(1, colNo).Value2) Then
+            If StrComp(ExcelRowIdNormalizeHeader(CStr(ws.Cells(1, colNo).Value2)), _
+                ExcelRowIdNormalizeHeader(headerName), vbTextCompare) = 0 Then
+                matchCount = matchCount + 1
+                matchCol = colNo
+            End If
+        End If
+    Next colNo
+    If matchCount > 1 Then Err.Raise vbObjectError + 6925, , _
+        "フォルダー名の見出しが重複しています: " & headerName
+    If matchCount = 1 Then ExcelRowIdFindUniqueHeader = matchCol
+
+End Function
+
+Private Function ExcelRowIdNormalizeHeader(ByVal headerName As String) As String
+
+    Dim normalized As String
+    normalized = Trim$(headerName)
+    normalized = Replace(normalized, " ", "")
+    normalized = Replace(normalized, "　", "")
+    ExcelRowIdNormalizeHeader = normalized
+
+End Function
+
+Private Function ExcelRowIdHasFolderTitle(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal titleCol As Long) As Boolean
+
+    Dim value As Variant
+    If ws Is Nothing Or rowNo < 2 Or titleCol <= 0 Then Exit Function
+    value = ws.Cells(rowNo, titleCol).Value2
+    If IsError(value) Then Exit Function
+    ExcelRowIdHasFolderTitle = (Len(Trim$(CStr(value))) > 0)
+
+End Function
+
+Private Function ExcelRowIdCellIsBlank(ByVal targetCell As Range) As Boolean
+
+    Dim value As Variant
+    If targetCell Is Nothing Then Exit Function
+    If targetCell.HasFormula Then Exit Function
+    value = targetCell.Value2
+    If IsError(value) Then Exit Function
+    ExcelRowIdCellIsBlank = (Len(Trim$(CStr(value))) = 0)
+
+End Function
+
+Private Function ExcelRowIdNormalizeValue(ByVal rawValue As Variant, ByRef normalizedId As String) As Boolean
+
+    Dim textValue As String
+    Dim position As Long
+    Dim oneChar As String
+
+    normalizedId = ""
+    If IsError(rawValue) Or IsNull(rawValue) Then Exit Function
+    textValue = Trim$(CStr(rawValue))
+    If Len(textValue) = 38 And Left$(textValue, 1) = "{" And Right$(textValue, 1) = "}" Then _
+        textValue = Mid$(textValue, 2, 36)
+    If Len(textValue) <> 36 Then Exit Function
+
+    For position = 1 To 36
+        oneChar = Mid$(textValue, position, 1)
+        If position = 9 Or position = 14 Or position = 19 Or position = 24 Then
+            If oneChar <> "-" Then Exit Function
+        ElseIf InStr(1, "0123456789abcdefABCDEF", oneChar, vbBinaryCompare) = 0 Then
+            Exit Function
+        End If
+    Next position
+
+    normalizedId = UCase$(textValue)
+    ExcelRowIdNormalizeValue = True
+
+End Function
+
+Private Function ExcelRowIdBuildUsedIds(ByVal ws As Worksheet, ByVal idCol As Long, ByVal lastRow As Long) As Object
+
+    Dim usedIds As Object
+    Dim rowNo As Long
+    Dim normalizedId As String
+
+    Set usedIds = CreateObject("Scripting.Dictionary")
+    usedIds.CompareMode = vbTextCompare
+    For rowNo = 2 To lastRow
+        If ExcelRowIdNormalizeValue(ws.Cells(rowNo, idCol).Value2, normalizedId) Then
+            If Not usedIds.Exists(normalizedId) Then usedIds.Add normalizedId, True
+        End If
+    Next rowNo
+    Set ExcelRowIdBuildUsedIds = usedIds
+
+End Function
+
+Private Sub ExcelRowIdBuildGroups(ByVal ws As Worksheet, ByVal idCol As Long, ByVal lastRow As Long, ByVal idGroups As Object)
+
+    Dim rowNo As Long
+    Dim normalizedId As String
+    Dim groupRows As Collection
+
+    For rowNo = 2 To lastRow
+        If ExcelRowIdNormalizeValue(ws.Cells(rowNo, idCol).Value2, normalizedId) Then
+            If Not idGroups.Exists(normalizedId) Then
+                Set groupRows = New Collection
+                idGroups.Add normalizedId, groupRows
+            End If
+            Set groupRows = idGroups(normalizedId)
+            groupRows.Add rowNo
+        End If
+    Next rowNo
+
+End Sub
+
+Private Function ExcelRowIdGenerateUnique(ByVal usedIds As Object) As String
+
+    Dim attempt As Long
+    Dim idValue As String
+    Dim normalizedId As String
+
+    For attempt = 1 To 10
+        idValue = ExcelRowIdCreateGuid()
+        If ExcelRowIdNormalizeValue(idValue, normalizedId) Then
+            If Not usedIds.Exists(normalizedId) Then
+                usedIds.Add normalizedId, True
+                ExcelRowIdGenerateUnique = idValue
+                Exit Function
+            End If
+        End If
+    Next attempt
+    Err.Raise vbObjectError + 6926, , "重複しないUUIDを生成できませんでした。"
+
+End Function
+
+Private Function ExcelRowIdCreateGuid() As String
+
+    Dim value As ExcelRowIdGuid
+    Dim result As Long
+    Dim part As String
+
+    result = CoCreateGuid(value)
+    If result <> 0 Then Err.Raise vbObjectError + 6927, , _
+        "WindowsのUUID生成に失敗しました（HRESULT " & CStr(result) & "）。"
+    part = Right$("00000000" & Hex$(value.Data1), 8) & "-" & _
+        Right$("0000" & Hex$(value.Data2 And &HFFFF&), 4) & "-" & _
+        Right$("0000" & Hex$(value.Data3 And &HFFFF&), 4) & "-"
+    part = part & Right$("00" & Hex$(value.Data4(0)), 2) & _
+        Right$("00" & Hex$(value.Data4(1)), 2) & "-"
+    part = part & Right$("00" & Hex$(value.Data4(2)), 2) & _
+        Right$("00" & Hex$(value.Data4(3)), 2) & _
+        Right$("00" & Hex$(value.Data4(4)), 2) & _
+        Right$("00" & Hex$(value.Data4(5)), 2) & _
+        Right$("00" & Hex$(value.Data4(6)), 2) & _
+        Right$("00" & Hex$(value.Data4(7)), 2)
+    ExcelRowIdCreateGuid = LCase$(part)
+
+End Function
+
+Private Function ExcelRowIdCreateBackup() As String
+
+    Dim localRoot As String
+    Dim backupFolder As String
+    Dim backupPath As String
+    Dim fso As Object
+    Dim fileName As String
+
+    localRoot = Environ$("LOCALAPPDATA")
+    If Len(localRoot) = 0 Then Err.Raise vbObjectError + 6928, , _
+        "LOCALAPPDATAを取得できず、バックアップを作成できません。"
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    backupFolder = fso.BuildPath(localRoot, "file-index-sync")
+    If Not fso.FolderExists(backupFolder) Then fso.CreateFolder backupFolder
+    backupFolder = fso.BuildPath(backupFolder, "ExcelRowIdBackups")
+    If Not fso.FolderExists(backupFolder) Then fso.CreateFolder backupFolder
+
+    fileName = "ExcelRowIdBackup_" & Format$(Now, "yyyymmdd_hhnnss") & "_" & _
+        Replace(ThisWorkbook.Name, " ", "_")
+    backupPath = fso.BuildPath(backupFolder, fileName)
+    If fso.FileExists(backupPath) Then
+        backupPath = fso.BuildPath(backupFolder, "ExcelRowIdBackup_" & _
+            Format$(Now, "yyyymmdd_hhnnss") & "_" & Format$(Timer * 1000, "0") & "_" & _
+            Replace(ThisWorkbook.Name, " ", "_"))
+    End If
+    If fso.FileExists(backupPath) Then Err.Raise vbObjectError + 6932, , _
+        "一意のバックアップ先を確保できないため、ID付与を中止します。"
+    ThisWorkbook.SaveCopyAs backupPath
+    If Not fso.FileExists(backupPath) Then Err.Raise vbObjectError + 6929, , _
+        "管理行ID付与前のバックアップを作成できませんでした。"
+    If fso.GetFile(backupPath).Size <= 0 Then Err.Raise vbObjectError + 6930, , _
+        "管理行ID付与前のバックアップサイズが0です。"
+    ExcelRowIdCreateBackup = backupPath
+
+End Function
+
+Private Function ExcelRowIdLastUsedRow(ByVal ws As Worksheet) As Long
+
+    Dim foundCell As Range
+    If ws Is Nothing Then Exit Function
+    Set foundCell = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+        LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious, _
+        MatchCase:=False, SearchFormat:=False)
+    If foundCell Is Nothing Then
+        ExcelRowIdLastUsedRow = 1
+    Else
+        ExcelRowIdLastUsedRow = foundCell.Row
+    End If
+
+End Function
+
+Private Sub ExcelRowIdAppendDetail(ByRef detailText As String, ByVal lineText As String)
+
+    If Len(detailText) >= ROW_ID_DETAIL_LIMIT Then Exit Sub
+    If Len(detailText) > 0 Then detailText = detailText & vbCrLf
+    detailText = detailText & lineText
+    If Len(detailText) > ROW_ID_DETAIL_LIMIT Then detailText = Left$(detailText, ROW_ID_DETAIL_LIMIT)
+
+End Sub

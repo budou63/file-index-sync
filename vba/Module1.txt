@@ -3573,7 +3573,8 @@ Public Sub 手順5_差分インポートCSVを外部出力する()
         headerName = Trim$(CStr(wsOut.Cells(1, absCol).Value))
 
         If headerName <> "通し番号" And headerName <> "状態" And _
-           headerName <> "最終編集者" And headerName <> "最終編集日時" Then
+           headerName <> "最終編集者" And headerName <> "最終編集日時" And _
+           Not ExcelRowIdIsHeaderName(headerName) Then
             If Step2HeaderRequiresSourceText(headerName) Then _
                 wsExport.Cells(1, dstCol).Resize(lastRow, 1).NumberFormat = "@"
             wsExport.Cells(1, dstCol).Resize(lastRow, 1).Value = _
@@ -5491,6 +5492,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim srcRow As Long
     Dim targetRow As Long
     Dim appendRow As Long
+    Dim rowIdCol As Long
+    Dim newRowId As String
     Dim key As String
     Dim previousCalculationMode As XlCalculation
     Dim previousScreenUpdating As Boolean
@@ -5574,6 +5577,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
     Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    rowIdCol = ExcelRowIdValidateSheet(wsDst)
     Set newFileStandardColumnWidths = CaptureColumnWidthsByHeader(wsDst)
     Set srcToDstMap = CreateObject("Scripting.Dictionary")
     Set srcHeaderMap = CreateObject("Scripting.Dictionary")
@@ -6203,7 +6207,11 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         GoTo ContinueNextSourceRow
                     End If
 
+                    newRowId = ExcelRowIdCreateNewValue(wsDst)
                     AppendRowFromSourceByHeader wsSrc, wsDst, srcRow, appendRow, srcHeaderMap, srcToDstMap
+                    rowIdCol = ExcelRowIdValidateSheet(wsDst)
+                    wsDst.Cells(appendRow, rowIdCol).ClearContents
+                    Call ExcelRowIdAssignGeneratedRow(wsDst, appendRow, newRowId)
                     ' 目録CSV由来の新規行は、管理システム上に存在することを確認済みとして記録する。
                     wsDst.Cells(appendRow, syncCol).Value = "同期済"
                     AutoFillColorForRow wsDst, appendRow
@@ -7783,6 +7791,7 @@ Public Sub nPlus1_次年度フォルダ生成()
     Dim rowNo As Long
     Dim appendRow As Long
     Dim targetRows As Collection
+    Dim generatedRowIds As Collection
     Dim generatedCount As Long
     Dim targetCount As Long
     Dim prevScreenUpdating As Boolean
@@ -7801,9 +7810,12 @@ Public Sub nPlus1_次年度フォルダ生成()
     Dim colHaiki As Long
     Dim headerMap As Object
 
+    prevScreenUpdating = Application.ScreenUpdating
+    prevEnableEvents = Application.EnableEvents
     On Error GoTo ErrorHandler
 
     Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    Call ExcelRowIdValidateSheet(wsDst)
     Set targetRows = New Collection
     Set headerMap = CreateObject("Scripting.Dictionary")
 
@@ -7846,6 +7858,7 @@ ContinueNextNPlus1Row:
         MsgBox "ｎ＋1 フラグがある行はありません。", vbInformation
         Exit Sub
     End If
+    Set generatedRowIds = ExcelRowIdPrepareBatch(wsDst, targetCount)
 
     prevScreenUpdating = Application.ScreenUpdating
     prevEnableEvents = Application.EnableEvents
@@ -7872,6 +7885,7 @@ ContinueNextNPlus1Row:
         IncrementTitleCellIfExists wsDst, appendRow, colPublicSubTitle
 
         ClearIdentityColumnsForNewRow wsDst, appendRow
+        Call ExcelRowIdAssignGeneratedRow(wsDst, appendRow, CStr(generatedRowIds(rowNo)))
         wsDst.Cells(appendRow, colSyncStatus).Value = "未登録"
         wsDst.Cells(appendRow, colHaiki).ClearContents
         wsDst.Cells(appendRow, colNPlus1).ClearContents
@@ -8078,6 +8092,7 @@ Private Sub ClearIdentityColumnsForNewRow(ByVal ws As Worksheet, ByVal rowNo As 
         "更新者メンバーID", "更新日時", _
         "引継処理日", "棚卸処理日", "廃棄処理日", _
         "履歴番号", "履歴管理コメント", _
+        "Excel管理行ID", _
         "最終編集者", "最終編集日時")
 
     lastCol = GetLastUsedCol(ws)
@@ -8085,6 +8100,7 @@ Private Sub ClearIdentityColumnsForNewRow(ByVal ws As Worksheet, ByVal rowNo As 
         colNo = FindHeaderColumn(ws, lastCol, Array(CStr(clearHeaders(i))))
         If colNo > 0 Then ws.Cells(rowNo, colNo).ClearContents
     Next i
+    ws.Cells(rowNo, ExcelRowIdValidateSheet(ws)).ClearContents
 
 End Sub
 
@@ -8605,6 +8621,7 @@ Private Sub BuildStep2SourceTransferMap( _
     For srcCol = 1 To srcLastCol
         headerText = Trim$(CStr(wsSrc.Cells(1, srcCol).Value))
         If headerText <> "" Then
+            If ExcelRowIdIsHeaderName(headerText) Then GoTo ContinueNextSourceHeader
             canonical = CanonicalHeaderName(headerText)
             dstCol = EnsureColumnByHeader(wsDst, existingDstHeaders, headerText)
 
@@ -8613,6 +8630,7 @@ Private Sub BuildStep2SourceTransferMap( _
                 srcToDstMap(canonical) = dstCol
             End If
         End If
+ContinueNextSourceHeader:
     Next srcCol
 
 End Sub
@@ -8647,6 +8665,11 @@ Private Function IsUserManagedHeader( _
 
     Dim i As Long
     Dim baseCanonical As String
+
+    If ExcelRowIdIsHeaderName(canonicalHeader) Then
+        IsUserManagedHeader = True
+        Exit Function
+    End If
 
     ' 指定された固定ユーザー管理列は常にユーザー管理とみなす
     For i = LBound(baselineUserManagedHeaders) To UBound(baselineUserManagedHeaders)
@@ -9356,6 +9379,10 @@ Private Function IsStep2UpdateExcludedHeader(ByVal headerName As String) As Bool
 
     Dim canonical As String
     canonical = CanonicalHeaderName(headerName)
+    If ExcelRowIdIsHeaderName(headerName) Then
+        IsStep2UpdateExcludedHeader = True
+        Exit Function
+    End If
 
     Select Case canonical
         Case CanonicalHeaderName("色名"), CanonicalHeaderName("2色名")
@@ -14052,6 +14079,7 @@ Public Sub 旧基準表_継続文書移行()
     Dim newColTitle As Long
     Dim newColBiko As Long
     Dim newColSyncStatus As Long
+    Dim newColRowId As Long
     Dim newColMediaType As Long
 
     Dim oldLastRow As Long
@@ -14063,6 +14091,9 @@ Public Sub 旧基準表_継続文書移行()
     Dim keyOrder As Collection
     Dim groupKey As String
     Dim recs As Collection
+    Dim rowIds As Collection
+    Dim totalNewRows As Long
+    Dim rowIdIndex As Long
     Dim rec As Variant
 
     Dim i As Long
@@ -14105,6 +14136,7 @@ Public Sub 旧基準表_継続文書移行()
 
     If oldHeaderRow = 0 Then MsgBox "旧シートの見出し行が見つかりません。", vbExclamation: GoTo SafeExit
     If newHeaderRow = 0 Then MsgBox "新シートの見出し行が見つかりません。", vbExclamation: GoTo SafeExit
+    newColRowId = ExcelRowIdValidateSheet(wsNew)
 
     oldDataStartRow = oldHeaderRow + 1
     DebugLog "[旧] 採用見出し行=" & oldHeaderRow
@@ -14226,6 +14258,14 @@ NextRowMigImport:
 
     DebugPrintNewYearSample_Mig wsNew, newHeaderRow + 1, newColWareki, 10
 
+    totalNewRows = 0
+    For i = 1 To keyOrder.Count
+        Set recs = grouped(CStr(keyOrder(i)))
+        totalNewRows = totalNewRows + recs.Count
+    Next i
+    Set rowIds = ExcelRowIdPrepareBatch(wsNew, totalNewRows)
+    rowIdIndex = 0
+
     movedCount = 0
     For i = 1 To keyOrder.Count
         groupKey = CStr(keyOrder(i))
@@ -14246,6 +14286,9 @@ NextRowMigImport:
                 wsNew.Cells(insertRow + j - 1, newColCreatedWareki).Value = rec(4)
                 wsNew.Cells(insertRow + j - 1, newColTitle).Value = rec(5)
                 wsNew.Cells(insertRow + j - 1, newColMediaType).Value = Trim$(CStr(rec(6)))
+                rowIdIndex = rowIdIndex + 1
+                wsNew.Cells(insertRow + j - 1, newColRowId).ClearContents
+                Call ExcelRowIdAssignGeneratedRow(wsNew, insertRow + j - 1, CStr(rowIds(rowIdIndex)))
                 wsNew.Cells(insertRow + j - 1, newColSyncStatus).Value = "管理対象外"
                 movedCount = movedCount + 1
             Next j
@@ -16020,6 +16063,9 @@ Private Function LastEditAreaHasBusinessChanges( _
 
     If changedArea.Columns.Count = 1 Then
         If firstCol = editorCol Or firstCol = timestampCol Then Exit Function
+        If Not IsError(changedArea.Worksheet.Cells(1, firstCol).Value2) Then
+            If ExcelRowIdIsHeaderName(CStr(changedArea.Worksheet.Cells(1, firstCol).Value2)) Then Exit Function
+        End If
     ElseIf changedArea.Columns.Count = 2 Then
         If firstCol = leftMetadataCol And lastCol = rightMetadataCol Then Exit Function
     End If

@@ -1,6 +1,7 @@
 Option Explicit
 
 Private mSelectingRowFromMoveMode As Boolean
+Private mRowIdSelectionSnapshot As Object
 
 '========================================================
 ' 貼り付け先:
@@ -11,6 +12,14 @@ Private mSelectingRowFromMoveMode As Boolean
 ' ※標準モジュールではなく、必ず「新ファイル基準表」の
 '   シートコードモジュールへ配置してください。
 '========================================================
+Private Sub Worksheet_Activate()
+
+    On Error Resume Next
+    Set mRowIdSelectionSnapshot = ExcelRowIdCaptureSelection(Application.ActiveCell, Me)
+    On Error GoTo 0
+
+End Sub
+
 Private Sub Worksheet_Change(ByVal Target As Range)
 
     Dim oldEnableEvents As Boolean
@@ -44,6 +53,8 @@ Private Sub Worksheet_Change(ByVal Target As Range)
     Application.EnableEvents = False
 
     ' タイトル/主要編集列の変更時は、通し番号を自動で再採番
+    ExcelRowIdHandleWorksheetChange Target, Me, mRowIdSelectionSnapshot
+
     If ShouldReindexSerial(Target, Me) Then
         ReindexSerial_NewFileStandard Me
     End If
@@ -68,6 +79,7 @@ Private Sub Worksheet_SelectionChange(ByVal Target As Range)
 
     oldEnableEvents = Application.EnableEvents
     If Target Is Nothing Then GoTo ExitHandler
+    Set mRowIdSelectionSnapshot = ExcelRowIdCaptureSelection(Target, Me)
     If mSelectingRowFromMoveMode Then GoTo ExitHandler
     clickMode = IsRowMoveClickModeActive()
     If (Not IsRowMoveModeActive()) And (Not clickMode) Then GoTo ExitHandler
