@@ -33,6 +33,8 @@ Private targetYear As Long
 Private rendering As Boolean
 Private mDUnavailableReason As String
 Private Const COMPARE_FIELD_COUNT As Long = 9
+Private Const CSV_SHEET As String = "目録CSV"
+Private Const DEST_SHEET As String = "新ファイル基準表"
 
 Private Function EnsureControl(ByVal controlName As String, ByVal progId As String) As MSForms.Control
     Dim existing As MSForms.Control

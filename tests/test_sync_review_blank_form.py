@@ -58,6 +58,19 @@ class BlankFormTests(unittest.TestCase):
         self.assertIn("SyncReviewDeleteBatch(selected)", source)
         self.assertIn("SyncReviewApprove(item, SelectedRow())", source)
 
+    def test_form_defines_sheet_constants_in_every_restore_source(self):
+        sources = {
+            "paste": PASTE.read_text(encoding="utf-8"),
+            "reference": CANONICAL.read_text(encoding="utf-8").split("Option Explicit", 1)[1],
+            "native": NATIVE.read_bytes().decode("cp932").split("Option Explicit", 1)[1].replace("\r\n", "\n"),
+        }
+        for source_name, source in sources.items():
+            with self.subTest(source=source_name):
+                for identifier, value in (("CSV_SHEET", "目録CSV"), ("DEST_SHEET", "新ファイル基準表")):
+                    declaration = f'Private Const {identifier} As String = "{value}"'
+                    self.assertEqual(source.count(declaration), 1, identifier)
+                    self.assertIn(f"Worksheets({identifier})", source)
+
     def test_opener_loads_before_show_and_form_initializes_before_data_render(self):
         module = (ROOT / 'vba/modSyncReview.txt').read_text(encoding='utf-8')
         opener = module[module.index('Private Sub OpenSyncReviewForYear('):]
