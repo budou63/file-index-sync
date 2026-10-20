@@ -16353,3 +16353,814 @@ Private Function LastEditAreaHasBusinessChanges( _
     LastEditAreaHasBusinessChanges = True
 
 End Function
+
+'========================================================
+' 双方向編集・第1段階: 項目差異の読取専用レポート
+' - 目録CSV/新ファイル基準表のセル、書式、コメント、同期状態は変更しない。
+' - 正式識別情報の一意一致、または既存Step2と同条件の登録予定名称一意一致だけを比較する。
+' - 同一性を確定できない行は正常一致として扱わず、外部CSVへ理由だけを出力する。
+'========================================================
+Public Sub 双方向編集_項目差異一覧CSVを外部出力()
+
+    Dim targetYearRaw As String
+    Dim targetYearValue As Long
+    Dim savePath As Variant
+    Dim finalPath As String
+    Dim defaultFileName As String
+    Dim reportSummary As String
+    Dim differenceCount As Long
+
+    On Error GoTo ErrorHandler
+
+    targetYearRaw = InputBox("比較対象年度を入力してください。（例: R8 / 令和8年度 / 2026）", "項目差異一覧")
+    If StrPtr(targetYearRaw) = 0 Then Exit Sub
+
+    targetYearValue = NormalizeYearValue(targetYearRaw)
+    If targetYearValue <= 0 Then
+        Err.Raise vbObjectError + 2710, , "比較対象年度を解釈できません。例: R8 / 令和8年度 / 2026"
+    End If
+
+    defaultFileName = "項目差異一覧_" & CStr(targetYearValue) & "_" & Format(Now, "yyyymmdd_hhnnss") & ".csv"
+    savePath = Application.GetSaveAsFilename( _
+        InitialFileName:=defaultFileName, _
+        FileFilter:="CSV (コンマ区切り) (*.csv),*.csv", _
+        Title:="項目差異一覧CSV の保存先を選択してください")
+    If VarType(savePath) = vbBoolean Then
+        If savePath = False Then Exit Sub
+    End If
+
+    finalPath = EnsureCsvExtension(CStr(savePath))
+    differenceCount = 双方向編集_項目差異一覧を抽出(targetYearValue, finalPath, reportSummary)
+
+    MsgBox "項目差異一覧CSVを外部出力しました。" & vbCrLf & _
+           "対象年度: " & CStr(targetYearValue) & vbCrLf & _
+           "項目差異: " & CStr(differenceCount) & " 件" & vbCrLf & _
+           reportSummary & vbCrLf & finalPath, vbInformation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "項目差異一覧CSVの外部出力中にエラーが発生しました: " & Err.Description, vbExclamation
+
+End Sub
+
+' 指定年度の読取専用比較を行い、外部CSVへ出力する。
+' 戻り値は「項目差異」行だけの件数。比較不能・同一性未確定はCSVには出すが件数に含めない。
+Public Function 双方向編集_項目差異一覧を抽出( _
+    ByVal targetYearValue As Long, _
+    ByVal outputPath As String, _
+    Optional ByRef reportSummary As String) As Long
+
+    Dim wsSrc As Worksheet
+    Dim wsDst As Worksheet
+    Dim srcLastRow As Long, srcLastCol As Long
+    Dim dstLastRow As Long, dstLastCol As Long
+    Dim srcWarekiCol As Long, srcYearCol As Long
+    Dim rowIdCol As Long
+    Dim sourceFullKeyMap As Object, destFullKeyMap As Object
+    Dim sourceFileIdMap As Object, destFileIdMap As Object
+    Dim sourceIdBarcodeMap As Object, destIdBarcodeMap As Object
+    Dim sourceFileNoMap As Object, destFileNoMap As Object
+    Dim sourceFileNoPaddingMap As Object, destFileNoPaddingMap As Object
+    Dim sourceBarcodeMap As Object, destBarcodeMap As Object
+    Dim sourceNameSyncMap As Object, destNameSyncMap As Object, destAllNameMap As Object
+    Dim sourceHeaderMap As Object, destHeaderMap As Object
+    Dim lines As Collection
+    Dim srcRow As Long, srcRowYearValue As Long, targetRow As Long
+    Dim matchKind As String, matchReason As String
+    Dim differenceCount As Long, formalMatchCount As Long, nameMatchCount As Long
+    Dim uncertainCount As Long, comparisonUnavailableCount As Long
+
+    On Error GoTo ErrorHandler
+
+    If targetYearValue <= 0 Then Err.Raise vbObjectError + 2711, , "比較対象年度が不正です。"
+    If Len(Trim$(outputPath)) = 0 Then Err.Raise vbObjectError + 2712, , "出力先ファイルが指定されていません。"
+    If Len(Dir$(outputPath)) > 0 Then Err.Raise vbObjectError + 2713, , _
+        "同名の出力ファイルが既に存在します。既存ファイルを保護するため、別名を指定してください。"
+
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    srcLastCol = GetLastHeaderCol(wsSrc)
+    srcLastRow = GetLastUsedRow(wsSrc)
+    dstLastCol = GetLastHeaderCol(wsDst)
+    dstLastRow = GetLastUsedRow(wsDst)
+    If srcLastCol <= 0 Or dstLastCol <= 0 Then Err.Raise vbObjectError + 2714, , "比較対象シートの見出し行が見つかりません。"
+
+    Set sourceHeaderMap = BidirectionalDiffBuildHeaderColumnMap(wsSrc, srcLastCol)
+    Set destHeaderMap = BidirectionalDiffBuildHeaderColumnMap(wsDst, dstLastCol)
+    srcWarekiCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("年度（和暦）", "年度(和暦)"))
+    srcYearCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("年度"))
+    If srcWarekiCol <= 0 And srcYearCol <= 0 Then Err.Raise vbObjectError + 2715, , _
+        "目録CSVに年度（和暦）または年度の一意な列が見つかりません。"
+    rowIdCol = BidirectionalDiffFindExcelRowIdColumn(wsDst, dstLastCol)
+
+    Set sourceFullKeyMap = CreateObject("Scripting.Dictionary")
+    Set destFullKeyMap = CreateObject("Scripting.Dictionary")
+    Set sourceFileIdMap = CreateObject("Scripting.Dictionary")
+    Set destFileIdMap = CreateObject("Scripting.Dictionary")
+    Set sourceIdBarcodeMap = CreateObject("Scripting.Dictionary")
+    Set destIdBarcodeMap = CreateObject("Scripting.Dictionary")
+    Set sourceFileNoMap = CreateObject("Scripting.Dictionary")
+    Set destFileNoMap = CreateObject("Scripting.Dictionary")
+    Set sourceFileNoPaddingMap = CreateObject("Scripting.Dictionary")
+    Set destFileNoPaddingMap = CreateObject("Scripting.Dictionary")
+    Set sourceBarcodeMap = CreateObject("Scripting.Dictionary")
+    Set destBarcodeMap = CreateObject("Scripting.Dictionary")
+    Set sourceNameSyncMap = CreateObject("Scripting.Dictionary")
+    Set destNameSyncMap = CreateObject("Scripting.Dictionary")
+    Set destAllNameMap = CreateObject("Scripting.Dictionary")
+    Set lines = New Collection
+
+    BuildStep2IdentityIndex wsSrc, srcLastRow, srcLastCol, targetYearValue, _
+        sourceFullKeyMap, sourceFileIdMap, sourceIdBarcodeMap, sourceFileNoMap, sourceFileNoPaddingMap, sourceBarcodeMap
+    BuildStep2IdentityIndex wsDst, dstLastRow, dstLastCol, 0, _
+        destFullKeyMap, destFileIdMap, destIdBarcodeMap, destFileNoMap, destFileNoPaddingMap, destBarcodeMap
+    BidirectionalDiffBuildSourceNameSyncMapCached wsSrc, srcLastRow, sourceHeaderMap, sourceNameSyncMap, targetYearValue
+    BidirectionalDiffBuildDestinationNameSyncMapCached wsDst, dstLastRow, destHeaderMap, destNameSyncMap, targetYearValue
+    BidirectionalDiffBuildDestinationAllNameMapCached wsDst, dstLastRow, destHeaderMap, 0, destAllNameMap
+
+    lines.Add BidirectionalDiffCsvLine(Array( _
+        "対象年度", "同一性判定", "判定", "目録CSV行", "新ファイル基準表行", "Excel管理行ID", _
+        "ファイルID", "ファイル番号", "バーコード番号", "作成年度（和暦）", "第1ガイド", "第2ガイド", _
+        "個別フォルダー", "見出し名", "管理方針", "目録CSV値", "Excel値", "理由"))
+
+    For srcRow = 2 To srcLastRow
+        srcRowYearValue = GetNormalizedYearFromRow(wsSrc, srcRow, srcWarekiCol, srcYearCol)
+        If srcRowYearValue <> targetYearValue Then GoTo ContinueNextSourceRow
+
+        targetRow = 0
+        matchKind = ""
+        matchReason = ""
+        If BidirectionalDiffTryFormalIdentityMatch( _
+            wsSrc, srcRow, srcLastCol, wsDst, dstLastCol, targetYearValue, _
+            sourceHeaderMap, destHeaderMap, _
+            sourceFullKeyMap, destFullKeyMap, sourceFileIdMap, destFileIdMap, _
+            sourceFileNoMap, destFileNoMap, sourceFileNoPaddingMap, destFileNoPaddingMap, _
+            sourceBarcodeMap, destBarcodeMap, targetRow, matchReason) Then
+            matchKind = "正式ID一意一致"
+            formalMatchCount = formalMatchCount + 1
+        ElseIf BidirectionalDiffTryUniqueNameMatch( _
+            wsSrc, srcRow, srcLastCol, wsDst, dstLastCol, targetYearValue, _
+            sourceHeaderMap, destHeaderMap, _
+            sourceNameSyncMap, destNameSyncMap, destAllNameMap, destFileNoMap, destFileNoPaddingMap, _
+            destBarcodeMap, targetRow, matchReason) Then
+            matchKind = "名称一意一致（登録予定）"
+            nameMatchCount = nameMatchCount + 1
+        Else
+            uncertainCount = uncertainCount + 1
+            BidirectionalDiffAppendIdentityHoldLine lines, wsSrc, srcRow, srcLastCol, sourceHeaderMap, wsDst, 0, dstLastCol, _
+                rowIdCol, targetYearValue, matchReason
+            GoTo ContinueNextSourceRow
+        End If
+
+        differenceCount = differenceCount + BidirectionalDiffAppendDifferences( _
+            lines, wsSrc, srcRow, srcLastCol, sourceHeaderMap, wsDst, targetRow, dstLastCol, destHeaderMap, rowIdCol, _
+            targetYearValue, matchKind, comparisonUnavailableCount)
+
+ContinueNextSourceRow:
+    Next srcRow
+
+    BidirectionalDiffWriteUtf8Csv outputPath, lines
+    reportSummary = "正式ID一意一致: " & CStr(formalMatchCount) & " 件" & vbCrLf & _
+        "名称一意一致（登録予定）: " & CStr(nameMatchCount) & " 件" & vbCrLf & _
+        "同一性未確定: " & CStr(uncertainCount) & " 件" & vbCrLf & _
+        "比較不能（見出し不足・重複）: " & CStr(comparisonUnavailableCount) & " 件"
+    双方向編集_項目差異一覧を抽出 = differenceCount
+    Exit Function
+
+ErrorHandler:
+    Err.Raise Err.Number, "双方向編集_項目差異一覧を抽出", Err.Description
+
+End Function
+
+' A～T列の見出し別管理方針。第1段階では「システム連携」だけを差異比較する。
+Private Function BidirectionalDiffHeaderPolicies() As Variant
+
+    BidirectionalDiffHeaderPolicies = Array( _
+        Array("通し番号", "マクロ管理", False), _
+        Array("キャビネット番号", "職員管理", False), _
+        Array("ｎ＋1", "職員管理", False), _
+        Array("毎年度利用区分1:毎年作成 2:単年のみ", "システム連携", True), _
+        Array("原課", "システム連携", True), _
+        Array("年度（和暦）", "システム連携", True), _
+        Array("分類名１", "システム連携", True), _
+        Array("第1ガイド", "システム連携", True), _
+        Array("色名", "マクロ管理", False), _
+        Array("第2ガイド", "システム連携", True), _
+        Array("2色名", "マクロ管理", False), _
+        Array("作成年度（和暦）", "システム連携", True), _
+        Array("個別フォルダー", "システム連携", True), _
+        Array("保存期間", "システム連携", True), _
+        Array("媒体種別", "システム連携", True), _
+        Array("保存番号", "職員管理", False), _
+        Array("廃棄年月日", "マクロ管理", False), _
+        Array("同期状態", "マクロ管理", False), _
+        Array("内容・取扱い", "システム連携", True), _
+        Array("備考", "システム連携", True))
+
+End Function
+
+Private Function BidirectionalDiffTryFormalIdentityMatch( _
+    ByVal wsSrc As Worksheet, ByVal srcRow As Long, ByVal srcLastCol As Long, _
+    ByVal wsDst As Worksheet, ByVal dstLastCol As Long, ByVal targetYearValue As Long, _
+    ByVal sourceHeaderMap As Object, ByVal destHeaderMap As Object, _
+    ByVal sourceFullKeyMap As Object, ByVal destFullKeyMap As Object, _
+    ByVal sourceFileIdMap As Object, ByVal destFileIdMap As Object, _
+    ByVal sourceFileNoMap As Object, ByVal destFileNoMap As Object, _
+    ByVal sourceFileNoPaddingMap As Object, ByVal destFileNoPaddingMap As Object, _
+    ByVal sourceBarcodeMap As Object, ByVal destBarcodeMap As Object, _
+    ByRef targetRow As Long, ByRef reason As String) As Boolean
+
+    Dim fileIdColSrc As Long, fileNoColSrc As Long, barcodeColSrc As Long
+    Dim warekiColDst As Long, yearColDst As Long
+    Dim fileIdValue As String, fileNoValue As String, barcodeValue As String, key As String, paddingKey As String
+    Dim sourceIdRows As Collection, destIdRows As Collection, sourceExactRows As Collection, destExactRows As Collection
+    Dim sourceBarcodeRows As Collection, destBarcodeRows As Collection, sourceFileNoRows As Collection, destFileNoRows As Collection
+
+    fileIdColSrc = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("ファイルID"))
+    fileNoColSrc = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("ファイル番号"))
+    barcodeColSrc = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("バーコード番号"))
+    If fileIdColSrc <= 0 Or fileNoColSrc <= 0 Or barcodeColSrc <= 0 Then
+        reason = "正式識別情報の見出し不足または重複があります。"
+        Exit Function
+    End If
+
+    fileIdValue = GetTrimmedCell(wsSrc, srcRow, fileIdColSrc)
+    fileNoValue = GetTrimmedCell(wsSrc, srcRow, fileNoColSrc)
+    barcodeValue = GetTrimmedCell(wsSrc, srcRow, barcodeColSrc)
+    If Len(fileIdValue) = 0 Or Len(fileNoValue) = 0 Or Len(barcodeValue) = 0 Then
+        reason = "正式ID・ファイル番号・バーコード番号のいずれかが空欄です。"
+        Exit Function
+    End If
+
+    key = BuildFileKey(fileIdValue, fileNoValue, barcodeValue)
+    Set sourceIdRows = Step2MapRows(sourceFileIdMap, fileIdValue)
+    Set destIdRows = Step2MapRows(destFileIdMap, fileIdValue)
+    Set sourceExactRows = Step2MapRows(sourceFullKeyMap, key)
+    Set destExactRows = Step2MapRows(destFullKeyMap, key)
+    Set sourceBarcodeRows = Step2MapRows(sourceBarcodeMap, barcodeValue)
+    Set destBarcodeRows = Step2MapRows(destBarcodeMap, barcodeValue)
+    paddingKey = Step2FileNumberPaddingKey(fileNoValue)
+    If Len(paddingKey) > 0 Then
+        Set sourceFileNoRows = Step2MapRows(sourceFileNoPaddingMap, paddingKey)
+        Set destFileNoRows = Step2MapRows(destFileNoPaddingMap, paddingKey)
+    Else
+        Set sourceFileNoRows = Step2MapRows(sourceFileNoMap, fileNoValue)
+        Set destFileNoRows = Step2MapRows(destFileNoMap, fileNoValue)
+    End If
+
+    If sourceIdRows.Count <> 1 Or destIdRows.Count <> 1 Or _
+       sourceExactRows.Count <> 1 Or destExactRows.Count <> 1 Or _
+       sourceBarcodeRows.Count <> 1 Or destBarcodeRows.Count <> 1 Or _
+       sourceFileNoRows.Count <> 1 Or destFileNoRows.Count <> 1 Then
+        reason = "正式識別情報がCSV側またはExcel側で一意に特定できません。"
+        Exit Function
+    End If
+
+    targetRow = CLng(destExactRows.Item(1))
+    If CLng(destIdRows.Item(1)) <> targetRow Or _
+       CLng(destBarcodeRows.Item(1)) <> targetRow Or _
+       CLng(destFileNoRows.Item(1)) <> targetRow Then
+        targetRow = 0
+        reason = "正式識別情報が異なるExcel行を指しています。"
+        Exit Function
+    End If
+
+    warekiColDst = BidirectionalDiffFindCachedColumn(destHeaderMap, Array("年度（和暦）", "年度(和暦)"))
+    yearColDst = BidirectionalDiffFindCachedColumn(destHeaderMap, Array("年度"))
+    If GetNormalizedYearFromRow(wsDst, targetRow, warekiColDst, yearColDst) <> targetYearValue Then
+        targetRow = 0
+        reason = "正式識別情報は一致しますが、Excel側の対象年度が異なります。"
+        Exit Function
+    End If
+
+    BidirectionalDiffTryFormalIdentityMatch = True
+
+End Function
+
+Private Function BidirectionalDiffTryUniqueNameMatch( _
+    ByVal wsSrc As Worksheet, ByVal srcRow As Long, ByVal srcLastCol As Long, _
+    ByVal wsDst As Worksheet, ByVal dstLastCol As Long, ByVal targetYearValue As Long, _
+    ByVal sourceHeaderMap As Object, ByVal destHeaderMap As Object, _
+    ByVal sourceNameSyncMap As Object, ByVal destNameSyncMap As Object, ByVal destAllNameMap As Object, _
+    ByVal destFileNoMap As Object, ByVal destFileNoPaddingMap As Object, ByVal destBarcodeMap As Object, _
+    ByRef targetRow As Long, ByRef reason As String) As Boolean
+
+    Dim sourceFileIdCol As Long, sourceFileNoCol As Long, sourceBarcodeCol As Long
+    Dim sourceFileIdValue As String, sourceFileNoValue As String, sourceBarcodeValue As String, nameSyncKey As String, paddingKey As String
+    Dim sourceCandidates As Collection, destCandidates As Collection, allNameCandidates As Collection
+    Dim targetYearRows As Collection, collisionRows As Collection
+
+    sourceFileIdCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("ファイルID"))
+    sourceFileNoCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("ファイル番号"))
+    sourceBarcodeCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("バーコード番号"))
+    If sourceFileIdCol <= 0 Or sourceFileNoCol <= 0 Or sourceBarcodeCol <= 0 Then
+        reason = "名称照合に必要な正式識別情報の見出し不足または重複があります。"
+        Exit Function
+    End If
+
+    sourceFileIdValue = GetTrimmedCell(wsSrc, srcRow, sourceFileIdCol)
+    sourceFileNoValue = GetTrimmedCell(wsSrc, srcRow, sourceFileNoCol)
+    sourceBarcodeValue = GetTrimmedCell(wsSrc, srcRow, sourceBarcodeCol)
+    If Len(sourceFileIdValue) = 0 Then
+        reason = "目録CSV側に正式ファイルIDがないため、名称一致を確定できません。"
+        Exit Function
+    End If
+
+    nameSyncKey = BidirectionalDiffBuildNameSyncKeyCached(wsSrc, srcRow, sourceHeaderMap)
+    If Len(nameSyncKey) = 0 Then
+        reason = "作成年度・第1ガイド・第2ガイド・個別フォルダーの名称照合キーが不足しています。"
+        Exit Function
+    End If
+    If Not sourceNameSyncMap.Exists(nameSyncKey) Or Not destNameSyncMap.Exists(nameSyncKey) Then
+        reason = "登録予定の名称一致候補がありません。"
+        Exit Function
+    End If
+
+    Set sourceCandidates = sourceNameSyncMap(nameSyncKey)
+    Set destCandidates = destNameSyncMap(nameSyncKey)
+    If sourceCandidates.Count <> 1 Or destCandidates.Count <> 1 Then
+        reason = "名称照合候補がCSV側またはExcel側で複数あります。"
+        Exit Function
+    End If
+
+    targetRow = CLng(destCandidates.Item(1))
+    If Not BidirectionalDiffNameCandidateIdentityMatchesCached( _
+        wsSrc, wsDst, srcRow, targetRow, sourceHeaderMap, destHeaderMap) Then
+        targetRow = 0
+        reason = "登録予定行に残るファイル番号またはバーコード番号が目録CSVと異なります。"
+        Exit Function
+    End If
+
+    Set allNameCandidates = Step2MapRows(destAllNameMap, nameSyncKey)
+    Set targetYearRows = BidirectionalDiffRowsForTargetYearCached( _
+        wsDst, allNameCandidates, targetYearValue, destHeaderMap)
+    If targetYearRows.Count <> destCandidates.Count Or _
+       Not BidirectionalDiffCrossYearNameCandidatesAreDistinctCached( _
+            wsSrc, srcRow, wsDst, allNameCandidates, targetYearValue, sourceHeaderMap, destHeaderMap) Then
+        targetRow = 0
+        reason = "同年度または年度外に識別情報を分離できない同名候補があります。"
+        Exit Function
+    End If
+
+    If Len(sourceBarcodeValue) > 0 Then
+        Set collisionRows = Step2MapRows(destBarcodeMap, sourceBarcodeValue)
+        If Step2HasOtherRows(collisionRows, targetRow) Then
+            targetRow = 0
+            reason = "バーコード番号が別の既存Excel行とも一致します。"
+            Exit Function
+        End If
+    End If
+    If Len(sourceFileNoValue) > 0 Then
+        paddingKey = Step2FileNumberPaddingKey(sourceFileNoValue)
+        If Len(paddingKey) > 0 Then
+            Set collisionRows = Step2MapRows(destFileNoPaddingMap, paddingKey)
+        Else
+            Set collisionRows = Step2MapRows(destFileNoMap, sourceFileNoValue)
+        End If
+        If Step2HasOtherRows(collisionRows, targetRow) Then
+            targetRow = 0
+            reason = "ファイル番号が別の既存Excel行とも一致します。"
+            Exit Function
+        End If
+    End If
+
+    BidirectionalDiffTryUniqueNameMatch = True
+
+End Function
+
+' BuildSourceNameSyncMap と同じ対象年度・名称キーの多値マップを、
+' 読取専用レポート用の見出しキャッシュで作る。
+Private Sub BidirectionalDiffBuildSourceNameSyncMapCached( _
+    ByVal wsSrc As Worksheet, ByVal srcLastRow As Long, ByVal sourceHeaderMap As Object, _
+    ByVal nameSyncMap As Object, ByVal targetYearValue As Long)
+
+    Dim srcRow As Long, key As String, rowYearValue As Long
+    Dim warekiYearCol As Long, westernYearCol As Long
+
+    If nameSyncMap Is Nothing Then Exit Sub
+    nameSyncMap.RemoveAll
+    If wsSrc Is Nothing Or srcLastRow < 2 Then Exit Sub
+    warekiYearCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, GetStep2HeaderCandidates("年度（和暦）"))
+    westernYearCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("年度"))
+
+    For srcRow = 2 To srcLastRow
+        rowYearValue = GetNormalizedYearFromRow(wsSrc, srcRow, warekiYearCol, westernYearCol)
+        If targetYearValue > 0 And rowYearValue <> targetYearValue Then GoTo ContinueNextSourceNameRow
+        key = BidirectionalDiffBuildNameSyncKeyCached(wsSrc, srcRow, sourceHeaderMap)
+        If key <> "" Then AddRowToMultiValueMap nameSyncMap, key, srcRow
+ContinueNextSourceNameRow:
+    Next srcRow
+
+End Sub
+
+' BuildDestinationNameSyncMap と同じ「登録予定かつ空ID」の名称多値マップを、
+' 読取専用レポート用の見出しキャッシュで作る。
+Private Sub BidirectionalDiffBuildDestinationNameSyncMapCached( _
+    ByVal wsDst As Worksheet, ByVal dstLastRow As Long, ByVal destHeaderMap As Object, _
+    ByVal nameSyncMap As Object, ByVal targetYearValue As Long)
+
+    Dim dstRow As Long, key As String, rowYearValue As Long
+    Dim warekiYearCol As Long, westernYearCol As Long, syncCol As Long, fileIdCol As Long
+
+    If nameSyncMap Is Nothing Then Exit Sub
+    nameSyncMap.RemoveAll
+    If wsDst Is Nothing Or dstLastRow < 2 Then Exit Sub
+    warekiYearCol = BidirectionalDiffFindCachedColumn(destHeaderMap, GetStep2HeaderCandidates("年度（和暦）"))
+    westernYearCol = BidirectionalDiffFindCachedColumn(destHeaderMap, Array("年度"))
+    syncCol = BidirectionalDiffFindCachedColumn(destHeaderMap, Array("同期状態"))
+    fileIdCol = BidirectionalDiffFindCachedColumn(destHeaderMap, Array("ファイルID"))
+    If syncCol <= 0 Or fileIdCol <= 0 Then Exit Sub
+
+    For dstRow = 2 To dstLastRow
+        rowYearValue = GetNormalizedYearFromRow(wsDst, dstRow, warekiYearCol, westernYearCol)
+        If targetYearValue > 0 And rowYearValue <> targetYearValue Then GoTo ContinueNextDestinationNameRow
+        If GetSyncStatusValue(wsDst, dstRow, syncCol) <> "登録予定" Then GoTo ContinueNextDestinationNameRow
+        If Len(GetTrimmedCell(wsDst, dstRow, fileIdCol)) > 0 Then GoTo ContinueNextDestinationNameRow
+        key = BidirectionalDiffBuildNameSyncKeyCached(wsDst, dstRow, destHeaderMap)
+        If key <> "" Then AddRowToMultiValueMap nameSyncMap, key, dstRow
+ContinueNextDestinationNameRow:
+    Next dstRow
+
+End Sub
+
+' BuildDestinationAllNameMap と同じ全年度の名称多値マップを、
+' 読取専用レポート用の見出しキャッシュで作る。
+Private Sub BidirectionalDiffBuildDestinationAllNameMapCached( _
+    ByVal wsDst As Worksheet, ByVal dstLastRow As Long, ByVal destHeaderMap As Object, _
+    ByVal targetYearValue As Long, ByVal nameMap As Object)
+
+    Dim rowNo As Long, fiscalCol As Long, westernCol As Long, nameKey As String
+
+    If nameMap Is Nothing Then Exit Sub
+    nameMap.RemoveAll
+    If wsDst Is Nothing Or dstLastRow < 2 Then Exit Sub
+    fiscalCol = BidirectionalDiffFindCachedColumn(destHeaderMap, Array("年度（和暦）", "年度(和暦)"))
+    westernCol = BidirectionalDiffFindCachedColumn(destHeaderMap, Array("年度"))
+
+    For rowNo = 2 To dstLastRow
+        If targetYearValue > 0 Then
+            If GetNormalizedYearFromRow(wsDst, rowNo, fiscalCol, westernCol) <> targetYearValue Then GoTo ContinueNextNameRow
+        End If
+        nameKey = BidirectionalDiffBuildNameSyncKeyCached(wsDst, rowNo, destHeaderMap)
+        If Len(nameKey) > 0 Then AddRowToMultiValueMap nameMap, nameKey, rowNo
+ContinueNextNameRow:
+    Next rowNo
+
+End Sub
+
+' BuildStep2NameSyncKey と同じ名前照合キーを、見出しキャッシュで作る。
+Private Function BidirectionalDiffBuildNameSyncKeyCached( _
+    ByVal ws As Worksheet, ByVal rowNo As Long, ByVal headerMap As Object) As String
+
+    Dim createdCol As Long, class2Col As Long, class3Col As Long, titleCol As Long
+    Dim yearValue As Long, class2Value As String, class3Value As String, titleValue As String
+
+    If ws Is Nothing Or rowNo < 2 Then Exit Function
+    createdCol = BidirectionalDiffFindCachedColumn(headerMap, GetStep2HeaderCandidates("作成年度（和暦）"))
+    class2Col = BidirectionalDiffFindCachedColumn(headerMap, GetStep2HeaderCandidates("分類名２"))
+    class3Col = BidirectionalDiffFindCachedColumn(headerMap, GetStep2HeaderCandidates("分類名３"))
+    titleCol = BidirectionalDiffFindCachedColumn(headerMap, GetStep2HeaderCandidates("タイトル"))
+    If createdCol <= 0 Or class2Col <= 0 Or class3Col <= 0 Or titleCol <= 0 Then Exit Function
+
+    yearValue = NormalizeYearValue(ws.Cells(rowNo, createdCol).Value)
+    If yearValue <= 0 Then Exit Function
+    class2Value = NormalizeForFolderNameSyncKey(ws.Cells(rowNo, class2Col).Value)
+    class3Value = NormalizeForFolderNameSyncKey(ws.Cells(rowNo, class3Col).Value)
+    titleValue = NormalizeForFolderNameSyncKey(ws.Cells(rowNo, titleCol).Value)
+    If class2Value = "" Or class3Value = "" Or titleValue = "" Then Exit Function
+
+    BidirectionalDiffBuildNameSyncKeyCached = CStr(yearValue) & "|" & class2Value & "|" & class3Value & "|" & titleValue
+
+End Function
+
+' Step2RowsForTargetYear と同じ対象年度抽出を、見出しキャッシュで実行する。
+Private Function BidirectionalDiffRowsForTargetYearCached( _
+    ByVal ws As Worksheet, ByVal rows As Collection, ByVal targetYearValue As Long, _
+    ByVal headerMap As Object) As Collection
+
+    Dim resultRows As New Collection, rowValue As Variant, warekiCol As Long, yearCol As Long
+
+    Set BidirectionalDiffRowsForTargetYearCached = resultRows
+    If ws Is Nothing Or rows Is Nothing Then Exit Function
+    If targetYearValue <= 0 Then
+        For Each rowValue In rows
+            AddStep2UniqueRow resultRows, CLng(rowValue)
+        Next rowValue
+        Exit Function
+    End If
+
+    warekiCol = BidirectionalDiffFindCachedColumn(headerMap, Array("年度（和暦）", "年度(和暦)"))
+    yearCol = BidirectionalDiffFindCachedColumn(headerMap, Array("年度"))
+    For Each rowValue In rows
+        If GetNormalizedYearFromRow(ws, CLng(rowValue), warekiCol, yearCol) = targetYearValue Then _
+            AddStep2UniqueRow resultRows, CLng(rowValue)
+    Next rowValue
+
+End Function
+
+' Step2NameCandidateIdentityMatches と同じ判定条件を、読取専用レポート用の
+' 見出しキャッシュで実行する。Step2本体の既存処理は変更しない。
+Private Function BidirectionalDiffNameCandidateIdentityMatchesCached( _
+    ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
+    ByVal sourceHeaderMap As Object, ByVal destHeaderMap As Object) As Boolean
+
+    Dim names As Variant, i As Long, srcCol As Long, dstCol As Long, valueInExcel As String
+
+    names = Array("ファイル番号", "バーコード番号")
+    For i = LBound(names) To UBound(names)
+        srcCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array(CStr(names(i))))
+        dstCol = BidirectionalDiffFindCachedColumn(destHeaderMap, Array(CStr(names(i))))
+        If srcCol <= 0 Or dstCol <= 0 Then Exit Function
+        valueInExcel = GetTrimmedCell(wsDst, dstRow, dstCol)
+        If Len(valueInExcel) > 0 And valueInExcel <> GetTrimmedCell(wsSrc, srcRow, srcCol) Then Exit Function
+    Next i
+
+    BidirectionalDiffNameCandidateIdentityMatchesCached = True
+
+End Function
+
+' Step2CrossYearNameCandidatesAreDistinct と同じ年度外候補の安全判定を、
+' 見出しキャッシュで実行する。既存のStep2候補判定ロジック自体は変更しない。
+Private Function BidirectionalDiffCrossYearNameCandidatesAreDistinctCached( _
+    ByVal wsSrc As Worksheet, ByVal srcRow As Long, ByVal wsDst As Worksheet, _
+    ByVal destinationRows As Collection, ByVal targetYearValue As Long, _
+    ByVal sourceHeaderMap As Object, ByVal destHeaderMap As Object) As Boolean
+
+    Dim srcIdCol As Long, srcFileNoCol As Long, srcBarcodeCol As Long
+    Dim dstIdCol As Long, dstFileNoCol As Long, dstBarcodeCol As Long
+    Dim dstWarekiCol As Long, dstYearCol As Long, rowValue As Variant, dstRow As Long, dstYearValue As Long
+    Dim sourceId As String, sourceFileNo As String, sourceBarcode As String
+    Dim destId As String, destFileNo As String, destBarcode As String
+    Dim sourceFileNoKey As String, destFileNoKey As String, foundCrossYear As Boolean
+
+    BidirectionalDiffCrossYearNameCandidatesAreDistinctCached = True
+    If destinationRows Is Nothing Then Exit Function
+    If destinationRows.Count = 0 Then Exit Function
+
+    srcIdCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("ファイルID"))
+    srcFileNoCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("ファイル番号"))
+    srcBarcodeCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("バーコード番号"))
+    dstIdCol = BidirectionalDiffFindCachedColumn(destHeaderMap, Array("ファイルID"))
+    dstFileNoCol = BidirectionalDiffFindCachedColumn(destHeaderMap, Array("ファイル番号"))
+    dstBarcodeCol = BidirectionalDiffFindCachedColumn(destHeaderMap, Array("バーコード番号"))
+    dstWarekiCol = BidirectionalDiffFindCachedColumn(destHeaderMap, Array("年度（和暦）", "年度(和暦)"))
+    dstYearCol = BidirectionalDiffFindCachedColumn(destHeaderMap, Array("年度"))
+    sourceId = GetTrimmedCell(wsSrc, srcRow, srcIdCol)
+    sourceFileNo = GetTrimmedCell(wsSrc, srcRow, srcFileNoCol)
+    sourceBarcode = GetTrimmedCell(wsSrc, srcRow, srcBarcodeCol)
+    sourceFileNoKey = Step2FileNumberPaddingKey(sourceFileNo)
+
+    For Each rowValue In destinationRows
+        dstRow = CLng(rowValue)
+        dstYearValue = GetNormalizedYearFromRow(wsDst, dstRow, dstWarekiCol, dstYearCol)
+        If dstYearValue = targetYearValue Then GoTo ContinueNextCrossYearCandidate
+        If dstYearValue <= 0 Then
+            BidirectionalDiffCrossYearNameCandidatesAreDistinctCached = False
+            Exit Function
+        End If
+        foundCrossYear = True
+        destId = GetTrimmedCell(wsDst, dstRow, dstIdCol)
+        destFileNo = GetTrimmedCell(wsDst, dstRow, dstFileNoCol)
+        destBarcode = GetTrimmedCell(wsDst, dstRow, dstBarcodeCol)
+        destFileNoKey = Step2FileNumberPaddingKey(destFileNo)
+        If Len(sourceId) = 0 Or Len(sourceFileNo) = 0 Or Len(sourceBarcode) = 0 Or _
+           Len(destId) = 0 Or Len(destFileNo) = 0 Or Len(destBarcode) = 0 Then
+            BidirectionalDiffCrossYearNameCandidatesAreDistinctCached = False
+            Exit Function
+        End If
+        If StrComp(sourceId, destId, vbBinaryCompare) = 0 Or _
+           StrComp(sourceBarcode, destBarcode, vbBinaryCompare) = 0 Or _
+           StrComp(sourceFileNo, destFileNo, vbBinaryCompare) = 0 Or _
+           (Len(sourceFileNoKey) > 0 And Len(destFileNoKey) > 0 And _
+            StrComp(sourceFileNoKey, destFileNoKey, vbBinaryCompare) = 0) Then
+            BidirectionalDiffCrossYearNameCandidatesAreDistinctCached = False
+            Exit Function
+        End If
+ContinueNextCrossYearCandidate:
+    Next rowValue
+
+    If Not foundCrossYear Then BidirectionalDiffCrossYearNameCandidatesAreDistinctCached = True
+
+End Function
+
+Private Function BidirectionalDiffAppendDifferences( _
+    ByVal lines As Collection, ByVal wsSrc As Worksheet, ByVal srcRow As Long, ByVal srcLastCol As Long, ByVal sourceHeaderMap As Object, _
+    ByVal wsDst As Worksheet, ByVal dstRow As Long, ByVal dstLastCol As Long, ByVal destHeaderMap As Object, ByVal rowIdCol As Long, _
+    ByVal targetYearValue As Long, ByVal matchKind As String, ByRef comparisonUnavailableCount As Long) As Long
+
+    Dim policies As Variant, policy As Variant
+    Dim headerName As String, policyName As String
+    Dim srcCol As Long, dstCol As Long
+    Dim sourceValue As Variant, destinationValue As Variant
+
+    policies = BidirectionalDiffHeaderPolicies()
+    For Each policy In policies
+        headerName = CStr(policy(0))
+        policyName = CStr(policy(1))
+        If Not CBool(policy(2)) Then GoTo ContinueNextPolicy
+
+        srcCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, GetStep2HeaderCandidates(headerName))
+        dstCol = BidirectionalDiffFindCachedColumn(destHeaderMap, GetStep2HeaderCandidates(headerName))
+        If srcCol <= 0 Or dstCol <= 0 Then
+            comparisonUnavailableCount = comparisonUnavailableCount + 1
+            BidirectionalDiffAppendDataLine lines, wsSrc, srcRow, srcLastCol, sourceHeaderMap, wsDst, dstRow, dstLastCol, rowIdCol, _
+                targetYearValue, matchKind, "比較不能", headerName, policyName, "", "", _
+                "比較対象見出しが不足または重複しています。"
+            GoTo ContinueNextPolicy
+        End If
+
+        sourceValue = wsSrc.Cells(srcRow, srcCol).Value2
+        destinationValue = wsDst.Cells(dstRow, dstCol).Value2
+        If StrComp(NormalizeValueForUpdateCompare(headerName, sourceValue), _
+                   NormalizeValueForUpdateCompare(headerName, destinationValue), vbTextCompare) <> 0 Then
+            BidirectionalDiffAppendDataLine lines, wsSrc, srcRow, srcLastCol, sourceHeaderMap, wsDst, dstRow, dstLastCol, rowIdCol, _
+                targetYearValue, matchKind, "項目差異", headerName, policyName, _
+                BidirectionalDiffValueText(sourceValue), BidirectionalDiffValueText(destinationValue), _
+                "見出し別正規化後の値が一致しません。"
+            BidirectionalDiffAppendDifferences = BidirectionalDiffAppendDifferences + 1
+        End If
+
+ContinueNextPolicy:
+    Next policy
+
+End Function
+
+Private Sub BidirectionalDiffAppendIdentityHoldLine( _
+    ByVal lines As Collection, ByVal wsSrc As Worksheet, ByVal srcRow As Long, ByVal srcLastCol As Long, ByVal sourceHeaderMap As Object, _
+    ByVal wsDst As Worksheet, ByVal dstRow As Long, ByVal dstLastCol As Long, ByVal rowIdCol As Long, _
+    ByVal targetYearValue As Long, ByVal reason As String)
+
+    BidirectionalDiffAppendDataLine lines, wsSrc, srcRow, srcLastCol, sourceHeaderMap, wsDst, dstRow, dstLastCol, rowIdCol, _
+        targetYearValue, "同一性未確定", "比較保留", "", "", "", "", reason
+
+End Sub
+
+Private Sub BidirectionalDiffAppendDataLine( _
+    ByVal lines As Collection, ByVal wsSrc As Worksheet, ByVal srcRow As Long, ByVal srcLastCol As Long, ByVal sourceHeaderMap As Object, _
+    ByVal wsDst As Worksheet, ByVal dstRow As Long, ByVal dstLastCol As Long, ByVal rowIdCol As Long, _
+    ByVal targetYearValue As Long, ByVal matchKind As String, ByVal resultKind As String, _
+    ByVal headerName As String, ByVal policyName As String, ByVal sourceValue As String, _
+    ByVal destinationValue As String, ByVal reason As String)
+
+    Dim excelRowId As String
+    If dstRow >= 2 And rowIdCol > 0 Then excelRowId = GetTrimmedCell(wsDst, dstRow, rowIdCol)
+
+    lines.Add BidirectionalDiffCsvLine(Array( _
+        CStr(targetYearValue), matchKind, resultKind, CStr(srcRow), IIf(dstRow >= 2, CStr(dstRow), ""), excelRowId, _
+        BidirectionalDiffCellByHeader(wsSrc, srcRow, srcLastCol, sourceHeaderMap, "ファイルID"), _
+        BidirectionalDiffCellByHeader(wsSrc, srcRow, srcLastCol, sourceHeaderMap, "ファイル番号"), _
+        BidirectionalDiffCellByHeader(wsSrc, srcRow, srcLastCol, sourceHeaderMap, "バーコード番号"), _
+        BidirectionalDiffCellByHeader(wsSrc, srcRow, srcLastCol, sourceHeaderMap, "作成年度（和暦）"), _
+        BidirectionalDiffCellByHeader(wsSrc, srcRow, srcLastCol, sourceHeaderMap, "第1ガイド"), _
+        BidirectionalDiffCellByHeader(wsSrc, srcRow, srcLastCol, sourceHeaderMap, "第2ガイド"), _
+        BidirectionalDiffCellByHeader(wsSrc, srcRow, srcLastCol, sourceHeaderMap, "個別フォルダー"), _
+        headerName, policyName, sourceValue, destinationValue, reason))
+
+End Sub
+
+Private Function BidirectionalDiffCellByHeader( _
+    ByVal ws As Worksheet, ByVal rowNo As Long, ByVal lastCol As Long, ByVal headerMap As Object, ByVal headerName As String) As String
+
+    Dim colNo As Long
+    If ws Is Nothing Or rowNo < 2 Then Exit Function
+    colNo = BidirectionalDiffFindCachedColumn(headerMap, GetStep2HeaderCandidates(headerName))
+    If colNo > 0 Then BidirectionalDiffCellByHeader = BidirectionalDiffValueText(ws.Cells(rowNo, colNo).Value2)
+
+End Function
+
+Private Function BidirectionalDiffBuildHeaderColumnMap(ByVal ws As Worksheet, ByVal lastCol As Long) As Object
+
+    Dim headerMap As Object
+    Dim colNo As Long, canonicalName As String
+
+    Set headerMap = CreateObject("Scripting.Dictionary")
+    If ws Is Nothing Or lastCol <= 0 Then
+        Set BidirectionalDiffBuildHeaderColumnMap = headerMap
+        Exit Function
+    End If
+
+    For colNo = 1 To lastCol
+        If Not IsError(ws.Cells(1, colNo).Value2) Then
+            canonicalName = CanonicalHeaderName(Trim$(CStr(ws.Cells(1, colNo).Value2)))
+            If Len(canonicalName) > 0 Then
+                If headerMap.Exists(canonicalName) Then
+                    headerMap(canonicalName) = 0
+                Else
+                    headerMap.Add canonicalName, colNo
+                End If
+            End If
+        End If
+    Next colNo
+
+    Set BidirectionalDiffBuildHeaderColumnMap = headerMap
+
+End Function
+
+Private Function BidirectionalDiffFindCachedColumn(ByVal headerMap As Object, ByVal candidates As Variant) As Long
+
+    Dim candidate As Variant, canonicalName As String
+    Dim seenColumns As Object
+    Dim colNo As Long
+    Dim columnKeys As Variant
+
+    If headerMap Is Nothing Then Exit Function
+    Set seenColumns = CreateObject("Scripting.Dictionary")
+    For Each candidate In candidates
+        canonicalName = CanonicalHeaderName(CStr(candidate))
+        If headerMap.Exists(canonicalName) Then
+            colNo = CLng(headerMap(canonicalName))
+            If colNo > 0 Then
+                If Not seenColumns.Exists(CStr(colNo)) Then seenColumns.Add CStr(colNo), True
+            End If
+        End If
+    Next candidate
+    If seenColumns.Count = 1 Then
+        columnKeys = seenColumns.Keys
+        BidirectionalDiffFindCachedColumn = CLng(columnKeys(0))
+    End If
+
+End Function
+
+Private Function BidirectionalDiffFindUniqueColumn( _
+    ByVal ws As Worksheet, ByVal lastCol As Long, ByVal candidates As Variant) As Long
+
+    Dim colNo As Long, candidate As Variant, headerText As String
+    Dim foundCol As Long, foundCount As Long
+
+    If ws Is Nothing Or lastCol <= 0 Then Exit Function
+    For colNo = 1 To lastCol
+        headerText = Trim$(CStr(ws.Cells(1, colNo).Value2))
+        If Len(headerText) > 0 Then
+            For Each candidate In candidates
+                If StrComp(CanonicalHeaderName(headerText), CanonicalHeaderName(CStr(candidate)), vbTextCompare) = 0 Then
+                    foundCol = colNo
+                    foundCount = foundCount + 1
+                    Exit For
+                End If
+            Next candidate
+        End If
+    Next colNo
+    If foundCount = 1 Then BidirectionalDiffFindUniqueColumn = foundCol
+
+End Function
+
+Private Function BidirectionalDiffFindExcelRowIdColumn(ByVal ws As Worksheet, ByVal lastCol As Long) As Long
+
+    Dim colNo As Long, foundCol As Long, foundCount As Long
+    If ws Is Nothing Or lastCol <= 0 Then Exit Function
+    For colNo = 1 To lastCol
+        If ExcelRowIdIsHeaderName(CStr(ws.Cells(1, colNo).Value2)) Then
+            foundCol = colNo
+            foundCount = foundCount + 1
+        End If
+    Next colNo
+    If foundCount = 1 Then BidirectionalDiffFindExcelRowIdColumn = foundCol
+
+End Function
+
+Private Function BidirectionalDiffValueText(ByVal rawValue As Variant) As String
+
+    If IsError(rawValue) Or IsNull(rawValue) Or IsEmpty(rawValue) Then Exit Function
+    BidirectionalDiffValueText = CStr(rawValue)
+
+End Function
+
+Private Function BidirectionalDiffCsvLine(ByVal values As Variant) As String
+
+    Dim i As Long
+    For i = LBound(values) To UBound(values)
+        If i > LBound(values) Then BidirectionalDiffCsvLine = BidirectionalDiffCsvLine & ","
+        BidirectionalDiffCsvLine = BidirectionalDiffCsvLine & """" & _
+            Replace(BidirectionalDiffValueText(values(i)), """", """""") & """"
+    Next i
+
+End Function
+
+Private Sub BidirectionalDiffWriteUtf8Csv(ByVal outputPath As String, ByVal lines As Collection)
+
+    Dim stream As Object
+    Dim lineValue As Variant
+
+    If lines Is Nothing Then Err.Raise vbObjectError + 2716, , "出力する差異一覧がありません。"
+    If Len(Dir$(outputPath)) > 0 Then Err.Raise vbObjectError + 2717, , _
+        "同名の出力ファイルが既に存在します。既存ファイルを保護するため上書きしません。"
+
+    On Error GoTo ErrorHandler
+    Set stream = CreateObject("ADODB.Stream")
+    stream.Type = 2
+    stream.Charset = "utf-8"
+    stream.Open
+    For Each lineValue In lines
+        stream.WriteText CStr(lineValue) & vbCrLf
+    Next lineValue
+    stream.SaveToFile outputPath, 2
+    stream.Close
+    Exit Sub
+
+ErrorHandler:
+    On Error Resume Next
+    If Not stream Is Nothing Then stream.Close
+    On Error GoTo 0
+    Err.Raise Err.Number, "BidirectionalDiffWriteUtf8Csv", Err.Description
+
+End Sub
