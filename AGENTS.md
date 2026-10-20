@@ -17,6 +17,33 @@
 - The current VBA has external side effects: `Module1` creates recovery copies in `%LOCALAPPDATA%\file-index-sync\CSVImportBackups`; `modExcelRowId` uses `%LOCALAPPDATA%\file-index-sync\ExcelRowIdBackups`; CSV import stages files under `%TEMP%\CSVImportStage_*.csv`; `固定印刷設定` stores `土木課C4476R.dat` under `%LOCALAPPDATA%\file-index-sync\固定印刷設定`. Isolate `LOCALAPPDATA` and `TEMP` for applicable tests and verify them before/after; if a path cannot be isolated, do not run the macro.
 - For generation changes, inspect relevant results in `新ファイル基準表`, `コード管理CSV`, and `差分インポートCSV`; for CSV-import changes, inspect `目録CSV` and `ログ`. When matching/year behavior is affected, choose 3–5 relevant cases such as exact-ID match, unique-name match, new entry, ambiguous conflict, or an era/year pair; compare expected and actual before/operation/after values. A value visible in an InputBox is not proof of the value received by VBA.
 
+## Cross-PC development ownership
+
+### Default ownership and assignment
+
+- Normal development from implementation through Excel runtime verification is owned by the laptop's Hermes profile `hermes-dev`, where Microsoft Excel is installed.
+- Desktop Hermes `default` may take development or split work only when the user explicitly assigns it. Do not self-assign, change PC ownership, or start/control the laptop Hermes on the user's behalf.
+- Before desktop work, check shared Git/handoff information for overlapping notebook work. If concurrent ownership cannot be established, ask the user before editing.
+
+### Desktop split-work scope
+
+- On explicit assignment, desktop may change only the requested source, run static/regression checks, and prepare the laptop/user handoff. Commit/push to GitHub `main` only when the task explicitly includes main reflection.
+- Desktop has no Microsoft Excel. Do not attempt Excel COM, VBE compilation, or Excel runtime macro verification. Static success is not Excel verification and must never be reported as feature-complete or passed.
+- An explicit split-work task that includes main reflection may push source after static checks, but must label it `Excel実機検証待ち`. The laptop Hermes or user performs Excel verification. If it fails, fix with a new commit and use a safe revert if necessary.
+- Do not create verification branches by default. GitHub `main` is the sole code source. Fetch/check latest `origin/main` before work and again before push. Preserve dirty and untracked files. On conflicts or unclear divergence, stop; never force-push or hard-reset.
+
+### Handoff
+
+Record the target commit SHA; implemented function; static/regression test commands and results; Excel runtime verification status; 3–5 concrete Excel checks; remaining tasks and known issues; autonomous start time, elapsed time, and verification-attempt counts.
+
+### Autonomous-development limits
+
+- Follow common safe-development and Excel-safety Skills when available. Do not bypass them. If a required rule is unavailable in the active profile, stop and ask when the limits below do not resolve the safety question.
+- Start in Luna; escalate to Sol only if root-cause analysis requires it. Stop safely after at most 3 hours from autonomous start.
+- Limit terminal real-world/integration verification to 3 attempts per stage. Use CUA/GUI only if necessary, at most 2 attempts. Do not reset elapsed time or attempt counts on PC switch, `/goal` continuation, or session resume.
+- Do not repeat a failed attempt for the same cause without a new hypothesis. Stop for serious risk, an important unresolved specification decision, or an unsafe result.
+- Keep Excel runtime verification explicitly pending until it is actually performed on the laptop or by the user.
+
 ## Operational manual synchronization rule
 
 The end-user operational manual is:
