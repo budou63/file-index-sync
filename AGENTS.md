@@ -10,6 +10,13 @@
 - Keep `frmSeal` (old), `frmSealNew`, and `frmSyncReview` as separate forms. Do not alter their designer, controls, or event behavior for a source-location change. Root `frmSyncReview.frm` is a reference/restore artifact and `frmSyncReview-native.frm` plus `frmSyncReview-native.frx` are an adjacent import/restore pair, not alternative paste-ready authorities. Preserve them; when changing the canonical form code later, verify embedded code in restore artifacts remains aligned.
 - `Module2` exists in the user's Excel but has no verified repository source. It remains outside GitHub management: do not infer its contents, fabricate a source, or rename/delete it.
 
+## Project-specific Excel integration verification
+
+- Follow `safe-app-development` and `excel-vba-safe-development` for common model, time/attempt ledger, retry, and stop rules; keep only this project's source mapping and workbook side effects here.
+- This repository's sync mapping is `FILES` in `サンプルデータ/スキル用/sync_github_vba.py`; follow `excel-vba-sync` for invocation and source-snapshot procedure. Ensure a local snapshot includes every source in `FILES`. The helper's `SOURCE` is a template, not automatically the designated data-bearing original; use the source workbook explicitly identified for the work item.
+- The current VBA has external side effects: `Module1` creates recovery copies in `%LOCALAPPDATA%\file-index-sync\CSVImportBackups`; `modExcelRowId` uses `%LOCALAPPDATA%\file-index-sync\ExcelRowIdBackups`; CSV import stages files under `%TEMP%\CSVImportStage_*.csv`; `固定印刷設定` stores `土木課C4476R.dat` under `%LOCALAPPDATA%\file-index-sync\固定印刷設定`. Isolate `LOCALAPPDATA` and `TEMP` for applicable tests and verify them before/after; if a path cannot be isolated, do not run the macro.
+- For generation changes, inspect relevant results in `新ファイル基準表`, `コード管理CSV`, and `差分インポートCSV`; for CSV-import changes, inspect `目録CSV` and `ログ`. When matching/year behavior is affected, choose 3–5 relevant cases such as exact-ID match, unique-name match, new entry, ambiguous conflict, or an era/year pair; compare expected and actual before/operation/after values. A value visible in an InputBox is not proof of the value received by VBA.
+
 ## Operational manual synchronization rule
 
 The end-user operational manual is:
