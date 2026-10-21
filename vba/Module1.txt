@@ -23,6 +23,11 @@ Private Const SEAL_PAGE_ROWS As Long = 20
 Private Const SEAL_PAGE_COL_LAST As Long = 21 ' U列
 Private Const SEAL_PER_PAGE As Long = 12
 
+' 双方向編集・第2段階: 前回確認済み値の内部管理と、手順2中の安全更新コンテキスト。
+Private Const BIDIRECTIONAL_SYNC_BASELINE_SHEET As String = "双方向同期基準値"
+Private Const BIDIRECTIONAL_SYNC_BASELINE_VERSION As String = "1"
+Private mBidirectionalSyncContext As Object
+
 '========================================================
 ' 新ファイル基準表: 行移動モード（▲/▼で挿入予定位置のみ移動）
 '========================================================
@@ -5571,6 +5576,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim step2WriteStarted As Boolean
     Dim syncStatusPromptReady As Boolean
     Dim appendedRowKeys As Collection
+    Dim bidirectionalOutputPath As String
+    Dim bidirectionalSummary As String
+    Dim bidirectionalManualCount As Long
 
     mStep2Result = STEP2_RESULT_CANCELLED
     On Error GoTo ErrorHandler
@@ -5700,6 +5708,10 @@ Public Sub 手順2_新ファイル基準表を作成する()
     ' 3) 目録CSVの見出し辞書とCSV由来列の転記マップを作成する
     BuildStep2SourceTransferMap wsSrc, wsDst, srcLastCol, srcHeaderMap, existingDstHeaders, _
         baselineUserManagedHeaders, srcToDstMap
+    ' 第2段階: 既存の行更新は B/E/C の3方向比較を通す。
+    ' 手動確認・システム側手動編集待ちは、ブックと同じ場所の別CSVへ出力する。
+    bidirectionalOutputPath = BidirectionalSyncDefaultOutputPath(targetYearValue)
+    BidirectionalSyncStartContext wsDst, targetYearValue, bidirectionalOutputPath
     If Not syncStatusPromptReady Then
         dstLastRow = Step2GetLastDataRow(wsDst)
         If dstLastRow < 1 Then dstLastRow = 1
@@ -5965,6 +5977,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         serialCommentMap(key) = BuildSerialDiffComment("変更", changedHeadersText, idCompletionHeadersText)
                     End If
                 End If
+                mBidirectionalSyncContext("CurrentMatchKind") = "正式ID一意一致"
                 UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap, colorDiffDetectedCount, True
                 If beforeSyncStatus = "登録予定" Then
                     wsDst.Cells(targetRow, syncCol).Value = "同期済"
@@ -6102,6 +6115,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
                         hasRowDiff = RowDiffersFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
                         changedHeadersText = GetChangedHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap)
                         idCompletionHeadersText = GetIdentityCompletionHeaderNamesFromSourceByHeader(wsSrc, wsDst, srcRow, targetRow, srcHeaderMap)
+                        mBidirectionalSyncContext("CurrentMatchKind") = "名称一意一致（登録予定）"
                         UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, srcHeaderMap, srcToDstMap, colorDiffDetectedCount
                         If key <> "" Then existingRowMap(key) = targetRow
                         ' 名称ベース同期が成立した行は、差分比較結果に関わらず今回の同期済み変更行として赤塗り対象にする
@@ -6294,6 +6308,7 @@ ContinueNextSourceRow:
 
     ShowStep2MissingSourceWarnings missingFileIdCount, missingFileIdRows, _
         missingNameDataCount, missingNameRows
+    bidirectionalManualCount = BidirectionalSyncFinishContext(bidirectionalSummary)
 
     If Len(missingHeadersText) > 0 Then
         MsgBox "新ファイル基準表の作成が完了しました。" & vbCrLf & _
@@ -6316,6 +6331,8 @@ ContinueNextSourceRow:
                "色列差異検出件数: " & colorDiffDetectedCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
+               "双方向編集の手動確認・編集待ち: " & bidirectionalManualCount & " 件" & vbCrLf & _
+               bidirectionalSummary & vbCrLf & bidirectionalOutputPath & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列" & vbCrLf & vbCrLf & _
                "以下の見出しが見つからないため、左側固定対象から除外しました:" & vbCrLf & _
                missingHeadersText, vbExclamation
@@ -6340,6 +6357,8 @@ ContinueNextSourceRow:
                "色列差異検出件数: " & colorDiffDetectedCount & " 件" & vbCrLf & _
                "対象年度外スキップ件数: " & skippedOtherYearCount & " 件" & vbCrLf & _
                "キー不足スキップ件数: " & skippedNoKeyCount & " 件" & vbCrLf & _
+               "双方向編集の手動確認・編集待ち: " & bidirectionalManualCount & " 件" & vbCrLf & _
+               bidirectionalSummary & vbCrLf & bidirectionalOutputPath & vbCrLf & _
                "左側に固定した主要列数: " & leftFixedCount & " 列", vbInformation
     End If
     WriteProcessLog "CSV整形（新ファイル基準表作成）", SHEET_MOKUROKU_CSV, targetYearRaw, _
@@ -6365,6 +6384,7 @@ SafeExit:
         Application.EnableEvents = previousEnableEvents
         RestoreCalculationIfPossible previousCalculationMode
     End If
+    If Not step2Succeeded Then BidirectionalSyncDiscardContext
     On Error GoTo 0
     If step2Succeeded Then modSyncReview.SyncReviewAfterStep2Success targetYearValue
     Exit Sub
@@ -9339,6 +9359,13 @@ Private Sub UpdateRowFromSourceByHeader( _
     Dim afterCompare As String
     Dim targetCell As Range
     Dim key As Variant
+
+    ' 第2段階の3方向同期コンテキストでは、CSV由来値を一括上書きしない。
+    ' 各項目を B（前回確認値）/E（Excel）/C（CSV）で判定してから書き込む。
+    If BidirectionalSyncContextIsActive() Then
+        BidirectionalSyncApplyThreeWayToRow wsSrc, wsDst, srcRow, dstRow, srcHeaderMap, srcToDstMap, preserveExactIdentity
+        Exit Sub
+    End If
 
     ' CSV由来列だけを上書きし、ユーザー管理列は触らない
     ' さらに、実際に差分があるセルだけ赤字＋コメントを付与する
@@ -17162,5 +17189,888 @@ ErrorHandler:
     If Not stream Is Nothing Then stream.Close
     On Error GoTo 0
     Err.Raise Err.Number, "BidirectionalDiffWriteUtf8Csv", Err.Description
+
+End Sub
+
+'========================================================
+' 双方向編集・第2段階: 3方向比較による安全同期
+' - B: 前回同期確認値（VeryHidden の内部シート）
+' - E: 現在の新ファイル基準表
+' - C: 最新の目録CSV
+' - B がない不一致、双方変更、同一性未確定は上書きしない。
+'========================================================
+Public Sub 双方向編集_3方向比較を実行して手動編集一覧CSVを外部出力()
+
+    Dim targetYearRaw As String
+    Dim targetYearValue As Long
+    Dim savePath As Variant
+    Dim finalPath As String
+    Dim summary As String
+    Dim manualCount As Long
+
+    On Error GoTo ErrorHandler
+    targetYearRaw = InputBox("比較対象年度を入力してください。（例: R8 / 令和8年度 / 2026）", "双方向編集・3方向比較")
+    If StrPtr(targetYearRaw) = 0 Then Exit Sub
+    targetYearValue = NormalizeYearValue(targetYearRaw)
+    If targetYearValue <= 0 Then Err.Raise vbObjectError + 2780, , _
+        "比較対象年度を解釈できません。例: R8 / 令和8年度 / 2026"
+
+    savePath = Application.GetSaveAsFilename( _
+        InitialFileName:="双方向編集_手動編集一覧_" & CStr(targetYearValue) & "_" & Format$(Now, "yyyymmdd_hhnnss") & ".csv", _
+        FileFilter:="CSV (コンマ区切り) (*.csv),*.csv", _
+        Title:="手動編集一覧CSV の保存先を選択してください")
+    If VarType(savePath) = vbBoolean Then
+        If savePath = False Then Exit Sub
+    End If
+
+    finalPath = EnsureCsvExtension(CStr(savePath))
+    manualCount = 双方向編集_3方向比較を実行(targetYearValue, finalPath, summary)
+    MsgBox "3方向比較を完了しました。" & vbCrLf & _
+           "手動確認・編集待ち: " & CStr(manualCount) & " 件" & vbCrLf & _
+           summary & vbCrLf & finalPath, vbInformation
+    Exit Sub
+
+ErrorHandler:
+    MsgBox "3方向比較を実行できませんでした: " & Err.Description, vbExclamation
+
+End Sub
+
+' 指定年度だけを対象に3方向比較を行う。戻り値は手動確認・編集待ち一覧の件数。
+' 実機検証・自動化用にInputBoxを通さない公開入口としても使う。
+Public Function 双方向編集_3方向比較を実行( _
+    ByVal targetYearValue As Long, _
+    ByVal outputPath As String, _
+    Optional ByRef reportSummary As String) As Long
+
+    Dim wsDst As Worksheet
+    Dim manualCount As Long
+
+    On Error GoTo ErrorHandler
+    If targetYearValue <= 0 Then Err.Raise vbObjectError + 2781, , "比較対象年度が不正です。"
+    If Len(Trim$(outputPath)) = 0 Then Err.Raise vbObjectError + 2782, , "出力先ファイルが指定されていません。"
+    If Len(Dir$(outputPath)) > 0 Then Err.Raise vbObjectError + 2783, , _
+        "同名の出力ファイルが既に存在します。既存ファイルを保護するため、別名を指定してください。"
+
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    BidirectionalSyncStartContext wsDst, targetYearValue, outputPath
+    BidirectionalSyncRunForYear targetYearValue
+    manualCount = BidirectionalSyncFinishContext(reportSummary)
+    双方向編集_3方向比較を実行 = manualCount
+    Exit Function
+
+ErrorHandler:
+    BidirectionalSyncDiscardContext
+    Err.Raise Err.Number, "双方向編集_3方向比較を実行", Err.Description
+
+End Function
+
+Private Sub BidirectionalSyncStartContext( _
+    ByVal wsDst As Worksheet, ByVal targetYearValue As Long, ByVal outputPath As String)
+
+    Dim context As Object
+    Dim baselineSheet As Worksheet
+    Dim baselineValues As Object
+    Dim baselineRows As Object
+    Dim pendingBaselines As Object
+    Dim baselineSheetCreated As Boolean
+    Dim lines As Collection
+    Dim errorNumber As Long
+    Dim errorDescription As String
+
+    On Error GoTo ErrorHandler
+
+    If Not mBidirectionalSyncContext Is Nothing Then _
+        Err.Raise vbObjectError + 2784, , "前回の双方向同期処理が終了していません。Excelを再起動してからやり直してください。"
+    If wsDst Is Nothing Then Err.Raise vbObjectError + 2785, , "新ファイル基準表シートが見つかりません。"
+    If Len(Trim$(outputPath)) = 0 Then Err.Raise vbObjectError + 2786, , "手動編集一覧の出力先がありません。"
+
+    Set baselineSheet = BidirectionalSyncEnsureBaselineSheet(wsDst, baselineSheetCreated)
+    Set baselineValues = CreateObject("Scripting.Dictionary")
+    Set baselineRows = CreateObject("Scripting.Dictionary")
+    Set pendingBaselines = CreateObject("Scripting.Dictionary")
+    baselineValues.CompareMode = vbTextCompare
+    baselineRows.CompareMode = vbTextCompare
+    pendingBaselines.CompareMode = vbTextCompare
+    BidirectionalSyncLoadBaselineMaps baselineSheet, baselineValues, baselineRows
+
+    Set lines = New Collection
+    lines.Add BidirectionalDiffCsvLine(Array( _
+        "対象年度", "同一性判定", "判定", "目録CSV行", "新ファイル基準表行", "Excel管理行ID", _
+        "見出し名", "関連項目グループ", "前回同期確認値", "目録CSV値", "Excel値", "理由"))
+
+    Set context = CreateObject("Scripting.Dictionary")
+    context.Add "TargetYear", CLng(targetYearValue)
+    context.Add "OutputPath", CStr(outputPath)
+    context.Add "ManualCount", CLng(0)
+    context.Add "CsvAppliedCount", CLng(0)
+    context.Add "BaselineConfirmedCount", CLng(0)
+    context.Add "IdentityHoldCount", CLng(0)
+    context.Add "CurrentMatchKind", "同一性確認済"
+    context.Add "StartedAt", Format$(Now, "yyyy/mm/dd hh:nn:ss")
+    context.Add "BaselineSheet", Empty
+    Set context("BaselineSheet") = baselineSheet
+    context.Add "BaselineValues", Empty
+    Set context("BaselineValues") = baselineValues
+    context.Add "BaselineRows", Empty
+    Set context("BaselineRows") = baselineRows
+    context.Add "PendingBaselines", Empty
+    Set context("PendingBaselines") = pendingBaselines
+    context.Add "BaselineSheetCreated", CBool(baselineSheetCreated)
+    context.Add "Lines", Empty
+    Set context("Lines") = lines
+
+    Set mBidirectionalSyncContext = context
+    Exit Sub
+
+ErrorHandler:
+    errorNumber = Err.Number
+    errorDescription = Err.Description
+    If baselineSheetCreated Then
+        On Error GoTo CleanupError
+        BidirectionalSyncDeleteNewBaselineSheet baselineSheet
+    End If
+    On Error GoTo 0
+    Err.Raise errorNumber, "BidirectionalSyncStartContext", errorDescription
+
+CleanupError:
+    Err.Raise vbObjectError + 2807, "BidirectionalSyncStartContext", _
+        "同期開始処理が失敗し、新規作成した同期基準シートを安全に破棄できません。ブックを保存せずに終了してください。"
+
+End Sub
+
+Private Function BidirectionalSyncFinishContext(Optional ByRef reportSummary As String) As Long
+
+    Dim lines As Collection
+    Dim outputPath As String
+
+    If mBidirectionalSyncContext Is Nothing Then Exit Function
+    On Error GoTo ErrorHandler
+    Set lines = mBidirectionalSyncContext("Lines")
+    outputPath = CStr(mBidirectionalSyncContext("OutputPath"))
+    BidirectionalDiffWriteUtf8Csv outputPath, lines
+    BidirectionalSyncCommitPendingBaselines
+    mBidirectionalSyncContext("BaselineSheetCreated") = False
+
+    BidirectionalSyncFinishContext = CLng(mBidirectionalSyncContext("ManualCount"))
+    reportSummary = "CSV反映: " & CStr(mBidirectionalSyncContext("CsvAppliedCount")) & " 項目" & vbCrLf & _
+        "同期基準確定: " & CStr(mBidirectionalSyncContext("BaselineConfirmedCount")) & " 項目" & vbCrLf & _
+        "同一性未確定: " & CStr(mBidirectionalSyncContext("IdentityHoldCount")) & " 件"
+    Set mBidirectionalSyncContext = Nothing
+    Exit Function
+
+ErrorHandler:
+    BidirectionalSyncDiscardContext
+    Err.Raise Err.Number, "BidirectionalSyncFinishContext", Err.Description
+
+End Function
+
+Private Sub BidirectionalSyncDiscardContext()
+
+    Dim context As Object
+    Dim baselineSheetCreated As Boolean
+    Dim baselineSheet As Worksheet
+
+    If mBidirectionalSyncContext Is Nothing Then Exit Sub
+    Set context = mBidirectionalSyncContext
+    On Error GoTo ErrorHandler
+    If context.Exists("BaselineSheetCreated") Then baselineSheetCreated = CBool(context("BaselineSheetCreated"))
+    If baselineSheetCreated Then
+        Set baselineSheet = context("BaselineSheet")
+        BidirectionalSyncDeleteNewBaselineSheet baselineSheet
+    End If
+    Set mBidirectionalSyncContext = Nothing
+    Exit Sub
+
+ErrorHandler:
+    Set mBidirectionalSyncContext = Nothing
+    Err.Raise Err.Number, "BidirectionalSyncDiscardContext", _
+        "同期基準値の破棄処理に失敗しました。" & Err.Description
+
+End Sub
+
+Private Sub BidirectionalSyncDeleteNewBaselineSheet(ByVal baselineSheet As Worksheet)
+
+    Dim oldDisplayAlerts As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim standardSheet As Worksheet
+
+    If baselineSheet Is Nothing Then Exit Sub
+    If baselineSheet.Name <> BIDIRECTIONAL_SYNC_BASELINE_SHEET Then _
+        Err.Raise vbObjectError + 2804, , "作成直後の同期基準シートを確認できません。自動削除しません。"
+
+    On Error Resume Next
+    Set standardSheet = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    On Error GoTo 0
+    oldDisplayAlerts = Application.DisplayAlerts
+    oldEnableEvents = Application.EnableEvents
+    On Error GoTo ErrorHandler
+    Application.EnableEvents = False
+    If Not standardSheet Is Nothing Then standardSheet.Activate
+    Application.DisplayAlerts = False
+    baselineSheet.Delete
+    Application.DisplayAlerts = oldDisplayAlerts
+    Application.EnableEvents = oldEnableEvents
+    Exit Sub
+
+ErrorHandler:
+    Application.DisplayAlerts = oldDisplayAlerts
+    Application.EnableEvents = oldEnableEvents
+    Err.Raise Err.Number, "BidirectionalSyncDeleteNewBaselineSheet", _
+        "新規作成した同期基準シートを安全に破棄できませんでした: " & Err.Description
+
+End Sub
+
+Private Function BidirectionalSyncContextIsActive() As Boolean
+    BidirectionalSyncContextIsActive = Not (mBidirectionalSyncContext Is Nothing)
+End Function
+
+Private Function BidirectionalSyncCurrentMatchKind() As String
+    If BidirectionalSyncContextIsActive() Then _
+        BidirectionalSyncCurrentMatchKind = CStr(mBidirectionalSyncContext("CurrentMatchKind"))
+    If Len(BidirectionalSyncCurrentMatchKind) = 0 Then BidirectionalSyncCurrentMatchKind = "同一性確認済"
+End Function
+
+Private Function BidirectionalSyncEnsureBaselineSheet( _
+    ByVal activateSheet As Worksheet, ByRef wasCreated As Boolean) As Worksheet
+
+    Dim ws As Worksheet
+    Dim created As Boolean
+    Dim oldEnableEvents As Boolean
+    Dim errorNumber As Long
+    Dim errorDescription As String
+
+    wasCreated = False
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
+    On Error GoTo 0
+
+    oldEnableEvents = Application.EnableEvents
+    On Error GoTo ErrorHandler
+    Application.EnableEvents = False
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        ws.Name = BIDIRECTIONAL_SYNC_BASELINE_SHEET
+        ws.Range("A1:E1").Value = Array("Excel管理行ID", "見出し名", "前回同期確認値", "確定日時", "形式")
+        ws.Range("A1:E1").Font.Bold = True
+        ws.Columns("A:C").NumberFormat = "@"
+        created = True
+    End If
+
+    If ws.Cells(1, 1).Value2 <> "Excel管理行ID" Or _
+       ws.Cells(1, 2).Value2 <> "見出し名" Or _
+       ws.Cells(1, 3).Value2 <> "前回同期確認値" Or _
+       ws.Cells(1, 5).Value2 <> "形式" Then _
+        Err.Raise vbObjectError + 2787, , "双方向同期基準値シートの見出しが想定と異なります。自動修復せず中止しました。"
+
+    If Not activateSheet Is Nothing Then activateSheet.Activate
+    ws.Visible = xlSheetVeryHidden
+    Application.EnableEvents = oldEnableEvents
+    wasCreated = created
+    Set BidirectionalSyncEnsureBaselineSheet = ws
+    Exit Function
+
+ErrorHandler:
+    errorNumber = Err.Number
+    errorDescription = Err.Description
+    Application.EnableEvents = oldEnableEvents
+    If created Then
+        On Error GoTo CleanupError
+        If Not ws Is Nothing Then ws.Delete
+    End If
+    On Error GoTo 0
+    Err.Raise errorNumber, "BidirectionalSyncEnsureBaselineSheet", errorDescription
+
+CleanupError:
+    Application.EnableEvents = oldEnableEvents
+    Err.Raise vbObjectError + 2808, "BidirectionalSyncEnsureBaselineSheet", _
+        "同期基準シートの初期化に失敗し、新規作成シートを安全に破棄できません。ブックを保存せずに終了してください。"
+
+End Function
+
+Private Sub BidirectionalSyncLoadBaselineMaps( _
+    ByVal ws As Worksheet, ByVal baselineValues As Object, ByVal baselineRows As Object)
+
+    Dim lastRow As Long
+    Dim rowNo As Long
+    Dim rowId As String
+    Dim headerName As String
+    Dim mapKey As String
+
+    If ws Is Nothing Then Err.Raise vbObjectError + 2788, , "双方向同期基準値シートが見つかりません。"
+    If baselineValues Is Nothing Or baselineRows Is Nothing Then Err.Raise vbObjectError + 2789, , "同期基準値の内部マップを作成できません。"
+    baselineValues.RemoveAll
+    baselineRows.RemoveAll
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If lastRow < 2 Then Exit Sub
+
+    For rowNo = 2 To lastRow
+        rowId = Trim$(CStr(ws.Cells(rowNo, 1).Value2))
+        headerName = CanonicalHeaderName(CStr(ws.Cells(rowNo, 2).Value2))
+        If Len(rowId) = 0 And Len(headerName) = 0 Then GoTo ContinueNextBaselineRow
+        If Len(rowId) = 0 Or Len(headerName) = 0 Then _
+            Err.Raise vbObjectError + 2790, , "双方向同期基準値に行IDまたは見出し名がない行があります（行 " & CStr(rowNo) & "）。"
+        If CStr(ws.Cells(rowNo, 5).Value2) <> BIDIRECTIONAL_SYNC_BASELINE_VERSION Then _
+            Err.Raise vbObjectError + 2791, , "双方向同期基準値の形式バージョンを確認できません（行 " & CStr(rowNo) & "）。"
+        mapKey = BidirectionalSyncBaselineKey(rowId, headerName)
+        If baselineValues.Exists(mapKey) Then _
+            Err.Raise vbObjectError + 2792, , "双方向同期基準値に重複があります。自動で採用しません。"
+        baselineValues.Add mapKey, CStr(ws.Cells(rowNo, 3).Value2)
+        baselineRows.Add mapKey, CLng(rowNo)
+ContinueNextBaselineRow:
+    Next rowNo
+
+End Sub
+
+Private Function BidirectionalSyncBaselineKey(ByVal rowId As String, ByVal canonicalHeader As String) As String
+    BidirectionalSyncBaselineKey = UCase$(Trim$(rowId)) & "|" & CanonicalHeaderName(canonicalHeader)
+End Function
+
+Private Sub BidirectionalSyncStoreBaseline( _
+    ByVal rowId As String, ByVal headerName As String, ByVal normalizedValue As String)
+
+    Dim values As Object
+    Dim pending As Object
+    Dim mapKey As String
+    Dim canonicalHeader As String
+
+    If Not BidirectionalSyncContextIsActive() Then Exit Sub
+    If Len(Trim$(rowId)) = 0 Then Err.Raise vbObjectError + 2793, , "Excel管理行IDがないため、同期基準値を保存できません。"
+    Set values = mBidirectionalSyncContext("BaselineValues")
+    Set pending = mBidirectionalSyncContext("PendingBaselines")
+    canonicalHeader = CanonicalHeaderName(headerName)
+    mapKey = BidirectionalSyncBaselineKey(rowId, canonicalHeader)
+
+    ' 比較中は有効基準値だけをメモリ上で更新し、シートへは書き込まない。
+    If values.Exists(mapKey) Then
+        values(mapKey) = CStr(normalizedValue)
+    Else
+        values.Add mapKey, CStr(normalizedValue)
+    End If
+    If pending.Exists(mapKey) Then
+        pending(mapKey) = Array(CStr(rowId), canonicalHeader, CStr(normalizedValue))
+    Else
+        pending.Add mapKey, Array(CStr(rowId), canonicalHeader, CStr(normalizedValue))
+    End If
+
+End Sub
+
+' 手動編集一覧CSVの出力成功後だけ、保留した基準値を一括確定する。
+' 書込み失敗時は開始時点の値・書式へ戻し、部分的な基準値を残さない。
+Private Sub BidirectionalSyncCommitPendingBaselines()
+
+    Dim pending As Object
+    Dim baselineRows As Object
+    Dim baselineSheet As Worksheet
+    Dim key As Variant
+    Dim entry As Variant
+    Dim initialLastRow As Long, nextNewRow As Long, lastWrittenRow As Long
+    Dim rowNo As Long
+    Dim originalFormulas As Variant
+    Dim originalNumberFormats() As Variant
+    Dim formatRow As Long, formatCol As Long
+    Dim newRows As Object
+    Dim errorNumber As Long, errorDescription As String
+    Dim rollbackSucceeded As Boolean
+
+    If Not BidirectionalSyncContextIsActive() Then Exit Sub
+    Set pending = mBidirectionalSyncContext("PendingBaselines")
+    If pending.Count = 0 Then Exit Sub
+    Set baselineRows = mBidirectionalSyncContext("BaselineRows")
+    Set baselineSheet = mBidirectionalSyncContext("BaselineSheet")
+    If baselineSheet Is Nothing Then Err.Raise vbObjectError + 2805, , "同期基準値シートを確認できません。"
+
+    initialLastRow = baselineSheet.Cells(baselineSheet.Rows.Count, 1).End(xlUp).Row
+    If initialLastRow < 1 Then initialLastRow = 1
+    originalFormulas = baselineSheet.Range(baselineSheet.Cells(1, 1), baselineSheet.Cells(initialLastRow, 5)).Formula
+    ReDim originalNumberFormats(1 To initialLastRow, 1 To 5)
+    For formatRow = 1 To initialLastRow
+        For formatCol = 1 To 5
+            originalNumberFormats(formatRow, formatCol) = baselineSheet.Cells(formatRow, formatCol).NumberFormat
+        Next formatCol
+    Next formatRow
+    nextNewRow = initialLastRow + 1
+    Set newRows = CreateObject("Scripting.Dictionary")
+    newRows.CompareMode = vbTextCompare
+
+    On Error GoTo Rollback
+    For Each key In pending.Keys
+        entry = pending(CStr(key))
+        If baselineRows.Exists(CStr(key)) Then
+            rowNo = CLng(baselineRows(CStr(key)))
+        Else
+            rowNo = nextNewRow
+            nextNewRow = nextNewRow + 1
+            newRows.Add CStr(key), rowNo
+        End If
+        lastWrittenRow = rowNo
+
+        baselineSheet.Cells(rowNo, 1).NumberFormat = "@"
+        baselineSheet.Cells(rowNo, 2).NumberFormat = "@"
+        baselineSheet.Cells(rowNo, 3).NumberFormat = "@"
+        baselineSheet.Cells(rowNo, 1).Value2 = CStr(entry(0))
+        baselineSheet.Cells(rowNo, 2).Value2 = CStr(entry(1))
+        baselineSheet.Cells(rowNo, 3).Value2 = CStr(entry(2))
+        baselineSheet.Cells(rowNo, 4).Value = Now
+        baselineSheet.Cells(rowNo, 5).Value2 = BIDIRECTIONAL_SYNC_BASELINE_VERSION
+        lastWrittenRow = rowNo
+    Next key
+
+    For Each key In newRows.Keys
+        baselineRows.Add CStr(key), CLng(newRows(CStr(key)))
+    Next key
+    pending.RemoveAll
+    Exit Sub
+
+Rollback:
+    errorNumber = Err.Number
+    errorDescription = Err.Description
+    rollbackSucceeded = True
+    On Error Resume Next
+    baselineSheet.Range(baselineSheet.Cells(1, 1), baselineSheet.Cells(initialLastRow, 5)).Formula = originalFormulas
+    For formatRow = 1 To initialLastRow
+        For formatCol = 1 To 5
+            baselineSheet.Cells(formatRow, formatCol).NumberFormat = originalNumberFormats(formatRow, formatCol)
+        Next formatCol
+    Next formatRow
+    If lastWrittenRow > initialLastRow Then
+        baselineSheet.Range(baselineSheet.Cells(initialLastRow + 1, 1), baselineSheet.Cells(lastWrittenRow, 5)).Clear
+    End If
+    If Err.Number <> 0 Then rollbackSucceeded = False
+    On Error GoTo 0
+
+    If Not rollbackSucceeded Then _
+        Err.Raise vbObjectError + 2806, "BidirectionalSyncCommitPendingBaselines", _
+            "同期基準値の確定中に失敗し、復元できません。ブックを保存せずに終了してください。"
+    Err.Raise errorNumber, "BidirectionalSyncCommitPendingBaselines", _
+        "同期基準値の確定を取り消しました: " & errorDescription
+
+End Sub
+
+Private Function BidirectionalSyncDefaultOutputPath(ByVal targetYearValue As Long) As String
+
+    Dim folderPath As String
+    If Len(ThisWorkbook.Path) = 0 Then Err.Raise vbObjectError + 2794, , _
+        "ブックが未保存のため、手動編集一覧CSVの安全な出力先を決められません。"
+    folderPath = ThisWorkbook.Path
+    BidirectionalSyncDefaultOutputPath = folderPath & Application.PathSeparator & _
+        "双方向編集_手動編集一覧_" & CStr(targetYearValue) & "_" & Format$(Now, "yyyymmdd_hhnnss") & ".csv"
+
+End Function
+
+' 既存のUpdateRowFromSourceByHeaderから呼び出す、第2段階の項目単位更新本体。
+Private Sub BidirectionalSyncApplyThreeWayToRow( _
+    ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
+    ByVal srcHeaderMap As Object, ByVal srcToDstMap As Object, ByVal preserveExactIdentity As Boolean)
+
+    Dim processed As Object
+    Dim rowIdCol As Long
+    Dim rowId As String
+    Dim key As Variant
+
+    If Not BidirectionalSyncContextIsActive() Then Exit Sub
+    If wsSrc Is Nothing Or wsDst Is Nothing Or srcHeaderMap Is Nothing Or srcToDstMap Is Nothing Then Exit Sub
+    If srcRow < 2 Or dstRow < 2 Then Exit Sub
+
+    rowIdCol = BidirectionalDiffFindExcelRowIdColumn(wsDst, GetLastHeaderCol(wsDst))
+    If rowIdCol <= 0 Then Err.Raise vbObjectError + 2795, , "Excel管理行ID列が一意に見つかりません。"
+    rowId = GetTrimmedCell(wsDst, dstRow, rowIdCol)
+    If Len(rowId) = 0 Then
+        BidirectionalSyncAppendManualLine BidirectionalSyncCurrentMatchKind(), "同期基準保存不可", srcRow, dstRow, "", "", "", "", "", "", _
+            "Excel管理行IDが空欄のため、CSV値を反映しません。"
+        Exit Sub
+    End If
+
+    Set processed = CreateObject("Scripting.Dictionary")
+    processed.CompareMode = vbTextCompare
+
+    ' 正式IDの補完だけは、既存の同一性判定が成立した行に限って従来どおり行う。
+    For Each key In srcToDstMap.Keys
+        If BidirectionalSyncIsIdentityHeader(CStr(key)) Then
+            processed.Add CStr(key), True
+            If preserveExactIdentity And (CanonicalHeaderName(CStr(key)) = CanonicalHeaderName("ファイルID") Or _
+                CanonicalHeaderName(CStr(key)) = CanonicalHeaderName("バーコード番号")) Then GoTo ContinueNextIdentity
+            If srcHeaderMap.Exists(CStr(key)) Then _
+                WriteStep2SourceValue wsDst.Cells(dstRow, CLng(srcToDstMap(CStr(key)))), CStr(key), _
+                    wsSrc.Cells(srcRow, CLng(srcHeaderMap(CStr(key)))).Value
+        End If
+ContinueNextIdentity:
+    Next key
+
+    BidirectionalSyncApplyRelatedPair wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, processed, _
+        "分類名１・分類コード１", Array("分類名１"), Array("分類コード１")
+    BidirectionalSyncApplyRelatedPair wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, processed, _
+        "第1ガイド・分類コード２", Array("第1ガイド", "分類名２"), Array("分類コード２")
+    BidirectionalSyncApplyRelatedPair wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, processed, _
+        "第2ガイド・分類コード３", Array("第2ガイド", "分類名３"), Array("分類コード３")
+    BidirectionalSyncApplyRelatedPair wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, processed, _
+        "保存期間・保存期間ID", Array("保存期間"), Array("保存期間ID")
+    BidirectionalSyncApplyRelatedPair wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, processed, _
+        "媒体種別・媒体種別ID", Array("媒体種別"), Array("媒体種別ID")
+    BidirectionalSyncApplyRelatedPair wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, processed, _
+        "原課・原課ID", Array("原課"), Array("原課ID")
+
+    For Each key In srcToDstMap.Keys
+        If processed.Exists(CStr(key)) Then GoTo ContinueNextKey
+        If IsStep2UpdateExcludedHeader(CStr(key)) Then GoTo ContinueNextKey
+        BidirectionalSyncApplySingleHeader wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, CStr(key)
+ContinueNextKey:
+    Next key
+
+End Sub
+
+Private Function BidirectionalSyncIsIdentityHeader(ByVal headerName As String) As Boolean
+
+    Select Case CanonicalHeaderName(headerName)
+        Case CanonicalHeaderName("ファイルID"), CanonicalHeaderName("ファイル番号"), CanonicalHeaderName("バーコード番号")
+            BidirectionalSyncIsIdentityHeader = True
+    End Select
+
+End Function
+
+Private Sub BidirectionalSyncApplyRelatedPair( _
+    ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
+    ByVal rowId As String, ByVal srcHeaderMap As Object, ByVal srcToDstMap As Object, ByVal processed As Object, _
+    ByVal groupName As String, ByVal leftCandidates As Variant, ByVal rightCandidates As Variant)
+
+    Dim itemKeys As Collection
+    Dim key As Variant
+
+    Set itemKeys = BidirectionalSyncCollectMappedKeys(srcToDstMap, leftCandidates)
+    BidirectionalSyncAppendMappedKeys itemKeys, BidirectionalSyncCollectMappedKeys(srcToDstMap, rightCandidates)
+    If itemKeys.Count = 0 Then Exit Sub
+
+    For Each key In itemKeys
+        If Not processed.Exists(CStr(key)) Then processed.Add CStr(key), True
+    Next key
+
+    If itemKeys.Count <> 2 Then
+        BidirectionalSyncAppendGroupIssue wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, itemKeys, groupName, _
+            "関連する名称・コード項目の見出しが不足または重複しているため、片方だけを更新しません。"
+        Exit Sub
+    End If
+
+    BidirectionalSyncApplyManagedGroup wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, itemKeys, groupName
+
+End Sub
+
+Private Function BidirectionalSyncCollectMappedKeys(ByVal srcToDstMap As Object, ByVal candidates As Variant) As Collection
+
+    Dim result As New Collection
+    Dim key As Variant
+    Dim candidate As Variant
+
+    Set BidirectionalSyncCollectMappedKeys = result
+    If srcToDstMap Is Nothing Then Exit Function
+    For Each key In srcToDstMap.Keys
+        For Each candidate In candidates
+            If StrComp(CanonicalHeaderName(CStr(key)), CanonicalHeaderName(CStr(candidate)), vbTextCompare) = 0 Then
+                result.Add CStr(key)
+                Exit For
+            End If
+        Next candidate
+    Next key
+
+End Function
+
+Private Sub BidirectionalSyncAppendMappedKeys(ByVal destination As Collection, ByVal additions As Collection)
+
+    Dim value As Variant
+    Dim existing As Variant
+    Dim found As Boolean
+
+    If destination Is Nothing Or additions Is Nothing Then Exit Sub
+    For Each value In additions
+        found = False
+        For Each existing In destination
+            If StrComp(CStr(existing), CStr(value), vbTextCompare) = 0 Then
+                found = True
+                Exit For
+            End If
+        Next existing
+        If Not found Then destination.Add CStr(value)
+    Next value
+
+End Sub
+
+Private Sub BidirectionalSyncApplySingleHeader( _
+    ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
+    ByVal rowId As String, ByVal srcHeaderMap As Object, ByVal srcToDstMap As Object, ByVal headerKey As String)
+
+    Dim itemKeys As New Collection
+    itemKeys.Add headerKey
+    BidirectionalSyncApplyManagedGroup wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, itemKeys, headerKey
+
+End Sub
+
+Private Sub BidirectionalSyncApplyManagedGroup( _
+    ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
+    ByVal rowId As String, ByVal srcHeaderMap As Object, ByVal srcToDstMap As Object, _
+    ByVal itemKeys As Collection, ByVal groupName As String)
+
+    Dim baselineValues As Object
+    Dim key As Variant
+    Dim mapKey As String
+    Dim srcCol As Long, dstCol As Long
+    Dim baselineValue As String
+    Dim excelValue As String, csvValue As String
+    Dim allBaselineKnown As Boolean
+    Dim excelEqualsCsv As Boolean
+    Dim excelChanged As Boolean
+    Dim csvChanged As Boolean
+
+    If itemKeys Is Nothing Then Exit Sub
+    If itemKeys.Count = 0 Then Exit Sub
+    If Not BidirectionalSyncContextIsActive() Then Exit Sub
+    Set baselineValues = mBidirectionalSyncContext("BaselineValues")
+    allBaselineKnown = True
+    excelEqualsCsv = True
+
+    For Each key In itemKeys
+        If Not srcHeaderMap.Exists(CStr(key)) Or Not srcToDstMap.Exists(CStr(key)) Then _
+            Err.Raise vbObjectError + 2796, , "3方向比較に必要な見出しマップを確認できません。"
+        srcCol = CLng(srcHeaderMap(CStr(key)))
+        dstCol = CLng(srcToDstMap(CStr(key)))
+        excelValue = NormalizeValueForUpdateCompare(CStr(key), wsDst.Cells(dstRow, dstCol).Value)
+        csvValue = NormalizeValueForUpdateCompare(CStr(key), wsSrc.Cells(srcRow, srcCol).Value)
+        mapKey = BidirectionalSyncBaselineKey(rowId, CStr(key))
+        If Not baselineValues.Exists(mapKey) Then allBaselineKnown = False
+        If StrComp(excelValue, csvValue, vbTextCompare) <> 0 Then excelEqualsCsv = False
+    Next key
+
+    ' E と C が一致した項目だけ、初回・再一致を問わず同期基準値を確定する。
+    If excelEqualsCsv Then
+        For Each key In itemKeys
+            srcCol = CLng(srcHeaderMap(CStr(key)))
+            csvValue = NormalizeValueForUpdateCompare(CStr(key), wsSrc.Cells(srcRow, srcCol).Value)
+            BidirectionalSyncStoreBaseline rowId, CStr(key), csvValue
+            mBidirectionalSyncContext("BaselineConfirmedCount") = _
+                CLng(mBidirectionalSyncContext("BaselineConfirmedCount")) + 1
+        Next key
+        Exit Sub
+    End If
+
+    If Not allBaselineKnown Then
+        BidirectionalSyncAppendGroupDecision "初期不一致", wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, _
+            itemKeys, groupName, "前回同期確認値がない状態でExcel値と目録CSV値が異なります。どちらが正しいか推測せず、両方を保持しました。"
+        Exit Sub
+    End If
+
+    For Each key In itemKeys
+        srcCol = CLng(srcHeaderMap(CStr(key)))
+        dstCol = CLng(srcToDstMap(CStr(key)))
+        baselineValue = CStr(baselineValues(BidirectionalSyncBaselineKey(rowId, CStr(key))))
+        excelValue = NormalizeValueForUpdateCompare(CStr(key), wsDst.Cells(dstRow, dstCol).Value)
+        csvValue = NormalizeValueForUpdateCompare(CStr(key), wsSrc.Cells(srcRow, srcCol).Value)
+        If StrComp(excelValue, baselineValue, vbTextCompare) <> 0 Then excelChanged = True
+        If StrComp(csvValue, baselineValue, vbTextCompare) <> 0 Then csvChanged = True
+    Next key
+
+    If excelChanged And Not csvChanged Then
+        BidirectionalSyncAppendGroupDecision "システム手動編集待ち", wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, _
+            itemKeys, groupName, "Excel側だけが前回確認値から変更されています。CSVは上書きせず、職員が管理システム側を手動編集した後に最新CSVで再確認してください。"
+    ElseIf (Not excelChanged) And csvChanged Then
+        For Each key In itemKeys
+            srcCol = CLng(srcHeaderMap(CStr(key)))
+            dstCol = CLng(srcToDstMap(CStr(key)))
+            WriteStep2SourceValue wsDst.Cells(dstRow, dstCol), CStr(key), wsSrc.Cells(srcRow, srcCol).Value
+            excelValue = NormalizeValueForUpdateCompare(CStr(key), wsDst.Cells(dstRow, dstCol).Value)
+            csvValue = NormalizeValueForUpdateCompare(CStr(key), wsSrc.Cells(srcRow, srcCol).Value)
+            If StrComp(excelValue, csvValue, vbTextCompare) <> 0 Then _
+                Err.Raise vbObjectError + 2797, , "CSV値をExcelへ反映した後の照合に失敗しました（" & CStr(key) & "）。"
+            BidirectionalSyncStoreBaseline rowId, CStr(key), csvValue
+            mBidirectionalSyncContext("CsvAppliedCount") = CLng(mBidirectionalSyncContext("CsvAppliedCount")) + 1
+        Next key
+    Else
+        BidirectionalSyncAppendGroupDecision "競合保留", wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, _
+            itemKeys, groupName, "Excel側と管理システム側の両方が前回確認値から異なる値へ変更されています。自動採用せず、両方の値を保持しました。"
+    End If
+
+End Sub
+
+Private Sub BidirectionalSyncAppendGroupIssue( _
+    ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
+    ByVal rowId As String, ByVal srcHeaderMap As Object, ByVal srcToDstMap As Object, _
+    ByVal itemKeys As Collection, ByVal groupName As String, ByVal reason As String)
+
+    Dim key As Variant
+    Dim srcCol As Long, dstCol As Long
+
+    If itemKeys Is Nothing Or itemKeys.Count = 0 Then
+        BidirectionalSyncAppendManualLine BidirectionalSyncCurrentMatchKind(), "関連項目保留", srcRow, dstRow, rowId, "", groupName, "", "", "", reason
+        Exit Sub
+    End If
+    For Each key In itemKeys
+        srcCol = CLng(srcHeaderMap(CStr(key)))
+        dstCol = CLng(srcToDstMap(CStr(key)))
+        BidirectionalSyncAppendManualLine BidirectionalSyncCurrentMatchKind(), "関連項目保留", srcRow, dstRow, rowId, CStr(key), groupName, "", _
+            BidirectionalDiffValueText(wsSrc.Cells(srcRow, srcCol).Value2), _
+            BidirectionalDiffValueText(wsDst.Cells(dstRow, dstCol).Value2), reason
+    Next key
+
+End Sub
+
+Private Sub BidirectionalSyncAppendGroupDecision( _
+    ByVal decision As String, ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
+    ByVal rowId As String, ByVal srcHeaderMap As Object, ByVal srcToDstMap As Object, _
+    ByVal itemKeys As Collection, ByVal groupName As String, ByVal reason As String)
+
+    Dim baselineValues As Object
+    Dim key As Variant
+    Dim srcCol As Long, dstCol As Long
+    Dim baselineValue As String
+
+    If Not BidirectionalSyncContextIsActive() Then Exit Sub
+    Set baselineValues = mBidirectionalSyncContext("BaselineValues")
+    For Each key In itemKeys
+        baselineValue = ""
+        srcCol = CLng(srcHeaderMap(CStr(key)))
+        dstCol = CLng(srcToDstMap(CStr(key)))
+        If baselineValues.Exists(BidirectionalSyncBaselineKey(rowId, CStr(key))) Then _
+            baselineValue = CStr(baselineValues(BidirectionalSyncBaselineKey(rowId, CStr(key))))
+        BidirectionalSyncAppendManualLine BidirectionalSyncCurrentMatchKind(), decision, srcRow, dstRow, rowId, CStr(key), groupName, _
+            baselineValue, BidirectionalDiffValueText(wsSrc.Cells(srcRow, srcCol).Value2), _
+            BidirectionalDiffValueText(wsDst.Cells(dstRow, dstCol).Value2), reason
+    Next key
+
+End Sub
+
+Private Sub BidirectionalSyncAppendManualLine( _
+    ByVal matchKind As String, ByVal decision As String, ByVal srcRow As Long, ByVal dstRow As Long, _
+    ByVal rowId As String, ByVal headerName As String, ByVal groupName As String, _
+    ByVal baselineValue As String, ByVal csvValue As String, ByVal excelValue As String, ByVal reason As String)
+
+    Dim lines As Collection
+
+    If Not BidirectionalSyncContextIsActive() Then Exit Sub
+    Set lines = mBidirectionalSyncContext("Lines")
+    lines.Add BidirectionalDiffCsvLine(Array( _
+        CStr(mBidirectionalSyncContext("TargetYear")), matchKind, decision, CStr(srcRow), CStr(dstRow), rowId, _
+        headerName, groupName, baselineValue, csvValue, excelValue, reason))
+    mBidirectionalSyncContext("ManualCount") = CLng(mBidirectionalSyncContext("ManualCount")) + 1
+
+End Sub
+
+' 第1段階と同じ正式ID・名称一意照合で、既存レコードだけを3方向比較する。
+Private Sub BidirectionalSyncRunForYear(ByVal targetYearValue As Long)
+
+    Dim wsSrc As Worksheet, wsDst As Worksheet
+    Dim srcLastRow As Long, srcLastCol As Long, dstLastRow As Long, dstLastCol As Long
+    Dim srcWarekiCol As Long, srcYearCol As Long
+    Dim sourceHeaderMap As Object, destHeaderMap As Object, srcToDstMap As Object
+    Dim sourceFullKeyMap As Object, destFullKeyMap As Object
+    Dim sourceFileIdMap As Object, destFileIdMap As Object
+    Dim sourceIdBarcodeMap As Object, destIdBarcodeMap As Object
+    Dim sourceFileNoMap As Object, destFileNoMap As Object
+    Dim sourceFileNoPaddingMap As Object, destFileNoPaddingMap As Object
+    Dim sourceBarcodeMap As Object, destBarcodeMap As Object
+    Dim sourceNameSyncMap As Object, destNameSyncMap As Object, destAllNameMap As Object
+    Dim srcRow As Long, targetRow As Long, srcRowYearValue As Long
+    Dim matchKind As String, matchReason As String
+
+    If Not BidirectionalSyncContextIsActive() Then Err.Raise vbObjectError + 2798, , "3方向比較の実行コンテキストがありません。"
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    srcLastCol = GetLastHeaderCol(wsSrc)
+    srcLastRow = GetLastUsedRow(wsSrc)
+    dstLastCol = GetLastHeaderCol(wsDst)
+    dstLastRow = GetLastUsedRow(wsDst)
+    If srcLastCol <= 0 Or dstLastCol <= 0 Then Err.Raise vbObjectError + 2799, , "比較対象シートの見出し行が見つかりません。"
+
+    Set sourceHeaderMap = BidirectionalDiffBuildHeaderColumnMap(wsSrc, srcLastCol)
+    Set destHeaderMap = BidirectionalDiffBuildHeaderColumnMap(wsDst, dstLastCol)
+    srcWarekiCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("年度（和暦）", "年度(和暦)"))
+    srcYearCol = BidirectionalDiffFindCachedColumn(sourceHeaderMap, Array("年度"))
+    If srcWarekiCol <= 0 And srcYearCol <= 0 Then Err.Raise vbObjectError + 2800, , _
+        "目録CSVに年度（和暦）または年度の一意な列が見つかりません。"
+
+    Set srcToDstMap = CreateObject("Scripting.Dictionary")
+    srcToDstMap.CompareMode = vbTextCompare
+    BidirectionalSyncBuildSharedTransferMap wsSrc, srcLastCol, sourceHeaderMap, destHeaderMap, srcToDstMap
+
+    Set sourceFullKeyMap = CreateObject("Scripting.Dictionary")
+    Set destFullKeyMap = CreateObject("Scripting.Dictionary")
+    Set sourceFileIdMap = CreateObject("Scripting.Dictionary")
+    Set destFileIdMap = CreateObject("Scripting.Dictionary")
+    Set sourceIdBarcodeMap = CreateObject("Scripting.Dictionary")
+    Set destIdBarcodeMap = CreateObject("Scripting.Dictionary")
+    Set sourceFileNoMap = CreateObject("Scripting.Dictionary")
+    Set destFileNoMap = CreateObject("Scripting.Dictionary")
+    Set sourceFileNoPaddingMap = CreateObject("Scripting.Dictionary")
+    Set destFileNoPaddingMap = CreateObject("Scripting.Dictionary")
+    Set sourceBarcodeMap = CreateObject("Scripting.Dictionary")
+    Set destBarcodeMap = CreateObject("Scripting.Dictionary")
+    Set sourceNameSyncMap = CreateObject("Scripting.Dictionary")
+    Set destNameSyncMap = CreateObject("Scripting.Dictionary")
+    Set destAllNameMap = CreateObject("Scripting.Dictionary")
+
+    BuildStep2IdentityIndex wsSrc, srcLastRow, srcLastCol, targetYearValue, _
+        sourceFullKeyMap, sourceFileIdMap, sourceIdBarcodeMap, sourceFileNoMap, sourceFileNoPaddingMap, sourceBarcodeMap
+    BuildStep2IdentityIndex wsDst, dstLastRow, dstLastCol, 0, _
+        destFullKeyMap, destFileIdMap, destIdBarcodeMap, destFileNoMap, destFileNoPaddingMap, destBarcodeMap
+    BidirectionalDiffBuildSourceNameSyncMapCached wsSrc, srcLastRow, sourceHeaderMap, sourceNameSyncMap, targetYearValue
+    BidirectionalDiffBuildDestinationNameSyncMapCached wsDst, dstLastRow, destHeaderMap, destNameSyncMap, targetYearValue
+    BidirectionalDiffBuildDestinationAllNameMapCached wsDst, dstLastRow, destHeaderMap, 0, destAllNameMap
+
+    For srcRow = 2 To srcLastRow
+        srcRowYearValue = GetNormalizedYearFromRow(wsSrc, srcRow, srcWarekiCol, srcYearCol)
+        If srcRowYearValue <> targetYearValue Then GoTo ContinueNextSourceRow
+
+        targetRow = 0
+        matchKind = ""
+        matchReason = ""
+        If BidirectionalDiffTryFormalIdentityMatch( _
+            wsSrc, srcRow, srcLastCol, wsDst, dstLastCol, targetYearValue, _
+            sourceHeaderMap, destHeaderMap, sourceFullKeyMap, destFullKeyMap, sourceFileIdMap, destFileIdMap, _
+            sourceFileNoMap, destFileNoMap, sourceFileNoPaddingMap, destFileNoPaddingMap, _
+            sourceBarcodeMap, destBarcodeMap, targetRow, matchReason) Then
+            matchKind = "正式ID一意一致"
+        ElseIf BidirectionalDiffTryUniqueNameMatch( _
+            wsSrc, srcRow, srcLastCol, wsDst, dstLastCol, targetYearValue, _
+            sourceHeaderMap, destHeaderMap, sourceNameSyncMap, destNameSyncMap, destAllNameMap, _
+            destFileNoMap, destFileNoPaddingMap, destBarcodeMap, targetRow, matchReason) Then
+            matchKind = "名称一意一致（登録予定）"
+        Else
+            BidirectionalSyncAppendManualLine "同一性未確定", "比較保留", srcRow, 0, "", "", "", "", "", "", matchReason
+            mBidirectionalSyncContext("IdentityHoldCount") = CLng(mBidirectionalSyncContext("IdentityHoldCount")) + 1
+            GoTo ContinueNextSourceRow
+        End If
+
+        mBidirectionalSyncContext("CurrentMatchKind") = matchKind
+        UpdateRowFromSourceByHeader wsSrc, wsDst, srcRow, targetRow, sourceHeaderMap, srcToDstMap
+ContinueNextSourceRow:
+    Next srcRow
+
+End Sub
+
+Private Sub BidirectionalSyncBuildSharedTransferMap( _
+    ByVal wsSrc As Worksheet, ByVal srcLastCol As Long, ByVal sourceHeaderMap As Object, _
+    ByVal destHeaderMap As Object, ByVal srcToDstMap As Object)
+
+    Dim userManagedHeaders As Variant
+    Dim srcCol As Long, dstCol As Long
+    Dim headerName As String, canonical As String
+
+    userManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1", "保存番号", "廃棄年月日", "同期状態", "最終編集者", "最終編集日時")
+    If wsSrc Is Nothing Or sourceHeaderMap Is Nothing Or destHeaderMap Is Nothing Or srcToDstMap Is Nothing Then Exit Sub
+
+    For srcCol = 1 To srcLastCol
+        headerName = Trim$(CStr(wsSrc.Cells(1, srcCol).Value2))
+        If Len(headerName) = 0 Then GoTo ContinueNextHeader
+        canonical = CanonicalHeaderName(headerName)
+        If Not sourceHeaderMap.Exists(canonical) Then GoTo ContinueNextHeader
+        If CLng(sourceHeaderMap(canonical)) <> srcCol Then _
+            Err.Raise vbObjectError + 2801, , "目録CSVの見出しが重複しているため、3方向比較を中止しました。"
+        If ExcelRowIdIsHeaderName(canonical) Then GoTo ContinueNextHeader
+        If IsUserManagedHeader(canonical, sourceHeaderMap, userManagedHeaders) Then GoTo ContinueNextHeader
+        dstCol = BidirectionalDiffFindCachedColumn(destHeaderMap, GetStep2HeaderCandidates(headerName))
+        If dstCol > 0 Then
+            If srcToDstMap.Exists(canonical) Then _
+                Err.Raise vbObjectError + 2802, , "目録CSVの同一見出しを一意に対応付けできません。"
+            srcToDstMap.Add canonical, dstCol
+        End If
+ContinueNextHeader:
+    Next srcCol
+
+    If srcToDstMap.Count = 0 Then Err.Raise vbObjectError + 2803, , "目録CSVと新ファイル基準表に共通する更新対象見出しがありません。"
 
 End Sub
