@@ -17244,6 +17244,11 @@ Public Function 双方向編集_3方向比較を実行( _
 
     Dim wsDst As Worksheet
     Dim manualCount As Long
+    Dim originalErrorNumber As Long
+    Dim originalErrorSource As String
+    Dim originalErrorDescription As String
+    Dim cleanupErrorNumber As Long
+    Dim cleanupErrorDescription As String
 
     On Error GoTo ErrorHandler
     If targetYearValue <= 0 Then Err.Raise vbObjectError + 2781, , "比較対象年度が不正です。"
@@ -17259,8 +17264,23 @@ Public Function 双方向編集_3方向比較を実行( _
     Exit Function
 
 ErrorHandler:
+    originalErrorNumber = Err.Number
+    originalErrorSource = Err.Source
+    originalErrorDescription = Err.Description
+    On Error Resume Next
     BidirectionalSyncDiscardContext
-    Err.Raise Err.Number, "双方向編集_3方向比較を実行", Err.Description
+    cleanupErrorNumber = Err.Number
+    cleanupErrorDescription = Err.Description
+    On Error GoTo 0
+    If cleanupErrorNumber <> 0 Then GoTo CleanupError
+    Err.Raise originalErrorNumber, "双方向編集_3方向比較を実行", originalErrorDescription
+
+CleanupError:
+    Err.Raise vbObjectError + 2810, "双方向編集_3方向比較を実行", _
+        "3方向比較の元のエラー（" & originalErrorSource & " / " & CStr(originalErrorNumber) & "）: " & _
+        originalErrorDescription & vbCrLf & _
+        "後片付けにも失敗しました（" & CStr(cleanupErrorNumber) & "）: " & cleanupErrorDescription & _
+        vbCrLf & "ブックを保存せずに終了してください。"
 
 End Function
 
@@ -17342,6 +17362,11 @@ Private Function BidirectionalSyncFinishContext(Optional ByRef reportSummary As 
 
     Dim lines As Collection
     Dim outputPath As String
+    Dim originalErrorNumber As Long
+    Dim originalErrorSource As String
+    Dim originalErrorDescription As String
+    Dim cleanupErrorNumber As Long
+    Dim cleanupErrorDescription As String
 
     If mBidirectionalSyncContext Is Nothing Then Exit Function
     On Error GoTo ErrorHandler
@@ -17359,8 +17384,23 @@ Private Function BidirectionalSyncFinishContext(Optional ByRef reportSummary As 
     Exit Function
 
 ErrorHandler:
+    originalErrorNumber = Err.Number
+    originalErrorSource = Err.Source
+    originalErrorDescription = Err.Description
+    On Error Resume Next
     BidirectionalSyncDiscardContext
-    Err.Raise Err.Number, "BidirectionalSyncFinishContext", Err.Description
+    cleanupErrorNumber = Err.Number
+    cleanupErrorDescription = Err.Description
+    On Error GoTo 0
+    If cleanupErrorNumber <> 0 Then GoTo CleanupError
+    Err.Raise originalErrorNumber, "BidirectionalSyncFinishContext", originalErrorDescription
+
+CleanupError:
+    Err.Raise vbObjectError + 2811, "BidirectionalSyncFinishContext", _
+        "同期基準値の確定またはCSV出力時の元のエラー（" & originalErrorSource & " / " & _
+        CStr(originalErrorNumber) & "）: " & originalErrorDescription & vbCrLf & _
+        "後片付けにも失敗しました（" & CStr(cleanupErrorNumber) & "）: " & cleanupErrorDescription & _
+        vbCrLf & "ブックを保存せずに終了してください。"
 
 End Function
 
@@ -17392,31 +17432,60 @@ Private Sub BidirectionalSyncDeleteNewBaselineSheet(ByVal baselineSheet As Works
 
     Dim oldDisplayAlerts As Boolean
     Dim oldEnableEvents As Boolean
+    Dim originalVisibility As XlSheetVisibility
+    Dim visibilityChanged As Boolean
     Dim standardSheet As Worksheet
+    Dim deleteErrorNumber As Long
+    Dim deleteErrorDescription As String
+    Dim visibilityRestoreErrorNumber As Long
+    Dim applicationRestoreErrorNumber As Long
 
     If baselineSheet Is Nothing Then Exit Sub
     If baselineSheet.Name <> BIDIRECTIONAL_SYNC_BASELINE_SHEET Then _
         Err.Raise vbObjectError + 2804, , "作成直後の同期基準シートを確認できません。自動削除しません。"
+    If Not (baselineSheet.Parent Is ThisWorkbook) Then _
+        Err.Raise vbObjectError + 2809, , "同期基準シートのブック参照を確認できません。自動削除しません。"
+    If ThisWorkbook.ReadOnly Or ThisWorkbook.ProtectStructure Then _
+        Err.Raise vbObjectError + 2809, , "ブックが読み取り専用または構成保護されているため、新規同期基準シートを削除できません。"
 
     On Error Resume Next
     Set standardSheet = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     On Error GoTo 0
     oldDisplayAlerts = Application.DisplayAlerts
     oldEnableEvents = Application.EnableEvents
+    originalVisibility = baselineSheet.Visible
     On Error GoTo ErrorHandler
     Application.EnableEvents = False
     If Not standardSheet Is Nothing Then standardSheet.Activate
     Application.DisplayAlerts = False
+    If baselineSheet.Visible = xlSheetVeryHidden Then
+        baselineSheet.Visible = xlSheetHidden
+        visibilityChanged = True
+    End If
     baselineSheet.Delete
     Application.DisplayAlerts = oldDisplayAlerts
     Application.EnableEvents = oldEnableEvents
     Exit Sub
 
 ErrorHandler:
+    deleteErrorNumber = Err.Number
+    deleteErrorDescription = Err.Description
+    On Error Resume Next
+    If visibilityChanged Then baselineSheet.Visible = originalVisibility
+    visibilityRestoreErrorNumber = Err.Number
+    Err.Clear
     Application.DisplayAlerts = oldDisplayAlerts
+    applicationRestoreErrorNumber = Err.Number
+    Err.Clear
     Application.EnableEvents = oldEnableEvents
-    Err.Raise Err.Number, "BidirectionalSyncDeleteNewBaselineSheet", _
-        "新規作成した同期基準シートを安全に破棄できませんでした: " & Err.Description
+    If applicationRestoreErrorNumber = 0 Then applicationRestoreErrorNumber = Err.Number
+    On Error GoTo 0
+    If visibilityRestoreErrorNumber <> 0 Or applicationRestoreErrorNumber <> 0 Then _
+        Err.Raise vbObjectError + 2812, "BidirectionalSyncDeleteNewBaselineSheet", _
+            "新規同期基準シートの削除に失敗し、表示状態またはExcel設定を復元できませんでした。" & _
+            "削除エラー（" & CStr(deleteErrorNumber) & "）: " & deleteErrorDescription
+    Err.Raise deleteErrorNumber, "BidirectionalSyncDeleteNewBaselineSheet", _
+        "新規作成した同期基準シートを安全に破棄できませんでした: " & deleteErrorDescription
 
 End Sub
 

@@ -125,6 +125,30 @@ class TestBidirectionalThreeWaySync(unittest.TestCase):
         self.assertIn("復元できません", commit_body)
         self.assertIn("BidirectionalSyncDeleteNewBaselineSheet", discard_body)
 
+    def test_new_veryhidden_baseline_is_hidden_before_cleanup_delete(self) -> None:
+        delete_body = vba_block(self.source, "Private Sub BidirectionalSyncDeleteNewBaselineSheet")
+        self.assertIn("baselineSheet.Parent Is ThisWorkbook", delete_body)
+        self.assertIn("ThisWorkbook.ReadOnly Or ThisWorkbook.ProtectStructure", delete_body)
+        self.assertIn("If baselineSheet.Visible = xlSheetVeryHidden Then", delete_body)
+        self.assertIn("baselineSheet.Visible = xlSheetHidden", delete_body)
+        self.assertLess(
+            delete_body.index("baselineSheet.Visible = xlSheetHidden"),
+            delete_body.index("baselineSheet.Delete"),
+        )
+        self.assertIn("If visibilityChanged Then baselineSheet.Visible = originalVisibility", delete_body)
+
+    def test_cleanup_failure_retains_the_original_operation_error(self) -> None:
+        run_body = vba_block(self.source, "Public Function 双方向編集_3方向比較を実行")
+        finish_body = vba_block(self.source, "Private Function BidirectionalSyncFinishContext")
+        for body in (run_body, finish_body):
+            self.assertIn("originalErrorNumber = Err.Number", body)
+            self.assertIn("originalErrorDescription = Err.Description", body)
+            self.assertIn("On Error Resume Next", body)
+            self.assertIn("cleanupErrorNumber = Err.Number", body)
+            self.assertIn("CleanupError:", body)
+            self.assertIn("元のエラー", body)
+            self.assertIn("後片付けにも失敗しました", body)
+
     def test_name_match_and_row_id_safety_are_retained(self) -> None:
         run_body = vba_block(self.source, "Private Sub BidirectionalSyncRunForYear")
         self.assertIn("BidirectionalDiffTryFormalIdentityMatch", run_body)
