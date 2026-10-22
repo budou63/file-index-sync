@@ -1079,6 +1079,7 @@ Public Function SyncReviewClearCopyIdentifiers(ByVal item As Object, ByVal selec
     If Not ReviewCopyCaseCurrent(item, selectedRow) Then _
         Err.Raise vbObjectError + 6152, , "監査履歴の確認中にCSVまたはExcelデータが変わりました。"
 
+    新ファイル基準表_ファイルID編集スナップショットを無効化
     prevEvents = Application.EnableEvents
     eventsCaptured = True
     Application.EnableEvents = False
@@ -1672,6 +1673,7 @@ Public Function SyncReviewApprove(ByVal item As Object, ByVal selectedRow As Lon
     Next j
     backup = ReviewBackup()
     If Not ReviewCurrent(item) Then Err.Raise vbObjectError + 6137, , "バックアップ後に候補が変わりました。"
+    新ファイル基準表_ファイルID編集スナップショットを無効化
     prevEvents = Application.EnableEvents: Application.EnableEvents = False: changing = True
     For j = 1 To 3: dst.Cells(selectedRow, cols(j)).NumberFormat = "@": Next j
     dst.Cells(selectedRow, cols(1)).Value2 = id

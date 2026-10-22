@@ -4,6 +4,7 @@ Private Const STEP2_RESULT_CANCELLED As Long = 0
 Private Const STEP2_RESULT_COMPLETED As Long = 1
 Private Const STEP2_RESULT_FAILED As Long = 2
 Private mStep2Result As Long
+Private mFileIdEditSnapshotEpoch As Double
 
 Private Const SHEET_MOKUROKU_CSV As String = "目録CSV"
 Private Const SHEET_NEW_FILE_STANDARD As String = "新ファイル基準表"
@@ -60,6 +61,20 @@ Private gRowMoveSelectionAnchorRow As Long
 Private gRowMoveClickModeActive As Boolean
 Private gRowMoveClickStartRow As Long
 Private gRowMoveClickEndRow As Long
+
+' シートイベントが正当なマクロ更新を手動編集と取り違えないよう、
+' CSV同期等でファイルIDが変わる前に選択時スナップショットを無効化する。
+Public Sub 新ファイル基準表_ファイルID編集スナップショットを無効化()
+
+    mFileIdEditSnapshotEpoch = mFileIdEditSnapshotEpoch + 1#
+
+End Sub
+
+Public Function 新ファイル基準表_ファイルID編集スナップショット世代() As Double
+
+    新ファイル基準表_ファイルID編集スナップショット世代 = mFileIdEditSnapshotEpoch
+
+End Function
 
 Public Sub WriteProcessLog( _
     ByVal macroName As String, _
@@ -5627,6 +5642,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     previousCalculationMode = Application.Calculation
     step2ApplicationStateCaptured = True
     Application.ScreenUpdating = False
+    新ファイル基準表_ファイルID編集スナップショットを無効化
     Application.EnableEvents = False
     TrySetManualCalculation
 

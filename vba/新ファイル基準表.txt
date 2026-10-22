@@ -2,6 +2,8 @@ Option Explicit
 
 Private mSelectingRowFromMoveMode As Boolean
 Private mRowIdSelectionSnapshot As Object
+Private mFileIdSelectionSnapshot As Object
+Private mFileIdSelectionSnapshotEpoch As Double
 
 '========================================================
 ' 貼り付け先:
@@ -16,6 +18,7 @@ Private Sub Worksheet_Activate()
 
     On Error Resume Next
     Set mRowIdSelectionSnapshot = ExcelRowIdCaptureSelection(Application.ActiveCell, Me)
+    CaptureFileIdSelectionSnapshot Application.ActiveCell, Me
     On Error GoTo 0
 
 End Sub
@@ -34,6 +37,10 @@ Private Sub Worksheet_Change(ByVal Target As Range)
     End If
 
     Application.EnableEvents = False
+
+    ' U列「ファイルID」は管理システムの正式識別値のため、利用者の直接編集・貼り付けを復元する。
+    ' CSV取込・同期マクロは呼出元でイベントを停止して正当な更新を行う。
+    If 新ファイル基準表_ファイルID直接編集を復元(Target, Me) Then GoTo ExitHandler
 
     ' Worksheet_Change が発火した手動編集を記録する。自動処理は呼出元でイベントを停止する。
     新ファイル基準表_最終編集情報を記録 Target, Me
@@ -59,6 +66,7 @@ Private Sub Worksheet_Change(ByVal Target As Range)
 
     If TypeName(Application.Selection) = "Range" Then
         Set mRowIdSelectionSnapshot = ExcelRowIdCaptureSelection(Application.Selection, Me)
+        CaptureFileIdSelectionSnapshot Application.Selection, Me
     End If
 
 ExitHandler:
@@ -82,6 +90,7 @@ Private Sub Worksheet_SelectionChange(ByVal Target As Range)
     oldEnableEvents = Application.EnableEvents
     If Target Is Nothing Then GoTo ExitHandler
     Set mRowIdSelectionSnapshot = ExcelRowIdCaptureSelection(Target, Me)
+    CaptureFileIdSelectionSnapshot Target, Me
     If mSelectingRowFromMoveMode Then GoTo ExitHandler
     clickMode = IsRowMoveClickModeActive()
     If (Not IsRowMoveModeActive()) And (Not clickMode) Then GoTo ExitHandler
@@ -128,6 +137,221 @@ ExitHandler:
     mSelectingRowFromMoveMode = False
 
 End Sub
+
+Private Sub CaptureFileIdSelectionSnapshot(ByVal Target As Range, ByVal ws As Worksheet)
+
+    On Error GoTo ClearSnapshot
+    Set mFileIdSelectionSnapshot = NewFileStandardCaptureFileIdSelection(Target, ws)
+    mFileIdSelectionSnapshotEpoch = 新ファイル基準表_ファイルID編集スナップショット世代()
+    Exit Sub
+
+ClearSnapshot:
+    Set mFileIdSelectionSnapshot = Nothing
+    mFileIdSelectionSnapshotEpoch = 新ファイル基準表_ファイルID編集スナップショット世代()
+
+End Sub
+
+Private Function 新ファイル基準表_ファイルID直接編集を復元( _
+    ByVal Target As Range, ByVal ws As Worksheet) As Boolean
+
+    Dim fileIdCol As Long, syncCol As Long
+    Dim changedFileIdRange As Range, changedCell As Range
+    Dim rowsToRestore As Object, attemptedSnapshots As Object
+    Dim rowKey As Variant, rowNo As Long
+    Dim originalSnapshot As Object
+
+    If Target Is Nothing Or ws Is Nothing Then Exit Function
+    If Not (Target.Worksheet Is ws) Then Exit Function
+    fileIdCol = NewFileStandardFindUniqueHeaderColumn(ws, "ファイルID")
+    If fileIdCol <= 0 Then Exit Function
+    Set changedFileIdRange = Application.Intersect(Target, ws.Columns(fileIdCol))
+    If changedFileIdRange Is Nothing Then Exit Function
+
+    If mFileIdSelectionSnapshot Is Nothing Or _
+       mFileIdSelectionSnapshotEpoch <> 新ファイル基準表_ファイルID編集スナップショット世代() Then
+        新ファイル基準表_ファイルID直接編集を復元 = UndoUnsafeFileIdEdit(Target, ws)
+        Exit Function
+    End If
+
+    Set rowsToRestore = CreateObject("Scripting.Dictionary")
+    rowsToRestore.CompareMode = vbTextCompare
+    Set attemptedSnapshots = CreateObject("Scripting.Dictionary")
+    attemptedSnapshots.CompareMode = vbTextCompare
+
+    For Each changedCell In changedFileIdRange.Cells
+        If changedCell.Row >= 2 Then
+            rowKey = CStr(changedCell.Row)
+            If Not mFileIdSelectionSnapshot.Exists(CStr(rowKey)) Then
+                新ファイル基準表_ファイルID直接編集を復元 = UndoUnsafeFileIdEdit(Target, ws)
+                Exit Function
+            End If
+            Set originalSnapshot = mFileIdSelectionSnapshot.Item(CStr(rowKey))
+            If Not FileIdCellMatchesSnapshot(changedCell, originalSnapshot) Then
+                If Not rowsToRestore.Exists(CStr(rowKey)) Then
+                    rowsToRestore.Add CStr(rowKey), originalSnapshot
+                    attemptedSnapshots.Add CStr(rowKey), CaptureFileIdCellSnapshot(changedCell)
+                End If
+            End If
+        End If
+    Next changedCell
+
+    If rowsToRestore.Count = 0 Then Exit Function
+
+    ' 同じ貼り付けで同期状態を「登録予定」に変えると、既存仕様はU/V/Wを消去する。
+    ' 既存IDを保持しながらU列だけを安全に戻せないため、操作全体を取り消す。
+    syncCol = NewFileStandardFindUniqueHeaderColumn(ws, "同期状態")
+    If syncCol > 0 Then
+        For Each rowKey In rowsToRestore.Keys
+            rowNo = CLng(rowKey)
+            If Not (Application.Intersect(Target, ws.Cells(rowNo, syncCol)) Is Nothing) Then
+                If Trim$(CStr(ws.Cells(rowNo, syncCol).Value2)) = "登録予定" Then
+                    新ファイル基準表_ファイルID直接編集を復元 = UndoUnsafeFileIdEdit(Target, ws)
+                    Exit Function
+                End If
+            End If
+        Next rowKey
+    End If
+
+    On Error GoTo RestoreFailed
+    For Each rowKey In rowsToRestore.Keys
+        RestoreFileIdCellFromSnapshot ws.Cells(CLng(rowKey), fileIdCol), rowsToRestore.Item(CStr(rowKey))
+    Next rowKey
+    CaptureFileIdSelectionSnapshot Application.Selection, ws
+    MsgBox "U列「ファイルID」は管理システムの正式識別値です。" & vbCrLf & _
+        "直接編集・貼り付けはできないため、変更前の値に戻しました。" & vbCrLf & _
+        "CSV取込または同期マクロで更新してください。", _
+        vbExclamation, "ファイルIDは直接編集できません"
+    新ファイル基準表_ファイルID直接編集を復元 = _
+        Not NewFileStandardTargetHasNonFileIdCells(Target, ws, fileIdCol)
+    Exit Function
+
+RestoreFailed:
+    On Error Resume Next
+    For Each rowKey In attemptedSnapshots.Keys
+        RestoreFileIdCellFromSnapshot ws.Cells(CLng(rowKey), fileIdCol), attemptedSnapshots.Item(CStr(rowKey))
+    Next rowKey
+    On Error GoTo 0
+    MsgBox "ファイルIDを安全に復元できませんでした。" & vbCrLf & _
+        "データの一部だけを復元した状態で続行しないため、ブックを保存せず終了してください。", _
+        vbCritical, "ファイルID編集制限の安全停止"
+    新ファイル基準表_ファイルID直接編集を復元 = True
+
+End Function
+
+Private Function NewFileStandardCaptureFileIdSelection( _
+    ByVal Target As Range, ByVal ws As Worksheet) As Object
+
+    Dim snapshots As Object
+    Dim fileIdCol As Long
+    Dim selectedFileIdRange As Range, selectedCell As Range
+    Dim rowKey As String
+
+    Set snapshots = CreateObject("Scripting.Dictionary")
+    snapshots.CompareMode = vbTextCompare
+    If Target Is Nothing Or ws Is Nothing Then GoTo SafeExit
+    If Not (Target.Worksheet Is ws) Then GoTo SafeExit
+    fileIdCol = NewFileStandardFindUniqueHeaderColumn(ws, "ファイルID")
+    If fileIdCol <= 0 Then GoTo SafeExit
+    Set selectedFileIdRange = Application.Intersect(Target, ws.Columns(fileIdCol))
+    If selectedFileIdRange Is Nothing Then GoTo SafeExit
+    If selectedFileIdRange.Cells.CountLarge > 5000 Then GoTo SafeExit
+
+    For Each selectedCell In selectedFileIdRange.Cells
+        If selectedCell.Row >= 2 Then
+            rowKey = CStr(selectedCell.Row)
+            If Not snapshots.Exists(rowKey) Then snapshots.Add rowKey, CaptureFileIdCellSnapshot(selectedCell)
+        End If
+    Next selectedCell
+
+SafeExit:
+    Set NewFileStandardCaptureFileIdSelection = snapshots
+
+End Function
+
+Private Function CaptureFileIdCellSnapshot(ByVal targetCell As Range) As Object
+
+    Dim snapshot As Object
+
+    Set snapshot = CreateObject("Scripting.Dictionary")
+    snapshot.Add "Formula", CStr(targetCell.Formula)
+    snapshot.Add "NumberFormat", CStr(targetCell.NumberFormat)
+    Set CaptureFileIdCellSnapshot = snapshot
+
+End Function
+
+Private Function FileIdCellMatchesSnapshot( _
+    ByVal targetCell As Range, ByVal snapshot As Object) As Boolean
+
+    If targetCell Is Nothing Or snapshot Is Nothing Then Exit Function
+    FileIdCellMatchesSnapshot = _
+        (StrComp(CStr(targetCell.Formula), CStr(snapshot.Item("Formula")), vbBinaryCompare) = 0)
+
+End Function
+
+Private Sub RestoreFileIdCellFromSnapshot( _
+    ByVal targetCell As Range, ByVal snapshot As Object)
+
+    If targetCell Is Nothing Or snapshot Is Nothing Then _
+        Err.Raise vbObjectError + 7311, "RestoreFileIdCellFromSnapshot", "復元元のファイルID情報がありません。"
+    targetCell.NumberFormat = CStr(snapshot.Item("NumberFormat"))
+    targetCell.Formula = CStr(snapshot.Item("Formula"))
+    If Not FileIdCellMatchesSnapshot(targetCell, snapshot) Or _
+       StrComp(CStr(targetCell.NumberFormat), CStr(snapshot.Item("NumberFormat")), vbBinaryCompare) <> 0 Then _
+        Err.Raise vbObjectError + 7312, "RestoreFileIdCellFromSnapshot", "ファイルIDの復元結果を確認できません。"
+
+End Sub
+
+Private Function UndoUnsafeFileIdEdit(ByVal Target As Range, ByVal ws As Worksheet) As Boolean
+
+    On Error GoTo UndoFailed
+    Application.Undo
+    CaptureFileIdSelectionSnapshot Application.Selection, ws
+    MsgBox "ファイルIDの変更前の値を安全に特定できないため、編集操作全体を取り消しました。" & vbCrLf & _
+        "複数セルを貼り付けていた場合も、今回の貼り付けは適用していません。", _
+        vbExclamation, "ファイルIDは直接編集できません"
+    UndoUnsafeFileIdEdit = True
+    Exit Function
+
+UndoFailed:
+    MsgBox "ファイルIDを安全に復元できませんでした。" & vbCrLf & _
+        "データを推測で変更しないため、ブックを保存せず終了してください。", _
+        vbCritical, "ファイルID編集制限の安全停止"
+    UndoUnsafeFileIdEdit = True
+
+End Function
+
+Private Function NewFileStandardTargetHasNonFileIdCells( _
+    ByVal Target As Range, ByVal ws As Worksheet, ByVal fileIdCol As Long) As Boolean
+
+    Dim changedFileIdRange As Range
+
+    If Target Is Nothing Or ws Is Nothing Or fileIdCol <= 0 Then Exit Function
+    Set changedFileIdRange = Application.Intersect(Target, ws.Columns(fileIdCol))
+    If changedFileIdRange Is Nothing Then
+        NewFileStandardTargetHasNonFileIdCells = (Target.Cells.CountLarge > 0)
+    Else
+        NewFileStandardTargetHasNonFileIdCells = _
+            (Target.Cells.CountLarge > changedFileIdRange.Cells.CountLarge)
+    End If
+
+End Function
+
+Private Function NewFileStandardFindUniqueHeaderColumn( _
+    ByVal ws As Worksheet, ByVal headerName As String) As Long
+
+    Dim lastCol As Long, colNo As Long, matchCount As Long
+
+    If ws Is Nothing Then Exit Function
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    For colNo = 1 To lastCol
+        If StrComp(Trim$(CStr(ws.Cells(1, colNo).Value2)), headerName, vbTextCompare) = 0 Then
+            matchCount = matchCount + 1
+            NewFileStandardFindUniqueHeaderColumn = colNo
+        End If
+    Next colNo
+    If matchCount <> 1 Then NewFileStandardFindUniqueHeaderColumn = 0
+
+End Function
 
 Private Function ShouldReindexSerial(ByVal Target As Range, ByVal ws As Worksheet) As Boolean
 
