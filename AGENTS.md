@@ -39,8 +39,8 @@ Record the target commit SHA; implemented function; static/regression test comma
 ### Autonomous-development limits
 
 - Follow common safe-development and Excel-safety Skills when available. Do not bypass them. If a required rule is unavailable in the active profile, stop and ask when the limits below do not resolve the safety question.
-- Start in Luna; escalate to Sol only if root-cause analysis requires it. Stop safely after at most 3 hours from autonomous start.
-- Limit terminal real-world/integration verification to 3 attempts per stage. Use CUA/GUI only if necessary, at most 2 attempts. Do not reset elapsed time or attempt counts on PC switch, `/goal` continuation, or session resume.
+- Start in Luna; escalate to Sol only if root-cause analysis requires it. Do not force-stop solely because 3 wall-clock hours have passed since autonomous start; perform a safety review after each 3 cumulative hours of active work, excluding approval/user-response waits and Telegram interruptions. Review progress, uncommitted changes, verification results, and risks; if clear, continue without renewed approval.
+- Limit terminal real-world/integration verification to 3 attempts per stage. Use CUA/GUI only if necessary, at most 2 attempts. Do not reset cumulative active-work time or attempt counts on PC switch, `/goal` continuation, interruptions, or session resume.
 - Do not repeat a failed attempt for the same cause without a new hypothesis. Stop for serious risk, an important unresolved specification decision, or an unsafe result.
 - Keep Excel runtime verification explicitly pending until it is actually performed on the laptop or by the user.
 
