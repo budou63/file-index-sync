@@ -17,6 +17,19 @@
 - The current VBA has external side effects: `Module1` creates recovery copies in `%LOCALAPPDATA%\file-index-sync\CSVImportBackups`; `modExcelRowId` uses `%LOCALAPPDATA%\file-index-sync\ExcelRowIdBackups`; CSV import stages files under `%TEMP%\CSVImportStage_*.csv`; `固定印刷設定` stores `土木課C4476R.dat` under `%LOCALAPPDATA%\file-index-sync\固定印刷設定`. Isolate `LOCALAPPDATA` and `TEMP` for applicable tests and verify them before/after; if a path cannot be isolated, do not run the macro.
 - For generation changes, inspect relevant results in `新ファイル基準表`, `コード管理CSV`, and `差分インポートCSV`; for CSV-import changes, inspect `目録CSV` and `ログ`. When matching/year behavior is affected, choose 3–5 relevant cases such as exact-ID match, unique-name match, new entry, ambiguous conflict, or an era/year pair; compare expected and actual before/operation/after values. A value visible in an InputBox is not proof of the value received by VBA.
 
+## Verification data location
+
+- The designated project data area is `C:\Users\gennk\Desktop\アプリ開発管理（ノートPC）\新ファイル基準表\データ検証`, outside the `file-index-sync` repository. GitHub `main` remains the code/documentation source; do not copy verification data into the repository for convenience.
+- Current entries are `新ファイル基準表検証用最新.xlsm`, `Mokuroku (1).csv`, and `一時データ仮置/`. Preserve them in place; do not move, delete, or overwrite them. A filename or folder location alone does not establish which file is the approved baseline; use the baseline explicitly designated for the task.
+- Follow `safe-app-development` and `excel-vba-safe-development` for common baseline/copy/retention rules. For this project, group each run's workbook/CSV copies, macro-generated CSVs, logs, failure artifacts, and resume record under `データ検証\一時データ仮置\<stage>_<timestamp>_<attempt-id>\`; use unique names and create a run folder only when needed.
+- Route applicable Excel external outputs listed in `Project-specific Excel integration verification` into the isolated run folder. Keep the two existing root files unchanged.
+
+## Linear progress tracking
+
+- Follow the common issue lifecycle, stage updates, stop records, `/goal` behavior, and completion-status rules in `safe-app-development`; do not duplicate that shared procedure here.
+- For this project, scope issue searches and new issue placement to `新ファイル基準表` and the GitHub repository `budou63/file-index-sync`. Reuse an existing issue that matches the same work item; associate verified stage commits with their exact GitHub SHA.
+- This file does not define a Linear team/project ID. Resolve the matching existing workspace project from its project name and repository context; do not guess or create a new Linear project. If multiple projects match or the correct project cannot be determined, ask before creating an issue.
+
 ## Cross-PC development ownership
 
 ### Default ownership and assignment
@@ -34,7 +47,7 @@
 
 ### Handoff
 
-Record the target commit SHA; implemented function; static/regression test commands and results; Excel runtime verification status; 3–5 concrete Excel checks; remaining tasks and known issues; autonomous start time, elapsed time, and verification-attempt counts.
+Record the target commit SHA; implemented function; static/regression test commands and results; Excel runtime verification status; 3–5 concrete Excel checks; remaining tasks and known issues; cumulative active-work time, latest/next active-work checkpoint status, and verification-attempt counts. Exclude approval waits, user-reply waits, and Telegram interruptions from active-work time.
 
 ### Autonomous-development limits
 
