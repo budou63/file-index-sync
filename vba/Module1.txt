@@ -18188,8 +18188,11 @@ Private Function BidirectionalSyncPrepareClassificationCodeGroup( _
     End If
     If BidirectionalSyncHasSavedConflictForGroup( _
         CLng(mBidirectionalSyncContext("TargetYear")), rowId, groupName) Then
-        holdReason = "同じ分類名・コードグループに保存済みの競合判断があるため、自動修正しません。"
-        Exit Function
+        If Not BidirectionalSyncSavedConflictAllowsCodeNotation( _
+            wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, codeKey, nameKey, groupName) Then
+            holdReason = "同じ分類名・コードグループに保存済みの競合判断があるため、自動修正しません。"
+            Exit Function
+        End If
     End If
     BidirectionalSyncRecordGuideCodeSnapshot excelCodeCell
     oldEvents = Application.EnableEvents
@@ -18667,6 +18670,112 @@ Private Function BidirectionalSyncHasSavedConflictForGroup( _
 FailClosed:
     Err.Clear
     BidirectionalSyncHasSavedConflictForGroup = True
+
+End Function
+
+
+Private Function BidirectionalSyncSavedConflictAllowsCodeNotation( _
+    ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
+    ByVal rowId As String, ByVal srcHeaderMap As Object, ByVal srcToDstMap As Object, _
+    ByVal codeKey As String, ByVal nameKey As String, ByVal groupName As String) As Boolean
+
+    Dim cases As Collection, savedCasesByKey As Object, savedCase As Object
+    Dim savedHeaders As Collection, savedHeader As Object
+    Dim currentStableKey As String, currentCaseKey As String, savedCaseKey As String
+    Dim headerName As String, destinationHeader As String
+    Dim savedSystemValue As String, savedExcelValue As String
+    Dim currentSystemValue As String, currentExcelValue As String
+    Dim savedSystemKey As String, savedExcelKey As String
+    Dim sourceCol As Long, destinationCol As Long
+    Dim codeSeen As Boolean
+
+    On Error GoTo FailClosed
+    If wsSrc Is Nothing Then Exit Function
+    If wsDst Is Nothing Then Exit Function
+    If srcHeaderMap Is Nothing Or srcToDstMap Is Nothing Then Exit Function
+    If Len(Trim$(rowId)) = 0 Or Len(Trim$(groupName)) = 0 Then Exit Function
+    If Not BidirectionalSyncContextIsActive() Then Exit Function
+
+    currentStableKey = BuildFileKeyFromSheetRow(wsSrc, srcRow, srcHeaderMap)
+    If Len(currentStableKey) = 0 Then _
+        currentStableKey = BuildFolderNameSyncKeyFromSheetRow(wsSrc, srcRow, GetLastHeaderCol(wsSrc))
+    If Len(currentStableKey) = 0 Then Exit Function
+
+    If Not mBidirectionalSyncContext.Exists("SavedConflictCasesByKey") Then
+        Set cases = BidirectionalSyncConflictReviewCases(CLng(mBidirectionalSyncContext("TargetYear")))
+        If cases Is Nothing Then Exit Function
+        Set savedCasesByKey = CreateObject("Scripting.Dictionary")
+        savedCasesByKey.CompareMode = vbTextCompare
+        For Each savedCase In cases
+            savedCaseKey = BidirectionalSyncConflictCaseKey( _
+                CStr(savedCase("rowId")), CStr(savedCase("groupName")))
+            If savedCasesByKey.Exists(savedCaseKey) Then Exit Function
+            savedCasesByKey.Add savedCaseKey, Empty
+            Set savedCasesByKey(savedCaseKey) = savedCase
+        Next savedCase
+        mBidirectionalSyncContext.Add "SavedConflictCasesByKey", Empty
+        Set mBidirectionalSyncContext("SavedConflictCasesByKey") = savedCasesByKey
+    Else
+        Set savedCasesByKey = mBidirectionalSyncContext("SavedConflictCasesByKey")
+    End If
+
+    currentCaseKey = BidirectionalSyncConflictCaseKey(rowId, groupName)
+    If Not savedCasesByKey.Exists(currentCaseKey) Then Exit Function
+    Set savedCase = savedCasesByKey(currentCaseKey)
+    If StrComp(CStr(savedCase("decision")), BIDIRECTIONAL_SYNC_CONFLICT_UNRESOLVED, vbBinaryCompare) <> 0 Then _
+        Exit Function
+    If StrComp(CStr(savedCase("stableKey")), currentStableKey, vbBinaryCompare) <> 0 Then Exit Function
+    If Not savedCase.Exists("headers") Then Exit Function
+    Set savedHeaders = savedCase("headers")
+    If savedHeaders Is Nothing Then Exit Function
+    If savedHeaders.Count < 1 Or savedHeaders.Count > 2 Then Exit Function
+
+    For Each savedHeader In savedHeaders
+        If Not savedHeader.Exists("sourceHeader") Or Not savedHeader.Exists("destinationHeader") Or _
+           Not savedHeader.Exists("baselineKnown") Or Not savedHeader.Exists("systemValue") Or _
+           Not savedHeader.Exists("excelValue") Then Exit Function
+        If CBool(savedHeader("baselineKnown")) Then Exit Function
+        headerName = CStr(savedHeader("sourceHeader"))
+        If StrComp(CanonicalHeaderName(headerName), CanonicalHeaderName(codeKey), vbTextCompare) = 0 Then
+            If codeSeen Or Not srcHeaderMap.Exists(codeKey) Or Not srcToDstMap.Exists(codeKey) Then Exit Function
+            codeSeen = True
+            sourceCol = CLng(srcHeaderMap(codeKey))
+            destinationCol = CLng(srcToDstMap(codeKey))
+        ElseIf StrComp(CanonicalHeaderName(headerName), CanonicalHeaderName(nameKey), vbTextCompare) = 0 Then
+            If Not srcHeaderMap.Exists(nameKey) Or Not srcToDstMap.Exists(nameKey) Then Exit Function
+            sourceCol = CLng(srcHeaderMap(nameKey))
+            destinationCol = CLng(srcToDstMap(nameKey))
+        Else
+            Exit Function
+        End If
+
+        destinationHeader = CStr(wsDst.Cells(1, destinationCol).Value2)
+        If StrComp(CanonicalHeaderName(CStr(savedHeader("destinationHeader"))), _
+                   CanonicalHeaderName(destinationHeader), vbTextCompare) <> 0 Then Exit Function
+        If StrComp(CanonicalHeaderName(destinationHeader), _
+                   CanonicalHeaderName(headerName), vbTextCompare) <> 0 Then Exit Function
+        currentSystemValue = NormalizeValueForUpdateCompare(headerName, wsSrc.Cells(srcRow, sourceCol).Value2)
+        currentExcelValue = NormalizeValueForUpdateCompare(headerName, wsDst.Cells(dstRow, destinationCol).Value2)
+        savedSystemValue = CStr(savedHeader("systemValue"))
+        savedExcelValue = CStr(savedHeader("excelValue"))
+        If StrComp(currentSystemValue, savedSystemValue, vbBinaryCompare) <> 0 Or _
+           StrComp(currentExcelValue, savedExcelValue, vbBinaryCompare) <> 0 Then Exit Function
+
+        If StrComp(CanonicalHeaderName(headerName), CanonicalHeaderName(codeKey), vbTextCompare) = 0 Then
+            If Not BidirectionalSyncDigitsOnlyCodeKey(savedSystemValue, savedSystemKey) Or _
+               Not BidirectionalSyncDigitsOnlyCodeKey(savedExcelValue, savedExcelKey) Then Exit Function
+            If StrComp(savedSystemKey, savedExcelKey, vbBinaryCompare) <> 0 Then Exit Function
+        ElseIf StrComp(savedSystemValue, savedExcelValue, vbBinaryCompare) <> 0 Then
+            Exit Function
+        End If
+    Next savedHeader
+    If Not codeSeen Then Exit Function
+    BidirectionalSyncSavedConflictAllowsCodeNotation = True
+    Exit Function
+
+FailClosed:
+    Err.Clear
+    BidirectionalSyncSavedConflictAllowsCodeNotation = False
 
 End Function
 

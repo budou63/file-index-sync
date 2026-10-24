@@ -24,11 +24,27 @@ def digit_key(value):
     return text.lstrip("0") or "0"
 
 
-def normalize_model(system_code, excel_code, *, exact_id, names_match, conflict=False, formula=False):
+def normalize_model(
+    system_code,
+    excel_code,
+    *,
+    exact_id,
+    names_match,
+    saved_conflict=False,
+    saved_decision_unresolved=False,
+    saved_snapshot_matches=False,
+    saved_baseline_unknown=False,
+    formula=False,
+):
     """Specification model only; this does not execute VBA or Excel."""
     if isinstance(system_code, str) and isinstance(excel_code, str) and system_code == excel_code and not formula:
         return excel_code
-    if not exact_id or not names_match or conflict or formula or not isinstance(system_code, str):
+    if not exact_id or not names_match or formula or not isinstance(system_code, str):
+        return excel_code
+    safe_saved_conflict = (
+        saved_decision_unresolved and saved_snapshot_matches and saved_baseline_unknown
+    )
+    if saved_conflict and not safe_saved_conflict:
         return excel_code
     system_key = digit_key(system_code)
     excel_key = digit_key(excel_code)
@@ -42,17 +58,78 @@ class ClassificationCodeNotationTests(unittest.TestCase):
         self.assertEqual(normalize_model("0000", "0000", exact_id=True, names_match=True), "0000")
         self.assertEqual(normalize_model("0000", 0, exact_id=True, names_match=True), "0000")
         self.assertEqual(normalize_model("090200", "090200", exact_id=True, names_match=True), "090200")
-        once = normalize_model("0000", 0, exact_id=True, names_match=True)
+        once = normalize_model(
+            "0000", 0, exact_id=True, names_match=True,
+            saved_conflict=True, saved_decision_unresolved=True,
+            saved_snapshot_matches=True, saved_baseline_unknown=True,
+        )
         twice = normalize_model("0000", once, exact_id=True, names_match=True)
         self.assertEqual((once, twice), ("0000", "0000"))
 
     def test_unproven_identity_name_conflict_or_category_change_holds(self):
         self.assertEqual(normalize_model("0000", 0, exact_id=False, names_match=True), 0)
         self.assertEqual(normalize_model("0000", 0, exact_id=True, names_match=False), 0)
-        self.assertEqual(normalize_model("0000", 0, exact_id=True, names_match=True, conflict=True), 0)
+        self.assertEqual(normalize_model("0000", 0, exact_id=True, names_match=True, saved_conflict=True), 0)
         self.assertEqual(normalize_model("0001", 0, exact_id=True, names_match=True), 0)
         self.assertEqual(normalize_model("0000", 0, exact_id=True, names_match=True, formula=True), 0)
         self.assertEqual(normalize_model(0, 0, exact_id=True, names_match=True), 0)
+
+    def test_only_an_exact_unresolved_initial_notation_snapshot_can_clear_a_saved_conflict(self):
+        self.assertEqual(
+            normalize_model(
+                "0000", 0, exact_id=True, names_match=True,
+                saved_conflict=True, saved_decision_unresolved=True,
+                saved_snapshot_matches=True, saved_baseline_unknown=True,
+            ),
+            "0000",
+        )
+        for saved_state in (
+            {"saved_decision_unresolved": False, "saved_snapshot_matches": True, "saved_baseline_unknown": True},
+            {"saved_decision_unresolved": True, "saved_snapshot_matches": False, "saved_baseline_unknown": True},
+            {"saved_decision_unresolved": True, "saved_snapshot_matches": True, "saved_baseline_unknown": False},
+        ):
+            self.assertEqual(
+                normalize_model("0000", 0, exact_id=True, names_match=True, saved_conflict=True, **saved_state),
+                0,
+            )
+
+        normalizer = procedure("BidirectionalSyncPrepareClassificationCodeGroup")
+        saved_check = normalizer.index("BidirectionalSyncHasSavedConflictForGroup")
+        exception_check = normalizer.index("BidirectionalSyncSavedConflictAllowsCodeNotation", saved_check)
+        write = normalizer.index("BidirectionalSyncRecordGuideCodeSnapshot", exception_check)
+        self.assertLess(saved_check, exception_check)
+        self.assertLess(exception_check, write)
+
+        saved_guard = procedure("BidirectionalSyncSavedConflictAllowsCodeNotation")
+        for required in (
+            "BidirectionalSyncConflictReviewCases",
+            '"SavedConflictCasesByKey"',
+            "For Each savedCase In cases",
+            "BIDIRECTIONAL_SYNC_CONFLICT_UNRESOLVED",
+            'savedCase("stableKey")',
+            'If StrComp(CStr(savedCase("decision")), BIDIRECTIONAL_SYNC_CONFLICT_UNRESOLVED, vbBinaryCompare) <> 0 Then _',
+            'savedHeader("baselineKnown")',
+            'If CBool(savedHeader("baselineKnown")) Then Exit Function',
+            'savedHeader("systemValue")',
+            'savedHeader("excelValue")',
+            "BidirectionalSyncDigitsOnlyCodeKey",
+            "CanonicalHeaderName(destinationHeader)",
+            "CanonicalHeaderName(headerName)",
+            "If Not codeSeen Then Exit Function",
+        ):
+            self.assertIn(required, saved_guard)
+
+    def test_real_content_changes_are_not_code_notation_equivalent(self):
+        for system_value, excel_value in (
+            ("継続", "5年"),
+            ("1999", "1105"),
+            ("土木", "工務"),
+            ("2", "3"),
+        ):
+            self.assertEqual(
+                normalize_model(system_value, excel_value, exact_id=True, names_match=True),
+                excel_value,
+            )
 
     def test_vba_normalizer_is_limited_to_the_two_classification_groups(self):
         body = procedure("BidirectionalSyncPrepareClassificationCodeGroup")
