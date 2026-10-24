@@ -207,6 +207,7 @@ Private Sub UserForm_Initialize()
     mCboCategory.AddItem "B：同名・類似候補"
     mCboCategory.AddItem "C：削除可候補"
     mCboCategory.AddItem "D：コピー識別番号のクリア候補"
+    mCboCategory.AddItem "E：3方向編集競合"
     mCboCategory.ListIndex = 0
     rendering = False
 End Sub
@@ -219,6 +220,9 @@ Public Sub LoadCases(ByVal loaded As Collection, ByVal yearValue As Long, _
     Set deletionSelection = CreateObject("Scripting.Dictionary")
     UpdateDWarning
     If Len(mDUnavailableReason) > 0 And mCboCategory.ListIndex = 3 Then
+        rendering = True: mCboCategory.ListIndex = 0: rendering = False
+    End If
+    If mCboCategory.ListIndex = 4 And Not HasReviewCategory("E") Then
         rendering = True: mCboCategory.ListIndex = 0: rendering = False
     End If
     SelectDWhenOnlyCategory
@@ -243,6 +247,9 @@ Private Sub SelectDWhenOnlyCategory()
     If Len(mDUnavailableReason) = 0 And Not HasReviewCategory("A") And Not HasReviewCategory("B") And _
        Not HasReviewCategory("C") And HasReviewCategory("D") Then
         rendering = True: mCboCategory.ListIndex = 3: rendering = False
+    ElseIf Not HasReviewCategory("A") And Not HasReviewCategory("B") And _
+       Not HasReviewCategory("C") And Not HasReviewCategory("D") And HasReviewCategory("E") Then
+        rendering = True: mCboCategory.ListIndex = 4: rendering = False
     End If
 End Sub
 
@@ -439,6 +446,7 @@ Private Sub RenderComparison(ByVal item As Object, ByVal excelRow As Long)
     Dim csvHeaderFound As Boolean, excelHeaderFound As Boolean
     Dim previousDecision As String, decisionComment As String, fillColor As Long
     Dim selectedDecision As String, selectedComment As String, legacyDecision As String
+    Dim conflictFieldItems As Collection, conflictField As Object, conflictDetails As String
     If item Is Nothing Then
         mLblCompareRows.Caption = "CSV行: ― / 新ファイル基準表行: ―"
         mTxtDetails.Text = ""
@@ -495,6 +503,20 @@ Private Sub RenderComparison(ByVal item As Object, ByVal excelRow As Long)
         y = y + rowHeight + 2
     Next fieldIndex
     mFraCompare.ScrollHeight = y + 4
+    If CStr(item("category")) = "E" Then
+        conflictDetails = "【固定管理行ID】" & CStr(item("rowId")) & vbCrLf & _
+            "【項目グループ】" & CStr(item("groupName")) & vbCrLf & _
+            "【判断】" & CStr(item("decision"))
+        Set conflictFieldItems = item("headers")
+        For Each conflictField In conflictFieldItems
+            conflictDetails = conflictDetails & vbCrLf & vbCrLf & "項目: " & CStr(conflictField("sourceHeader")) & vbCrLf & _
+                "前回同期値: " & IIf(Len(CStr(conflictField("baselineValue"))) = 0, "（空欄）", CStr(conflictField("baselineValue"))) & vbCrLf & _
+                "システム側: " & IIf(Len(CStr(conflictField("systemValue"))) = 0, "（空欄）", CStr(conflictField("systemValue"))) & vbCrLf & _
+                "Excel側: " & IIf(Len(CStr(conflictField("excelValue"))) = 0, "（空欄）", CStr(conflictField("excelValue")))
+        Next conflictField
+        mTxtDetails.Text = conflictDetails
+        Exit Sub
+    End If
     previousDecision = ""
     decisionComment = ""
     If CStr(item("category")) <> "D" Then
@@ -523,8 +545,8 @@ Private Sub RenderComparison(ByVal item As Object, ByVal excelRow As Long)
 End Sub
 
 Private Sub ShowCategory()
-    Dim i As Long, item As Object, category As String, counts(1 To 4) As Long, unresolved(1 To 4) As Long
-    Dim decision As String, idx As Long, categoryIndex As Long, isD As Boolean
+    Dim i As Long, item As Object, category As String, counts(1 To 5) As Long, unresolved(1 To 5) As Long
+    Dim decision As String, displayDecision As String, idx As Long, categoryIndex As Long, isD As Boolean
     If cases Is Nothing Then Exit Sub
     rendering = True
     Set shown = New Collection
@@ -538,6 +560,7 @@ Private Sub ShowCategory()
             Case "B": idx = 2
             Case "C": idx = 3
             Case "D": idx = 4
+            Case "E": idx = 5
             Case Else: GoTo NextCase
         End Select
         counts(idx) = counts(idx) + 1
@@ -547,13 +570,18 @@ Private Sub ShowCategory()
             unresolved(idx) = unresolved(idx) + item("copyCandidateRows").Count
         Else
             decision = SyncReviewDecision(item)
-            If Len(decision) = 0 Then unresolved(idx) = unresolved(idx) + 1
+            If Len(decision) = 0 Or (category = "E" And decision = "保留") Then unresolved(idx) = unresolved(idx) + 1
         End If
         If categoryIndex = idx - 1 Then
             shown.Add item
             If isD Then
                 mLstCases.AddItem "CSV行" & CStr(item("sourceRow")) & " / 保持Excel " & _
                     CStr(item("copyKeeperRow")) & " / クリア候補 " & CStr(item("copyCandidateRows").Count) & "件"
+            ElseIf category = "E" Then
+                displayDecision = CStr(item("decision"))
+                If Len(displayDecision) = 0 Then displayDecision = "未解決"
+                mLstCases.AddItem "CSV行" & CStr(item("sourceRow")) & " / Excel " & CStr(item("rows")) & _
+                    " / " & CStr(item("groupName")) & " [" & displayDecision & "]"
             Else
                 mLstCases.AddItem "CSV行" & CStr(item("sourceRow")) & " / Excel " & CStr(item("rows")) & _
                     IIf(Len(decision) = 0, " [未確認]", " [" & decision & "]")
@@ -564,7 +592,8 @@ NextCase:
     mLblCounts.Caption = "対象年度 " & targetYear & " / A " & counts(1) & "件（未 " & unresolved(1) & "）" & _
         " / B " & counts(2) & "件（未 " & unresolved(2) & "）" & _
         " / C " & counts(3) & "件（未 " & unresolved(3) & "）" & _
-        " / D " & counts(4) & "件（候補 " & unresolved(4) & "行）"
+        " / D " & counts(4) & "件（候補 " & unresolved(4) & "行）" & _
+        " / E " & counts(5) & "件（未解決/保留 " & unresolved(5) & "）"
     mTxtDetails.Text = "候補を選んでください。"
     mChkDelete.Value = False
     If mLstCases.ListCount > 0 Then mLstCases.ListIndex = 0
@@ -578,6 +607,9 @@ Private Sub ShowCurrent()
     Dim decision As String, rowDecision As String
     Set item = SelectedCase()
     rendering = True
+    mCmdApprove.Caption = "同一として処理"
+    mCmdOther.Caption = "別物"
+    mCmdHold.Caption = "保留"
     mLstRows.Clear
     mChkDelete.Value = False
     If item Is Nothing Then
@@ -622,11 +654,11 @@ Private Sub ShowCurrent()
     If mLstRows.ListCount > 0 Then mLstRows.ListIndex = 0
     mTxtDetails.Text = ""
     rowNo = SelectedRow()
-    mCmdGoTo.Enabled = (category <> "D" And rowNo >= 2)
-    mCmdApprove.Enabled = (category = "B" And mLstRows.ListCount = 1)
+    mCmdGoTo.Enabled = (category <> "D" And category <> "E" And rowNo >= 2)
+    mCmdApprove.Enabled = (category = "E" Or (category = "B" And mLstRows.ListCount = 1))
     mCmdOther.Enabled = (category <> "D")
     mCmdHold.Enabled = (category <> "D")
-    mCmdDelete.Enabled = (category <> "D")
+    mCmdDelete.Enabled = (category <> "D" And category <> "E")
     mCmdClear.Enabled = IsCopyCandidate(item, rowNo)
     If Len(mDUnavailableReason) > 0 Then mCmdClear.Enabled = False
     mChkDelete.Visible = (category = "C")
@@ -635,6 +667,12 @@ Private Sub ShowCurrent()
         mLblStatus.Caption = "D候補：保持行はクリアできません。選択した候補行のみ専用APIで再検証します。"
     ElseIf category = "B" Then
         UpdateBRowJudgments item
+    ElseIf category = "E" Then
+        mLblRows.Caption = "固定管理行IDで特定したExcel行"
+        mLblStatus.Caption = "承認前は変更しません。システム採用は確認後にExcelへ反映します。"
+        mCmdApprove.Caption = "システム採用"
+        mCmdOther.Caption = "Excel採用"
+        mCmdHold.Caption = "保留"
     Else
         mLblRows.Caption = "候補のExcel行"
         mLblStatus.Caption = "Aの重複ID・複数行の統合は自動承認不可。Cはチェック後に件数を確認します。"
@@ -779,6 +817,11 @@ Private Sub mCmdApprove_Click()
     Dim item As Object
     Set item = SelectedCase()
     If item Is Nothing Then Exit Sub
+    If CStr(item("category")) = "E" Then
+        If MsgBox("システム側の値で関連するExcelセルを更新します。続けますか？", vbQuestion + vbYesNo, "競合解決の確認") <> vbYes Then Exit Sub
+        If Module1.BidirectionalSyncResolveConflict(item, "システム採用") Then mCmdRefresh_Click
+        Exit Sub
+    End If
     If CStr(item("category")) = "D" Then Exit Sub
     If SyncReviewApprove(item, SelectedRow()) Then mCmdRefresh_Click
 End Sub
@@ -792,6 +835,15 @@ Private Sub RecordChoice(ByVal decision As String)
     Dim item As Object, rowNo As Long, nextRow As Long
     Set item = SelectedCase()
     If item Is Nothing Then Exit Sub
+    If CStr(item("category")) = "E" Then
+        If decision = "別物" Then decision = "Excel採用"
+        If decision <> "Excel採用" And decision <> "保留" Then Exit Sub
+        If Module1.BidirectionalSyncResolveConflict(item, decision) Then
+            ShowCategory
+            mCmdNext_Click
+        End If
+        Exit Sub
+    End If
     If CStr(item("category")) = "D" Then Exit Sub
     If CStr(item("category")) = "B" And decision = "別物" Then
         rowNo = SelectedRow()
@@ -885,7 +937,7 @@ Private Sub mCmdDelete_Click()
     If cases Is Nothing Then Exit Sub
     Set item = SelectedCase()
     If Not item Is Nothing Then
-        If CStr(item("category")) = "D" Then Exit Sub
+        If CStr(item("category")) = "D" Or CStr(item("category")) = "E" Then Exit Sub
     End If
     For i = 1 To cases.Count
         Set item = cases(i)
@@ -911,7 +963,8 @@ Private Sub mCmdDelete_Click()
     End If
 End Sub
 Private Sub mCmdRefresh_Click()
-    Dim refreshed As Collection, copyCases As Collection, copyItem As Object, previousCases As Collection
+    Dim refreshed As Collection, copyCases As Collection, conflictCases As Collection
+    Dim copyItem As Object, conflictItem As Object, previousCases As Collection
     Dim unavailableReason As String, detectorNumber As Long
     Dim detectorDescription As String, detectorSource As String, newSelection As Object
     Dim previousSelection As Object, previousReason As String, failureText As String
@@ -934,6 +987,10 @@ Private Sub mCmdRefresh_Click()
             refreshed.Add copyItem
         Next copyItem
     End If
+    Set conflictCases = Module1.BidirectionalSyncConflictReviewCases(targetYear)
+    For Each conflictItem In conflictCases
+        refreshed.Add conflictItem
+    Next conflictItem
     For Each copyItem In refreshed
         If CStr(copyItem("category")) <> "D" Then detectorDescription = SyncReviewDecision(copyItem)
     Next copyItem
@@ -948,6 +1005,9 @@ Private Sub mCmdRefresh_Click()
     mDUnavailableReason = unavailableReason
     UpdateDWarning
     If Len(mDUnavailableReason) > 0 And mCboCategory.ListIndex = 3 Then
+        rendering = True: mCboCategory.ListIndex = 0: rendering = False
+    End If
+    If mCboCategory.ListIndex = 4 And Not HasReviewCategory("E") Then
         rendering = True: mCboCategory.ListIndex = 0: rendering = False
     End If
     SelectDWhenOnlyCategory

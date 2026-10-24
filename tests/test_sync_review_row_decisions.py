@@ -64,7 +64,8 @@ class SyncReviewRowDecisionTests(unittest.TestCase):
         record = procedure(FORM, "Private Sub RecordChoice(", "End Sub")
         self.assertIn("SyncReviewDecide(item, decision, rowNo)", record)
         self.assertIn("nextRow = BNextUnconfirmedRow(item, rowNo)", record)
-        self.assertLess(record.index("If nextRow > 0 Then"), record.index("mCmdNext_Click"))
+        b_branch = record[record.index('If CStr(item("category")) = "B" And decision = "別物" Then'):]
+        self.assertLess(b_branch.index("If nextRow > 0 Then"), b_branch.index("mCmdNext_Click"))
         advance = procedure(FORM, "Private Sub mCmdNext_Click()", "End Sub")
         self.assertIn("BNextUnconfirmedRow(item, SelectedRow())", advance)
 

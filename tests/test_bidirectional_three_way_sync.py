@@ -35,6 +35,20 @@ def decide(baseline: str | None, excel: str, csv: str) -> str:
     raise AssertionError("Values differ although neither side changed from baseline")
 
 
+def confirm_initial_group(excel_values: dict[str, str], csv_values: dict[str, str], saved_baselines: dict[str, str], *, saved_conflict: bool = False):
+    """Model first-run behavior: equal members may seed baselines; mismatches remain held as a group."""
+    baselines = dict(saved_baselines)
+    review = []
+    for header, excel_value in excel_values.items():
+        csv_value = csv_values[header]
+        if excel_value == csv_value:
+            if not saved_conflict:
+                baselines[header] = csv_value
+        else:
+            review.append(header)
+    return baselines, review, 0  # no Excel writes occur during initial mismatch review
+
+
 class TestBidirectionalThreeWaySync(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -53,6 +67,79 @@ class TestBidirectionalThreeWaySync(unittest.TestCase):
         self.assertEqual(decide("継続", "継続", "継続"), "confirmed")
         # システム手動編集後に値が一致すれば、その値を基準として確定できる。
         self.assertEqual(decide("継続", "5年", "5年"), "confirmed")
+
+    def test_initial_mismatch_confirms_equal_members_only_and_holds_related_group_atomically(self) -> None:
+        body = vba_block(self.source, "Private Sub BidirectionalSyncApplyManagedGroup")
+        start = body.index("If Not allBaselineKnown Then")
+        stop = body.index("Exit Sub", start) + len("Exit Sub")
+        initial_branch = body[start:stop]
+        self.assertIn("BidirectionalSyncHasSavedConflictForGroup", initial_branch)
+        self.assertIn("If StrComp(excelValue, csvValue, vbTextCompare) = 0 Then", initial_branch)
+        self.assertIn("BidirectionalSyncStoreBaseline rowId, CStr(key), csvValue", initial_branch)
+        self.assertIn("mismatchedKeys", initial_branch)
+        self.assertIn('BidirectionalSyncAppendGroupDecision "初期不一致"', initial_branch)
+        self.assertIn("mismatchedKeys, groupName", initial_branch)
+        self.assertNotIn("WriteStep2SourceValue", initial_branch)
+
+        excel = {"分類名２": "道路", "分類コード２": "0007"}
+        csv = {"分類名２": "道路", "分類コード２": "0008"}
+        baselines, review, writes = confirm_initial_group(excel, csv, {})
+        self.assertEqual(baselines, {"分類名２": "道路"})
+        self.assertEqual(review, ["分類コード２"])
+        self.assertEqual(writes, 0)
+        self.assertEqual(excel["分類コード２"], "0007")
+
+        # After a user resolves the mismatch so both sides agree, a repeat run confirms the group.
+        excel["分類コード２"] = csv["分類コード２"]
+        baselines, review, writes = confirm_initial_group(excel, csv, baselines)
+        self.assertEqual(baselines, csv)
+        self.assertEqual(review, [])
+        self.assertEqual(writes, 0)
+
+    def test_initial_mismatch_uses_persisted_e_choices_without_breaking_legacy_state(self) -> None:
+        append = vba_block(self.source, "Private Sub BidirectionalSyncAppendGroupDecision")
+        self.assertIn('decision = "競合保留" Or decision = "初期不一致"', append)
+
+        capture = vba_block(self.source, "Private Function BidirectionalSyncCaptureConflictCase")
+        self.assertIn("baselineKnown = baselineValues.Exists(baselineKey)", capture)
+        self.assertIn('fieldItem.Add "baselineKnown", baselineKnown', capture)
+
+        pack = vba_block(self.source, "Private Function BidirectionalSyncPackConflictHeaders")
+        unpack = vba_block(self.source, "Private Function BidirectionalSyncUnpackConflictHeaders")
+        self.assertIn('BidirectionalSyncPackConflictValue("BSC2")', pack)
+        self.assertIn("If hasMissingBaseline Then", pack)
+        self.assertIn('If formatMarker = "BSC2" Then', unpack)
+        self.assertIn('fieldItem.Add "baselineKnown", True', unpack)
+        self.assertIn('fieldItem.Add "baselineKnown", False', unpack)
+
+        live = vba_block(self.source, "Private Function BidirectionalSyncConflictLiveMatches")
+        self.assertIn('If baselineKnown Then', live)
+        self.assertIn('If baselineValues.Exists(baselineKey) Or Len(CStr(fieldItem("baselineValue"))) > 0 Then', live)
+        resolve = vba_block(self.source, "Public Function BidirectionalSyncResolveConflict")
+        for option_name in ("BIDIRECTIONAL_SYNC_CONFLICT_EXCEL", "BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM", "BIDIRECTIONAL_SYNC_CONFLICT_HOLD"):
+            self.assertIn(option_name, resolve)
+
+        refresh = vba_block(self.source, "Private Sub BidirectionalSyncRefreshConflictState")
+        self.assertIn('If CStr(prior(0)) = stableKey And CStr(prior(1)) = snapshot Then decision = CStr(prior(2))', refresh)
+        step4_approved = vba_block(self.source, "Private Function BidirectionalSyncConflictApprovedForStep4")
+        step4_held = vba_block(self.source, "Private Function BidirectionalSyncConflictBlocksStep4")
+        self.assertIn('CStr(ws.Cells(r, 6).Value2) = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL', step4_approved)
+        self.assertIn('decision = BIDIRECTIONAL_SYNC_CONFLICT_UNRESOLVED Or decision = BIDIRECTIONAL_SYNC_CONFLICT_HOLD', step4_held)
+
+    def test_partial_baseline_confirmation_does_not_rebase_a_saved_conflict(self) -> None:
+        body = vba_block(self.source, "Private Sub BidirectionalSyncApplyManagedGroup")
+        start = body.index("If Not allBaselineKnown Then")
+        stop = body.index("Exit Sub", start) + len("Exit Sub")
+        initial_branch = body[start:stop]
+        self.assertLess(initial_branch.index("BidirectionalSyncHasSavedConflictForGroup"), initial_branch.index("BidirectionalSyncStoreBaseline"))
+        baselines, review, writes = confirm_initial_group(
+            {"分類名２": "道路", "分類コード２": "0007"},
+            {"分類名２": "道路", "分類コード２": "0008"},
+            {}, saved_conflict=True,
+        )
+        self.assertEqual(baselines, {})
+        self.assertEqual(review, ["分類コード２"])
+        self.assertEqual(writes, 0)
 
     def test_baseline_is_keyed_by_excel_row_id_and_header(self) -> None:
         self.assertIn('BIDIRECTIONAL_SYNC_BASELINE_SHEET As String = "双方向同期基準値"', self.source)

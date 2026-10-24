@@ -21,12 +21,14 @@ class SyncReviewDFormTests(unittest.TestCase):
         self.assertIn("If cases.Count = 0 Then", opener)
         self.assertLess(opener.index("cases.Add copyItem"), opener.index("If cases.Count = 0 Then"))
 
-    def test_four_category_counts_and_category_does_not_call_abc_decisions(self):
+    def test_five_category_counts_keep_d_and_e_as_separate_categories(self):
         src = FORM.read_text(encoding="utf-8")
         self.assertIn('mCboCategory.AddItem "D：コピー識別番号のクリア候補"', src)
-        self.assertIn("counts(1 To 4)", src)
+        self.assertIn("counts(1 To 5)", src)
         self.assertIn('Case "D": idx = 4', src)
+        self.assertIn('Case "E": idx = 5', src)
         self.assertIn('category = "D"', src)
+        self.assertIn('category = "E"', src)
 
     def test_d_rows_are_role_specific_and_clear_button_calls_only_clear_api(self):
         src = FORM.read_text(encoding="utf-8")

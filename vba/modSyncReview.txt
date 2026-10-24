@@ -56,7 +56,8 @@ Public Sub SyncReviewEndBatch(ByVal allowOpen As Boolean)
 End Sub
 
 Private Sub OpenSyncReviewForYear(ByVal yearValue As Long)
-    Dim cases As Collection, copyCases As Collection, copyItem As Object, unavailableReason As String
+    Dim cases As Collection, copyCases As Collection, conflictCases As Collection
+    Dim copyItem As Object, conflictItem As Object, unavailableReason As String
     On Error GoTo Failed
     Set cases = SyncReviewCandidates(yearValue)
     On Error GoTo DUnavailable
@@ -73,6 +74,10 @@ DUnavailable:
 WithoutD:
     On Error GoTo Failed
 DisplayCases:
+    Set conflictCases = Module1.BidirectionalSyncConflictReviewCases(yearValue)
+    For Each conflictItem In conflictCases
+        cases.Add conflictItem
+    Next conflictItem
     If cases.Count = 0 Then
         If Len(unavailableReason) > 0 Then MsgBox "D候補を利用できません: " & unavailableReason, vbExclamation
         Exit Sub
@@ -1077,7 +1082,7 @@ Public Function SyncReviewClearCopyIdentifiers(ByVal item As Object, ByVal selec
         Err.Raise vbObjectError + 6152, , "バックアップ作成中にCSVまたはExcelデータが変わりました。"
     ReviewPreflightCopyAudit
     If Not ReviewCopyCaseCurrent(item, selectedRow) Then _
-        Err.Raise vbObjectError + 6152, , "監査履歴の確認中にCSVまたはExcelデータが変わりました。"
+        Err.Raise vbObjectError + 6152, , "監査履歴の確認中にCSVまたはExcelのデータが変わりました。"
 
     新ファイル基準表_ファイルID編集スナップショットを無効化
     prevEvents = Application.EnableEvents
@@ -1291,6 +1296,11 @@ Public Function SyncReviewDecision(ByVal item As Object, Optional ByVal selected
     Dim allRowsDecided As Boolean, rowCount As Long
     If item Is Nothing Then Exit Function
     category = CStr(item("category"))
+    If category = "E" Then
+        SyncReviewDecision = CStr(item("decision"))
+        If SyncReviewDecision = "未解決" Then SyncReviewDecision = ""
+        Exit Function
+    End If
     Set ws = ReviewAudit(False)
     If ws Is Nothing Then Exit Function
     sourceHash = ReviewDigest(CStr(item("sourceSignature")))
