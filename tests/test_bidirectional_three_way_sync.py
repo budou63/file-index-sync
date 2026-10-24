@@ -68,6 +68,24 @@ class TestBidirectionalThreeWaySync(unittest.TestCase):
         # システム手動編集後に値が一致すれば、その値を基準として確定できる。
         self.assertEqual(decide("継続", "5年", "5年"), "confirmed")
 
+    def test_conflict_review_cases_balance_blocks_and_initialize_each_item(self) -> None:
+        body = vba_block(self.source, "Public Function BidirectionalSyncConflictReviewCases")
+        loop_start = body.index("For r = 2 To lastRow")
+        loop_end = body.index("Next r", loop_start)
+        year_check = body.index("If CLng(values(1, 1)) = yearValue Then", loop_start)
+        non_system_check = body.index('If CStr(values(1, 6)) <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then', year_check)
+        create_item = body.index('Set item = CreateObject("Scripting.Dictionary")', non_system_check)
+        first_add = body.index('item.Add "category", "E"', non_system_check)
+        result_add = body.index("result.Add item", non_system_check)
+        self.assertLess(loop_start, year_check)
+        self.assertLess(year_check, non_system_check)
+        self.assertLess(non_system_check, create_item)
+        self.assertLess(create_item, first_add)
+        self.assertLess(first_add, result_add)
+        self.assertLess(result_add, loop_end)
+        closing_blocks = [line.strip() for line in body[result_add:loop_end].splitlines() if line.strip() == "End If"]
+        self.assertEqual(closing_blocks, ["End If", "End If"])
+
     def test_initial_mismatch_confirms_equal_members_only_and_holds_related_group_atomically(self) -> None:
         body = vba_block(self.source, "Private Sub BidirectionalSyncApplyManagedGroup")
         start = body.index("If Not allBaselineKnown Then")

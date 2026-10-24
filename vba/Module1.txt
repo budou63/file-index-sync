@@ -18867,14 +18867,18 @@ Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As
     Dim result As Collection, ws As Worksheet, created As Boolean
     Dim r As Long, lastRow As Long, values As Variant, item As Object
     Dim seen As Object, caseKey As String, hasFormulaValue As Variant
+
     Set result = New Collection
     Set ws = BidirectionalSyncConflictSheet(False, created)
     If ws Is Nothing Then Set BidirectionalSyncConflictReviewCases = result: Exit Function
-    Set seen = CreateObject("Scripting.Dictionary"): seen.CompareMode = vbTextCompare
+    Set seen = CreateObject("Scripting.Dictionary")
+    seen.CompareMode = vbTextCompare
     lastRow = BidirectionalSyncConflictLastRow(ws)
+
     For r = 2 To lastRow
         hasFormulaValue = ws.Range(ws.Cells(r, 1), ws.Cells(r, BIDIRECTIONAL_SYNC_CONFLICT_LAST_COL)).HasFormula
-        If IsNull(hasFormulaValue) Or CBool(hasFormulaValue) Then Err.Raise vbObjectError + 2851, , "競合情報の形式が不正です。"
+        If IsNull(hasFormulaValue) Or CBool(hasFormulaValue) Then _
+            Err.Raise vbObjectError + 2851, , "競合情報の形式が不正です。"
         values = ws.Range(ws.Cells(r, 1), ws.Cells(r, BIDIRECTIONAL_SYNC_CONFLICT_LAST_COL)).Value2
         If CLng(values(1, 1)) = yearValue Then
             If CStr(values(1, 10)) <> BIDIRECTIONAL_SYNC_CONFLICT_VERSION Or _
@@ -18883,24 +18887,28 @@ Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As
             caseKey = BidirectionalSyncConflictCaseKey(CStr(values(1, 2)), CStr(values(1, 4)))
             If seen.Exists(caseKey) Then Err.Raise vbObjectError + 2853, , "競合情報に同一案件が重複しています。"
             seen.Add caseKey, True
+
             If CStr(values(1, 6)) <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then
-            item.Add "category", "E"
-            item.Add "year", CLng(values(1, 1))
-            item.Add "rowId", CStr(values(1, 2))
-            item.Add "stableKey", CStr(values(1, 3))
-            item.Add "groupName", CStr(values(1, 4))
-            item.Add "snapshot", CStr(values(1, 5))
-            item.Add "decision", CStr(values(1, 6))
-            item.Add "key", BidirectionalSyncConflictCaseKey(CStr(values(1, 2)), CStr(values(1, 4)))
-            item.Add "sourceRow", CLng(values(1, 8))
-            item.Add "destinationRow", CLng(values(1, 9))
-            item.Add "rows", CStr(values(1, 9))
-            item.Add "reason", "Excel管理行IDで対象を特定し、前回同期値・システム値・Excel値を保存しています。"
-            item.Add "headers", BidirectionalSyncUnpackConflictHeaders(CStr(values(1, 5)))
-            item.Add "stateRow", CLng(r)
-            result.Add item
+                Set item = CreateObject("Scripting.Dictionary")
+                item.Add "category", "E"
+                item.Add "year", CLng(values(1, 1))
+                item.Add "rowId", CStr(values(1, 2))
+                item.Add "stableKey", CStr(values(1, 3))
+                item.Add "groupName", CStr(values(1, 4))
+                item.Add "snapshot", CStr(values(1, 5))
+                item.Add "decision", CStr(values(1, 6))
+                item.Add "key", BidirectionalSyncConflictCaseKey(CStr(values(1, 2)), CStr(values(1, 4)))
+                item.Add "sourceRow", CLng(values(1, 8))
+                item.Add "destinationRow", CLng(values(1, 9))
+                item.Add "rows", CStr(values(1, 9))
+                item.Add "reason", "Excel管理行IDで対象を特定し、前回同期値・システム値・Excel値を保存しています。"
+                item.Add "headers", BidirectionalSyncUnpackConflictHeaders(CStr(values(1, 5)))
+                item.Add "stateRow", CLng(r)
+                result.Add item
+            End If
         End If
     Next r
+
     Set BidirectionalSyncConflictReviewCases = result
 End Function
 
