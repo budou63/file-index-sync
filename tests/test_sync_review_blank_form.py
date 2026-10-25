@@ -41,7 +41,9 @@ class BlankFormTests(unittest.TestCase):
             if name in EVENTS:
                 suffix = "Change" if name in ("cboCategory", "cboEGroup") else "Click"
                 self.assertIn(f"Private Sub {field}_{suffix}()", source)
-        self.assertEqual(source.count('EnsureControl("'), len(CONTROLS))
+        self.assertIn("Private mEColumnHeaders(0 To 4) As MSForms.Label", source)
+        self.assertIn('EnsureControl("lblEColumnHeader" & CStr(i), "Forms.Label.1")', source)
+        self.assertEqual(source.count('EnsureControl("'), len(CONTROLS) + 1)
         self.assertIn("Me.Controls.Add(progId, controlName, True)", source)
         self.assertIn('If existing.Name = controlName Then', source)
         self.assertIn('If TypeName(existing) <> expectedType Then Err.Raise', source)

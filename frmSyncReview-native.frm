@@ -27,6 +27,7 @@ Private WithEvents mLstRows As MSForms.ListBox
 Private mLblCompareRows As MSForms.Label
 Private mFraCompare As MSForms.Frame
 Private mCompareHeaders(0 To 2) As MSForms.Label
+Private mEColumnHeaders(0 To 4) As MSForms.Label
 Private mCompareItemLabels(1 To 9) As MSForms.TextBox
 Private mCompareCsvCells(1 To 9) As MSForms.TextBox
 Private mCompareExcelCells(1 To 9) As MSForms.TextBox
@@ -46,6 +47,8 @@ Private WithEvents mCmdFinish As MSForms.CommandButton
 
 Private cases As Collection
 Private shown As Collection
+Private eFieldCases As Collection
+Private eFieldItems As Collection
 Private deletionSelection As Object
 Private targetYear As Long
 Private rendering As Boolean
@@ -95,6 +98,7 @@ End Function
 
 Private Sub BuildControls()
     Dim i As Long
+    Dim eHeaderCaptions As Variant, eHeaderWidths As Variant, eHeaderLefts As Variant
     Me.Caption = "同期候補の確認"
     Me.Width = 760
     Me.Height = Me.Height + (440 - Me.InsideHeight)
@@ -124,6 +128,16 @@ Private Sub BuildControls()
     mLblRows.Caption = "候補のExcel行"
     Set mLstRows = EnsureControl("lstRows", "Forms.ListBox.1")
     PlaceControl mLstRows, 205, 64.5, 110, 228
+    eHeaderCaptions = Array("項目名", "前回確認した値", "文書管理システム", "Excel基準表", "判断状況")
+    eHeaderWidths = Array(130, 145, 145, 145, 180)
+    eHeaderLefts = Array(263, 393, 538, 683, 828)
+    For i = 0 To 4
+        Set mEColumnHeaders(i) = EnsureControl("lblEColumnHeader" & CStr(i), "Forms.Label.1")
+        PlaceControl mEColumnHeaders(i), CSng(eHeaderLefts(i)), 50, CSng(eHeaderWidths(i)), 14
+        mEColumnHeaders(i).Caption = CStr(eHeaderCaptions(i))
+        mEColumnHeaders(i).Font.Bold = True
+        mEColumnHeaders(i).Visible = False
+    Next i
     Set mLblCompareRows = EnsureControl("lblCompareRows", "Forms.Label.1")
     PlaceControl mLblCompareRows, 324, 28, 420, 18
     mLblCompareRows.Caption = "CSV行: ― / 新ファイル基準表行: ―"
@@ -297,16 +311,24 @@ Private Function ESelectedCount() As Long
 End Function
 
 Private Sub UpdateESelection()
-    Dim n As Long
+    Dim n As Long, item As Object, record As Object, identitySafe As Boolean
     If mCboCategory.ListIndex <> 4 Then Exit Sub
     n = ESelectedCount()
+    Set item = SelectedCase()
+    Set record = SelectedRecord()
+    If n = 1 Then
+        If Not record Is Nothing Then identitySafe = Not CBool(record("identityIssue"))
+    End If
     mLblESelection.Caption = CStr(n) & "件選択中"
-    ' Batch decisions are intentionally unavailable until Stage 2 has a safe commit design.
-    mCmdApprove.Enabled = (n = 1)
-    mCmdOther.Enabled = (n = 1)
-    mCmdHold.Enabled = (n = 1)
+    mCmdApprove.Enabled = (n = 1 And Not item Is Nothing And identitySafe)
+    mCmdOther.Enabled = (n = 1 And Not item Is Nothing And identitySafe)
+    mCmdHold.Enabled = (n = 1 And Not item Is Nothing And identitySafe)
     mCmdEClear.Enabled = (n > 0)
-    If n > 1 Then mLblStatus.Caption = "複数選択は表示専用です。判断は1件だけ選び直してください。"
+    If n > 1 Then
+        mLblStatus.Caption = "複数選択は表示専用です。判断は1件だけ選び直してください。"
+    ElseIf n = 1 And Not record Is Nothing And Not identitySafe Then
+        mLblStatus.Caption = "識別情報の一貫性を確認できないため、採用・保留はできません。正式ID等を確認してください。"
+    End If
 End Sub
 
 Private Sub mCboEGroup_Change()
@@ -334,6 +356,13 @@ End Function
 
 Private Function SelectedCase() As Object
     Dim n As Long
+    If mCboCategory.ListIndex = 4 Then
+        If ESelectedCount() <> 1 Or mLstRows.ListIndex < 0 Then Exit Function
+        If eFieldCases Is Nothing Then Exit Function
+        If mLstRows.ListIndex + 1 <= eFieldCases.Count Then _
+            Set SelectedCase = eFieldCases(mLstRows.ListIndex + 1)
+        Exit Function
+    End If
     If shown Is Nothing Then Exit Function
     If mLstCases.ListIndex >= 0 And mLstCases.ListIndex + 1 <= shown.Count Then
         If mCboCategory.ListIndex <> 4 Or mLstCases.Selected(mLstCases.ListIndex) Then
@@ -349,6 +378,7 @@ Private Function SelectedCase() As Object
 End Function
 
 Private Function SelectedRow() As Long
+    If mCboCategory.ListIndex = 4 Then Exit Function
     If mLstRows.ListIndex < 0 Then Exit Function
     SelectedRow = CLng(Split(CStr(mLstRows.List(mLstRows.ListIndex)), " ")(0))
 End Function
@@ -630,9 +660,14 @@ Private Sub ShowCategory()
     Dim decision As String, displayDecision As String, idx As Long, categoryIndex As Long, isD As Boolean
     Dim filteredUnresolved As Long, filteredHeld As Long, selectedGroup As String
     If cases Is Nothing Then Exit Sub
+    categoryIndex = mCboCategory.ListIndex
+    If categoryIndex = 4 Then
+        ShowECategory
+        Exit Sub
+    End If
+    LayoutReviewForE False
     rendering = True
     Set shown = New Collection
-    categoryIndex = mCboCategory.ListIndex
     If categoryIndex = 4 Then
         mLstCases.MultiSelect = fmMultiSelectExtended
     Else
@@ -710,6 +745,10 @@ Private Sub ShowCurrent()
     Dim item As Object, v As Variant, rows As String, category As String
     Dim candidates As Collection, candidate As Variant, keeper As Long, rowNo As Long
     Dim decision As String, rowDecision As String
+    If mCboCategory.ListIndex = 4 Then
+        ShowECurrent
+        Exit Sub
+    End If
     Set item = SelectedCase()
     rendering = True
     mCmdApprove.Caption = "同一として処理"
@@ -776,8 +815,8 @@ Private Sub ShowCurrent()
     ElseIf category = "E" Then
         mLblRows.Caption = "固定管理行IDで特定したExcel行"
         mLblStatus.Caption = "承認前は変更しません。システム採用は確認後にExcelへ反映します。"
-        mCmdApprove.Caption = "システム採用"
-        mCmdOther.Caption = "Excel採用"
+        mCmdApprove.Caption = "文書管理を採用"
+        mCmdOther.Caption = "Excel基準表を採用"
         mCmdHold.Caption = "保留"
     Else
         mLblRows.Caption = "候補のExcel行"
@@ -827,11 +866,15 @@ Private Sub mLstCases_KeyUp(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift 
 End Sub
 
 Private Sub mLstCases_Exit(ByVal Cancel As MSForms.ReturnBoolean)
-    If Not rendering And mCboCategory.ListIndex = 4 Then ShowCurrent
+    If Not rendering And mCboCategory.ListIndex = 4 Then UpdateESelection
 End Sub
 Private Sub mLstRows_Click()
     Dim item As Object
     If rendering Then Exit Sub
+    If mCboCategory.ListIndex = 4 Then
+        UpdateEFieldSelection
+        Exit Sub
+    End If
     Set item = SelectedCase()
     If Not item Is Nothing Then
         If CStr(item("category")) = "C" Then SelectDeleteRow item, SelectedRow()
@@ -839,8 +882,20 @@ Private Sub mLstRows_Click()
     ShowCurrentSelection
 End Sub
 
+Private Sub mLstRows_Change()
+    If Not rendering And mCboCategory.ListIndex = 4 Then UpdateEFieldSelection
+End Sub
+
+Private Sub mLstRows_KeyUp(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    If Not rendering And mCboCategory.ListIndex = 4 Then UpdateEFieldSelection
+End Sub
+
 Private Sub ShowCurrentSelection()
     Dim item As Object, rowNo As Long
+    If mCboCategory.ListIndex = 4 Then
+        UpdateEFieldSelection
+        Exit Sub
+    End If
     Set item = SelectedCase()
     If item Is Nothing Then Exit Sub
     rowNo = SelectedRow()
@@ -945,7 +1000,7 @@ Private Sub mCmdApprove_Click()
     If item Is Nothing Then Exit Sub
     If CStr(item("category")) = "E" Then
         If ESelectedCount() <> 1 Then Exit Sub
-        If MsgBox("システム側の値で関連するExcelセルを更新します。続けますか？", _
+        If MsgBox("文書管理システムの値をExcel基準表へ反映します。選択した関連項目グループ全体が対象です。続けますか？", _
                   vbQuestion + vbYesNo, "競合解決の確認") <> vbYes Then Exit Sub
         If Module1.BidirectionalSyncResolveConflict(item, "システム採用") Then mCmdRefresh_Click
         Exit Sub
@@ -1010,6 +1065,10 @@ End Sub
 Private Sub mCmdNext_Click()
     Dim i As Long, startAt As Long, item As Object, candidate As Variant
     Dim candidates As Collection, selected As Long, j As Long, rowNo As Long
+    If mCboCategory.ListIndex = 4 Then
+        SelectNextECase
+        Exit Sub
+    End If
     If shown Is Nothing Then Exit Sub
     If shown.Count = 0 Then Exit Sub
     Set item = SelectedCase()
@@ -1182,4 +1241,589 @@ Failed:
 End Sub
 Private Sub mCmdFinish_Click()
     Unload Me
+End Sub
+
+Private Sub LayoutReviewForE(ByVal isE As Boolean)
+    Dim i As Long
+    If isE Then
+        Me.Width = 1100
+        PlaceControl mLblCounts, 9, 6, 1070, 19
+        PlaceControl mCboCategory, 9, 28, 187.5, 16.5
+        PlaceControl mCboEGroup, 205, 28, 110, 16.5
+        PlaceControl mLblCase, 9, 50, 245, 14
+        mLblCase.Caption = "第2ガイド ／ 個別フォルダ ／ 作成年"
+        PlaceControl mLstCases, 9, 64.5, 245, 228
+        mLstCases.ColumnCount = 3
+        mLstCases.ColumnWidths = "70 pt;110 pt;55 pt"
+        mLblRows.Visible = False
+        PlaceControl mLstRows, 263, 64.5, 800, 228
+        mLstRows.ColumnCount = 5
+        mLstRows.ColumnWidths = "130 pt;145 pt;145 pt;145 pt;180 pt"
+        mLstRows.MultiSelect = fmMultiSelectSingle
+        PlaceControl mLblCompareRows, 263, 28, 800, 18
+        PlaceControl mTxtDetails, 263, 299, 800, 55
+        PlaceControl mLblStatus, 9, 356, 1070, 21
+        PlaceControl mLblDWarning, 9, 380, 1070, 21
+        mLblDWarning.Visible = False
+        PlaceControl mLblESelection, 9, 301.5, 120, 19
+        PlaceControl mCmdEClear, 136, 301.5, 108, 22
+        mFraCompare.Visible = False
+        mLblESelection.Visible = True
+        mCmdEClear.Visible = True
+        mCmdGoTo.Visible = False
+        mCmdDelete.Visible = False
+        mCmdClear.Visible = False
+        PlaceControl mCmdApprove, 9, 379.5, 110, 21
+        mCmdApprove.Caption = "文書管理を採用"
+        PlaceControl mCmdOther, 124, 379.5, 125, 21
+        mCmdOther.Caption = "Excel基準表を採用"
+        PlaceControl mCmdHold, 254, 379.5, 55, 21
+        mCmdHold.Caption = "保留"
+        PlaceControl mCmdNext, 314, 379.5, 100, 21
+        mCmdNext.Caption = "次の未解決項目"
+        PlaceControl mCmdRefresh, 419, 379.5, 75, 21
+        PlaceControl mCmdFinish, 499, 379.5, 82, 21
+        For i = 0 To 4
+            mEColumnHeaders(i).Visible = True
+        Next i
+    Else
+        Me.Width = 760
+        PlaceControl mLblCounts, 9, 6, 740, 19
+        PlaceControl mCboCategory, 9, 28, 187.5, 16.5
+        PlaceControl mCboEGroup, 205, 28, 110, 16.5
+        PlaceControl mLblCase, 9, 50, 187.5, 14
+        PlaceControl mLstCases, 9, 64.5, 187.5, 228
+        mLstCases.ColumnCount = 1
+        mLstCases.ColumnWidths = ""
+        PlaceControl mLblRows, 205, 50, 110, 14
+        mLblRows.Visible = True
+        PlaceControl mLstRows, 205, 64.5, 110, 228
+        mLstRows.ColumnCount = 1
+        mLstRows.ColumnWidths = ""
+        mLstRows.MultiSelect = fmMultiSelectSingle
+        PlaceControl mLblCompareRows, 324, 28, 420, 18
+        PlaceControl mFraCompare, 324, 48, 420, 225
+        mFraCompare.Visible = True
+        PlaceControl mTxtDetails, 324, 278, 420, 50
+        PlaceControl mLblStatus, 9, 333, 740, 21
+        PlaceControl mLblDWarning, 9, 356, 740, 21
+        mLblDWarning.Caption = "警告：D利用不可: " & mDUnavailableReason
+        mLblDWarning.ControlTipText = mDUnavailableReason
+        mLblDWarning.Visible = (Len(mDUnavailableReason) > 0)
+        PlaceControl mLblESelection, 9, 301.5, 190, 19
+        PlaceControl mCmdEClear, 205, 300, 110, 22
+        mLblESelection.Visible = False
+        mCmdEClear.Visible = False
+        mCmdGoTo.Visible = True
+        PlaceControl mCmdGoTo, 9, 379.5, 70, 21
+        mCmdGoTo.Caption = "対象行へ移動"
+        mCmdApprove.Visible = True
+        PlaceControl mCmdApprove, 84, 379.5, 78, 21
+        mCmdApprove.Caption = "同一として処理"
+        mCmdOther.Visible = True
+        PlaceControl mCmdOther, 167, 379.5, 50, 21
+        mCmdOther.Caption = "別物"
+        mCmdHold.Visible = True
+        PlaceControl mCmdHold, 222, 379.5, 50, 21
+        mCmdHold.Caption = "保留"
+        mCmdNext.Visible = True
+        PlaceControl mCmdNext, 277, 379.5, 60, 21
+        mCmdNext.Caption = "次の候補"
+        mCmdDelete.Visible = True
+        PlaceControl mCmdDelete, 342, 379.5, 85.5, 21
+        mCmdDelete.Caption = "選択行を一括削除"
+        mCmdClear.Visible = True
+        PlaceControl mCmdClear, 433, 379.5, 125, 21
+        mCmdClear.Caption = "選択行の番号をクリア"
+        PlaceControl mCmdRefresh, 9, 407, 70, 21
+        PlaceControl mCmdFinish, 508, 407, 82, 21
+        For i = 0 To 4
+            mEColumnHeaders(i).Visible = False
+        Next i
+    End If
+End Sub
+
+Private Sub ShowECategory()
+    Dim allRecords As Collection, record As Object, recordCases As Collection
+    Dim selectedGroup As String, filtered As Boolean
+    Dim rowIndex As Long, guide2Value As String, folderValue As String, creationYearValue As String
+    Dim totalItems As Long, filteredItems As Long, unresolvedFiles As Long, filteredUnresolvedFiles As Long
+    If cases Is Nothing Then Exit Sub
+    rendering = True
+    LayoutReviewForE True
+    Set allRecords = BuildERecords(cases, targetYear)
+    Set shown = New Collection
+    Set eFieldCases = New Collection
+    Set eFieldItems = New Collection
+    mLstCases.MultiSelect = fmMultiSelectExtended
+    mLstCases.Clear
+    mLstRows.Clear
+    mLstRows.ListIndex = -1
+    mCboEGroup.Visible = True
+    mLblCase.Caption = "第2ガイド ／ 個別フォルダ ／ 作成年"
+    mLblRows.Visible = False
+    mLblESelection.Caption = "0件選択中"
+    mLblCompareRows.Caption = "ファイルを選択してください。"
+    mTxtDetails.Text = "確認対象ファイルを左側から選択すると、そのファイルの不一致項目を表示します。"
+    mLblStatus.Caption = "複数ファイルの選択は表示専用です。判断時はファイル1件と不一致項目1件を選んでください。"
+    mChkDelete.Visible = False
+    mCmdApprove.Caption = "文書管理を採用"
+    mCmdOther.Caption = "Excel基準表を採用"
+    mCmdHold.Caption = "保留"
+    mCmdApprove.Enabled = False
+    mCmdOther.Enabled = False
+    mCmdHold.Enabled = False
+    mCmdGoTo.Enabled = False
+    mCmdClear.Enabled = False
+    mCmdEClear.Enabled = False
+    filtered = (mCboEGroup.ListIndex > 0)
+    If filtered Then selectedGroup = CStr(mCboEGroup.Value)
+    For Each record In allRecords
+        Set recordCases = record("cases")
+        totalItems = totalItems + recordCases.Count
+        If ERecordNeedsConfirmation(record) Then unresolvedFiles = unresolvedFiles + 1
+        If ERecordHasGroup(record, selectedGroup) Then
+            shown.Add record
+            ERecordDisplayValues record, guide2Value, folderValue, creationYearValue
+            rowIndex = mLstCases.ListCount
+            mLstCases.AddItem guide2Value
+            mLstCases.List(rowIndex, 1) = folderValue
+            mLstCases.List(rowIndex, 2) = creationYearValue
+            filteredItems = filteredItems + recordCases.Count
+            If ERecordNeedsConfirmation(record) Then filteredUnresolvedFiles = filteredUnresolvedFiles + 1
+        End If
+    Next record
+    mLblCounts.Caption = "ファイル数 " & CStr(allRecords.Count) & "件 / 不一致項目 " & CStr(totalItems) & _
+                        "件 / 確認待ち " & CStr(unresolvedFiles) & "ファイル"
+    If filtered Then
+        mLblCounts.Caption = mLblCounts.Caption & " ／ 絞り込み表示 " & CStr(shown.Count) & "ファイル・" & _
+                             CStr(filteredItems) & "項目（確認待ち " & CStr(filteredUnresolvedFiles) & "ファイル）"
+    End If
+    If shown.Count = 0 Then
+        mTxtDetails.Text = "この絞り込み条件に該当するファイルはありません。"
+        mLblStatus.Caption = "絞り込みを変更するか、［すべて］を選択してください。"
+    End If
+    rendering = False
+    UpdateESelection
+End Sub
+
+Private Function BuildERecords(ByVal sourceCases As Collection, ByVal yearValue As Long) As Collection
+    Dim result As New Collection, recordIndexByKey As Object
+    Dim rowIdCounts As Object, stableKeyCounts As Object
+    Dim item As Object, record As Object, recordCases As Collection
+    Dim i As Long, bucketKey As String, rowKey As String, stableKey As String
+    Set recordIndexByKey = CreateObject("Scripting.Dictionary")
+    recordIndexByKey.CompareMode = vbBinaryCompare
+    Set rowIdCounts = CreateObject("Scripting.Dictionary")
+    rowIdCounts.CompareMode = vbBinaryCompare
+    Set stableKeyCounts = CreateObject("Scripting.Dictionary")
+    stableKeyCounts.CompareMode = vbBinaryCompare
+    If sourceCases Is Nothing Then
+        Set BuildERecords = result
+        Exit Function
+    End If
+    For i = 1 To sourceCases.Count
+        Set item = sourceCases(i)
+        If CStr(item("category")) = "E" And CLng(item("year")) = yearValue Then
+            bucketKey = ERecordBucketKey(item)
+            If Len(bucketKey) = 0 Then bucketKey = "UNVERIFIED:" & CStr(i)
+            If recordIndexByKey.Exists(bucketKey) Then
+                Set record = result(CLng(recordIndexByKey(bucketKey)))
+            Else
+                Set record = CreateObject("Scripting.Dictionary")
+                record.Add "year", CLng(item("year"))
+                record.Add "rowId", CStr(item("rowId"))
+                record.Add "stableKey", CStr(item("stableKey"))
+                record.Add "sourceRow", CLng(item("sourceRow"))
+                record.Add "destinationRow", CLng(item("destinationRow"))
+                record.Add "identityIssue", (Left$(bucketKey, 11) = "UNVERIFIED:")
+                Set recordCases = New Collection
+                record.Add "cases", recordCases
+                result.Add record
+                If Left$(bucketKey, 11) <> "UNVERIFIED:" Then recordIndexByKey.Add bucketKey, result.Count
+            End If
+            Set recordCases = record("cases")
+            recordCases.Add item
+        End If
+    Next i
+    For Each record In result
+        rowKey = ERecordRowIdKey(record)
+        If Len(rowKey) > 0 Then
+            If rowIdCounts.Exists(rowKey) Then
+                rowIdCounts(rowKey) = CLng(rowIdCounts(rowKey)) + 1
+            Else
+                rowIdCounts.Add rowKey, 1
+            End If
+        End If
+        stableKey = ERecordStableKeyKey(record)
+        If Len(stableKey) > 0 Then
+            If stableKeyCounts.Exists(stableKey) Then
+                stableKeyCounts(stableKey) = CLng(stableKeyCounts(stableKey)) + 1
+            Else
+                stableKeyCounts.Add stableKey, 1
+            End If
+        End If
+    Next record
+    For Each record In result
+        rowKey = ERecordRowIdKey(record)
+        stableKey = ERecordStableKeyKey(record)
+        If Len(rowKey) > 0 And rowIdCounts.Exists(rowKey) Then
+            If CLng(rowIdCounts(rowKey)) > 1 Then record("identityIssue") = True
+        End If
+        If Len(stableKey) > 0 And stableKeyCounts.Exists(stableKey) Then
+            If CLng(stableKeyCounts(stableKey)) > 1 Then record("identityIssue") = True
+        End If
+    Next record
+    Set BuildERecords = result
+End Function
+
+Private Function ERecordBucketKey(ByVal item As Object) As String
+    Dim rowId As String, stableKey As String, yearValue As Long
+    Dim sourceRow As Long, destinationRow As Long
+    On Error GoTo InvalidIdentity
+    If item Is Nothing Then Exit Function
+    If Not item.Exists("rowId") Or Not item.Exists("stableKey") Or Not item.Exists("year") Or _
+       Not item.Exists("sourceRow") Or Not item.Exists("destinationRow") Then Exit Function
+    rowId = CStr(item("rowId"))
+    stableKey = CStr(item("stableKey"))
+    yearValue = CLng(item("year"))
+    sourceRow = CLng(item("sourceRow"))
+    destinationRow = CLng(item("destinationRow"))
+    If Len(Trim$(rowId)) = 0 Or Len(stableKey) = 0 Or sourceRow < 2 Or destinationRow < 2 Then Exit Function
+    ERecordBucketKey = CStr(yearValue) & ":" & CStr(Len(rowId)) & ":" & rowId & ":" & _
+                       CStr(Len(stableKey)) & ":" & stableKey & ":" & CStr(sourceRow) & ":" & CStr(destinationRow)
+    Exit Function
+InvalidIdentity:
+    Err.Clear
+End Function
+
+Private Function ERecordRowIdKey(ByVal record As Object) As String
+    Dim rowId As String
+    rowId = CStr(record("rowId"))
+    If Len(Trim$(rowId)) = 0 Then Exit Function
+    ERecordRowIdKey = CStr(record("year")) & ":" & CStr(Len(rowId)) & ":" & rowId
+End Function
+
+Private Function ERecordStableKeyKey(ByVal record As Object) As String
+    Dim stableKey As String
+    stableKey = CStr(record("stableKey"))
+    If Len(stableKey) = 0 Then Exit Function
+    ERecordStableKeyKey = CStr(record("year")) & ":" & CStr(Len(stableKey)) & ":" & stableKey
+End Function
+
+Private Function ERecordHasGroup(ByVal record As Object, ByVal selectedGroup As String) As Boolean
+    Dim item As Object, recordCases As Collection
+    If Len(selectedGroup) = 0 Then
+        ERecordHasGroup = True
+        Exit Function
+    End If
+    Set recordCases = record("cases")
+    For Each item In recordCases
+        If StrComp(CStr(item("groupName")), selectedGroup, vbTextCompare) = 0 Then
+            ERecordHasGroup = True
+            Exit Function
+        End If
+    Next item
+End Function
+
+Private Function ERecordNeedsConfirmation(ByVal record As Object) As Boolean
+    Dim item As Object, recordCases As Collection, decision As String
+    If CBool(record("identityIssue")) Then
+        ERecordNeedsConfirmation = True
+        Exit Function
+    End If
+    Set recordCases = record("cases")
+    For Each item In recordCases
+        decision = SyncReviewDecision(item)
+        If Len(decision) = 0 Or decision = "保留" Then
+            ERecordNeedsConfirmation = True
+            Exit Function
+        End If
+    Next item
+End Function
+
+Private Sub ERecordDisplayValues(ByVal record As Object, ByRef guide2Value As String, _
+                                 ByRef folderValue As String, ByRef creationYearValue As String)
+    Dim src As Worksheet, dst As Worksheet, sourceRow As Long, destinationRow As Long
+    On Error GoTo Unavailable
+    Set src = ThisWorkbook.Worksheets(CSV_SHEET)
+    Set dst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    sourceRow = CLng(record("sourceRow"))
+    destinationRow = CLng(record("destinationRow"))
+    guide2Value = EIdentityPair(src, dst, sourceRow, destinationRow, 7)
+    folderValue = EIdentityPair(src, dst, sourceRow, destinationRow, 8)
+    creationYearValue = EIdentityPair(src, dst, sourceRow, destinationRow, 5)
+    If CBool(record("identityIssue")) Then guide2Value = "要確認: " & guide2Value
+    Exit Sub
+Unavailable:
+    Err.Clear
+    guide2Value = "識別情報を取得できません"
+    folderValue = "―"
+    creationYearValue = "要確認"
+End Sub
+
+Private Function EIdentityPair(ByVal src As Worksheet, ByVal dst As Worksheet, _
+                               ByVal sourceRow As Long, ByVal destinationRow As Long, _
+                               ByVal fieldIndex As Long) As String
+    Dim fieldCaption As String, csvAliases As Variant, excelAliases As Variant
+    Dim sourceValue As String, excelValue As String
+    Dim sourceHeaderFound As Boolean, excelHeaderFound As Boolean
+    CompareFieldSpec fieldIndex, fieldCaption, csvAliases, excelAliases
+    sourceValue = EIdentityFieldValue(src, sourceRow, csvAliases, sourceHeaderFound)
+    excelValue = EIdentityFieldValue(dst, destinationRow, excelAliases, excelHeaderFound)
+    If Not sourceHeaderFound Then sourceValue = "―"
+    If Not excelHeaderFound Then excelValue = "―"
+    If StrComp(sourceValue, excelValue, vbBinaryCompare) = 0 Then
+        EIdentityPair = sourceValue
+    Else
+        EIdentityPair = "文書管理: " & sourceValue & " / Excel: " & excelValue
+    End If
+End Function
+
+Private Function EIdentityFieldValue(ByVal ws As Worksheet, ByVal rowNo As Long, _
+                                      ByVal aliases As Variant, ByRef headerFound As Boolean) As String
+    EIdentityFieldValue = CompareCellText(ws, rowNo, aliases, headerFound)
+    If Len(EIdentityFieldValue) = 0 And headerFound Then EIdentityFieldValue = "（空欄）"
+End Function
+
+Private Function SelectedRecord() As Object
+    Dim i As Long
+    If mCboCategory.ListIndex <> 4 Or shown Is Nothing Then Exit Function
+    If ESelectedCount() = 0 Then Exit Function
+    If mLstCases.ListIndex >= 0 And mLstCases.ListIndex + 1 <= shown.Count Then
+        If mLstCases.Selected(mLstCases.ListIndex) Then
+            Set SelectedRecord = shown(mLstCases.ListIndex + 1)
+            Exit Function
+        End If
+    End If
+    For i = 0 To mLstCases.ListCount - 1
+        If mLstCases.Selected(i) Then
+            Set SelectedRecord = shown(i + 1)
+            Exit Function
+        End If
+    Next i
+End Function
+
+Private Function SelectedEField() As Object
+    If mCboCategory.ListIndex <> 4 Or mLstRows.ListIndex < 0 Then Exit Function
+    If eFieldItems Is Nothing Then Exit Function
+    If mLstRows.ListIndex + 1 <= eFieldItems.Count Then _
+        Set SelectedEField = eFieldItems(mLstRows.ListIndex + 1)
+End Function
+
+Private Sub ShowECurrent()
+    Dim record As Object, item As Object, fieldItem As Object
+    Dim recordCases As Collection, fieldItems As Collection
+    Dim rowIndex As Long, decision As String
+    rendering = True
+    Set eFieldCases = New Collection
+    Set eFieldItems = New Collection
+    mLstRows.Clear
+    mLstRows.ColumnCount = 5
+    mLstRows.ColumnWidths = "130 pt;145 pt;145 pt;145 pt;180 pt"
+    mLstRows.MultiSelect = fmMultiSelectSingle
+    mLstRows.ListIndex = -1
+    Set record = SelectedRecord()
+    If record Is Nothing Then
+        mLblCompareRows.Caption = "ファイルを選択してください。"
+        mTxtDetails.Text = "確認対象ファイルを左側から選択すると、そのファイルの不一致項目を表示します。"
+        mLblStatus.Caption = "複数ファイル選択は表示専用です。判断時はファイル1件と不一致項目1件を選択してください。"
+        mCmdApprove.Enabled = False
+        mCmdOther.Enabled = False
+        mCmdHold.Enabled = False
+        mCmdGoTo.Enabled = False
+        mCmdClear.Enabled = False
+        mChkDelete.Visible = False
+        rendering = False
+        UpdateESelection
+        Exit Sub
+    End If
+    Set recordCases = record("cases")
+    For Each item In recordCases
+        Set fieldItems = item("headers")
+        decision = EConflictDecisionDisplay(item)
+        For Each fieldItem In fieldItems
+            rowIndex = mLstRows.ListCount
+            mLstRows.AddItem CStr(fieldItem("sourceHeader"))
+            If CBool(fieldItem("baselineKnown")) Then
+                mLstRows.List(rowIndex, 1) = EConflictValueDisplay(CStr(fieldItem("baselineValue")))
+            Else
+                mLstRows.List(rowIndex, 1) = "未確定"
+            End If
+            mLstRows.List(rowIndex, 2) = EConflictValueDisplay(CStr(fieldItem("systemValue")))
+            mLstRows.List(rowIndex, 3) = EConflictValueDisplay(CStr(fieldItem("excelValue")))
+            mLstRows.List(rowIndex, 4) = decision
+            eFieldCases.Add item
+            eFieldItems.Add fieldItem
+        Next fieldItem
+    Next item
+    mLstRows.ListIndex = -1
+    mLblCompareRows.Caption = "CSV行 " & CStr(record("sourceRow")) & " ／ Excel行 " & _
+                              CStr(record("destinationRow")) & " ／ 判断単位 " & CStr(recordCases.Count) & "件"
+    mTxtDetails.Text = ERecordIdentityDetails(record)
+    mLblStatus.Caption = "不一致項目を選ぶと、項目グループの理由と判断範囲を確認できます。"
+    mCmdApprove.Caption = "文書管理を採用"
+    mCmdOther.Caption = "Excel基準表を採用"
+    mCmdHold.Caption = "保留"
+    mCmdGoTo.Enabled = False
+    mCmdClear.Enabled = False
+    mChkDelete.Visible = False
+    rendering = False
+    UpdateESelection
+End Sub
+
+Private Sub UpdateEFieldSelection()
+    Dim record As Object, item As Object, fieldItem As Object
+    If rendering Or mCboCategory.ListIndex <> 4 Then Exit Sub
+    Set record = SelectedRecord()
+    If record Is Nothing Then Exit Sub
+    Set item = SelectedCase()
+    Set fieldItem = SelectedEField()
+    If item Is Nothing Or fieldItem Is Nothing Then
+        mTxtDetails.Text = ERecordIdentityDetails(record)
+        If ESelectedCount() > 1 Then
+            mLblStatus.Caption = "複数ファイルの選択は表示専用です。判断にはファイル1件と項目1件を選んでください。"
+        Else
+            mLblStatus.Caption = "判断する不一致項目を1件選択してください。"
+        End If
+        UpdateESelection
+        Exit Sub
+    End If
+    mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & EConflictFieldDetails(item, fieldItem)
+    mLblStatus.Caption = "判断単位「" & CStr(item("groupName")) & "」の関連項目全体に選択した判断が適用されます。"
+    UpdateESelection
+End Sub
+
+Private Function ERecordIdentityDetails(ByVal record As Object) As String
+    Dim src As Worksheet, dst As Worksheet, sourceRow As Long, destinationRow As Long
+    Dim recordCases As Collection, firstCase As Object, matchKind As String
+    On Error GoTo Unavailable
+    Set src = ThisWorkbook.Worksheets(CSV_SHEET)
+    Set dst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    sourceRow = CLng(record("sourceRow"))
+    destinationRow = CLng(record("destinationRow"))
+    Set recordCases = record("cases")
+    If recordCases.Count > 0 Then
+        Set firstCase = recordCases(1)
+        matchKind = CStr(firstCase("matchKind"))
+    End If
+    ERecordIdentityDetails = "第2ガイド: " & EIdentityPair(src, dst, sourceRow, destinationRow, 7) & _
+        " ／ 個別フォルダー: " & EIdentityPair(src, dst, sourceRow, destinationRow, 8) & _
+        " ／ 作成年度: " & EIdentityPair(src, dst, sourceRow, destinationRow, 5) & vbCrLf & _
+        "第1ガイド: " & EIdentityPair(src, dst, sourceRow, destinationRow, 6) & _
+        " ／ 正式ファイルID: " & EIdentityPair(src, dst, sourceRow, destinationRow, 1) & _
+        " ／ ファイル番号: " & EIdentityPair(src, dst, sourceRow, destinationRow, 2) & _
+        " ／ バーコード番号: " & EIdentityPair(src, dst, sourceRow, destinationRow, 3) & vbCrLf & _
+        "Excel管理行ID: " & CStr(record("rowId")) & " ／ CSV安定識別キー: " & CStr(record("stableKey")) & _
+        " ／ 照合方法: " & matchKind & vbCrLf & _
+        "同期対象年度: " & CStr(record("year")) & " ／ CSV行: " & CStr(sourceRow) & _
+        " ／ Excel行: " & CStr(destinationRow)
+    If CBool(record("identityIssue")) Then
+        ERecordIdentityDetails = ERecordIdentityDetails & vbCrLf & _
+            "注意: 管理行ID・安定識別キー・行番号の一貫性を確認できません。別ファイルと統合せず、判断前に確認してください。"
+    End If
+    Exit Function
+Unavailable:
+    Err.Clear
+    ERecordIdentityDetails = "ファイルの識別情報を取得できません。安全のため判断前に再読み込みしてください。"
+End Function
+
+Private Function EConflictFieldDetails(ByVal item As Object, ByVal selectedField As Object) As String
+    Dim fieldItems As Collection, fieldItem As Object, fieldNames As String
+    Dim previousValue As String
+    Set fieldItems = item("headers")
+    For Each fieldItem In fieldItems
+        If Len(fieldNames) > 0 Then fieldNames = fieldNames & "、"
+        fieldNames = fieldNames & CStr(fieldItem("sourceHeader"))
+    Next fieldItem
+    EConflictFieldDetails = "判断単位: " & CStr(item("groupName")) & " ／ 関連項目: " & fieldNames & vbCrLf & _
+        "理由: " & EConflictReasonDisplay(item) & vbCrLf & _
+        "選択項目: " & CStr(selectedField("sourceHeader")) & " ／ 文書管理システム: " & _
+        EConflictValueDisplay(CStr(selectedField("systemValue"))) & " ／ Excel基準表: " & _
+        EConflictValueDisplay(CStr(selectedField("excelValue")))
+    If CBool(selectedField("baselineKnown")) Then
+        previousValue = EConflictValueDisplay(CStr(selectedField("baselineValue")))
+    Else
+        previousValue = "未確定"
+    End If
+    EConflictFieldDetails = EConflictFieldDetails & vbCrLf & "前回同期値: " & previousValue & _
+        " ／ この判断は同じ判断単位の関連項目全体に適用されます。"
+    If InStr(1, CStr(selectedField("sourceHeader")), "コード", vbTextCompare) > 0 Or _
+       StrComp(CStr(selectedField("sourceHeader")), "汎用項目１０", vbTextCompare) = 0 Then
+        EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
+            "コード欄: 上の値は保存済みの競合比較値です。ここでは値を変更しません。"
+    End If
+End Function
+
+Private Function EConflictValueDisplay(ByVal valueText As String) As String
+    If Len(valueText) = 0 Then
+        EConflictValueDisplay = "（空欄）"
+    Else
+        EConflictValueDisplay = valueText
+    End If
+End Function
+
+Private Function EConflictDecisionDisplay(ByVal item As Object) As String
+    Select Case SyncReviewDecision(item)
+        Case ""
+            EConflictDecisionDisplay = "未判断"
+        Case "システム採用"
+            EConflictDecisionDisplay = "文書管理を採用"
+        Case "Excel採用"
+            EConflictDecisionDisplay = "Excel基準表を採用"
+        Case "保留"
+            EConflictDecisionDisplay = "保留中"
+        Case Else
+            EConflictDecisionDisplay = "要確認: " & SyncReviewDecision(item)
+    End Select
+End Function
+
+Private Function EConflictReasonDisplay(ByVal item As Object) As String
+    Dim reasonText As String, summary As String
+    reasonText = CStr(item("reason"))
+    If InStr(1, reasonText, "前回同期確認値がない", vbTextCompare) > 0 Or _
+       InStr(1, reasonText, "初回不一致", vbTextCompare) > 0 Then
+        summary = "前回の同期確認値がありません。文書管理システムとExcelの値を確認し、採用する側を判断してください。"
+    ElseIf InStr(1, reasonText, "両方が前回確認値", vbTextCompare) > 0 Then
+        summary = "前回の確認後に両方の値が変更されています。自動では選ばず、両方の値を保持しています。"
+    ElseIf InStr(1, reasonText, "汎用項目１０", vbTextCompare) > 0 Then
+        summary = "汎用項目10のコード差を安全に判断できないため、自動更新を止めています。"
+    ElseIf InStr(1, reasonText, "Excel管理行IDで対象を特定", vbTextCompare) > 0 Then
+        summary = "保存済みの競合を再表示しています。前回同期値と両側の現在値を確認してから判断してください。"
+    Else
+        summary = "値の違いを自動で判断できないため、両方の値を保持しています。"
+    End If
+    EConflictReasonDisplay = summary & vbCrLf & "検出時の説明: " & reasonText
+End Function
+
+Private Sub SelectNextECase()
+    Dim recordIndex As Long, record As Object, recordCases As Collection, item As Object
+    If shown Is Nothing Then Exit Sub
+    For recordIndex = 1 To shown.Count
+        Set record = shown(recordIndex)
+        Set recordCases = record("cases")
+        For Each item In recordCases
+            If Len(SyncReviewDecision(item)) = 0 Then
+                SelectSingleECase recordIndex - 1
+                SelectEFieldCase item
+                Exit Sub
+            End If
+        Next item
+    Next recordIndex
+    mLblStatus.Caption = "この絞り込み条件に未解決の不一致項目はありません。"
+End Sub
+
+Private Sub SelectEFieldCase(ByVal targetCase As Object)
+    Dim i As Long, candidate As Object
+    If targetCase Is Nothing Or eFieldCases Is Nothing Then Exit Sub
+    For i = 1 To eFieldCases.Count
+        Set candidate = eFieldCases(i)
+        If StrComp(CStr(candidate("key")), CStr(targetCase("key")), vbBinaryCompare) = 0 Then
+            rendering = True
+            mLstRows.ListIndex = i - 1
+            rendering = False
+            UpdateEFieldSelection
+            Exit Sub
+        End If
+    Next i
 End Sub

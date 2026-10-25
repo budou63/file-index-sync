@@ -1,4 +1,4 @@
-"""Stage 1: E multi-selection is display-only; adoption remains strictly per case."""
+"""E multi-selection is display-only; file grouping never changes item decisions."""
 import unittest
 from pathlib import Path
 
@@ -28,26 +28,29 @@ class ESelectionOnlyContracts(unittest.TestCase):
         for token in ('mCboEGroup.AddItem "すべて"', 'item("groupName")',
                       'CLng(item("year")) = targetYear', 'mCboEGroup.ListIndex = 0'):
             self.assertIn(token, group)
-        show = procedure(FORM, "ShowCategory")
-        self.assertIn('StrComp(CStr(item("groupName")), selectedGroup, vbTextCompare)', show)
-        self.assertIn('mCboEGroup.ListIndex <= 0', show)  # all option, not a group named すべて
-        self.assertIn('CLng(item("year")) <> targetYear', show)
-        self.assertIn('CStr(shown.Count) & "件表示／未解決"', show)
-        self.assertIn('CStr(filteredHeld) & "件', show)
-        self.assertIn('mCboEGroup.Visible = (categoryIndex = 4)', show)
+        show = procedure(FORM, "ShowECategory")
+        self.assertIn('ERecordHasGroup(record, selectedGroup)', show)
+        self.assertIn('mCboEGroup.ListIndex > 0', show)  # a real group named すべて stays selectable
+        self.assertIn('CStr(allRecords.Count)', show)
+        self.assertIn('CStr(totalItems)', show)
+        self.assertIn('mCboEGroup.Visible = True', show)
 
     def test_multiple_selection_only_on_e_and_counted(self):
         show = procedure(FORM, "ShowCategory")
-        self.assertIn('mLstCases.MultiSelect = fmMultiSelectExtended', show)
+        e_show = procedure(FORM, "ShowECategory")
+        layout = procedure(FORM, "LayoutReviewForE")
+        self.assertIn('mLstCases.MultiSelect = fmMultiSelectExtended', e_show)
         self.assertIn('mLstCases.MultiSelect = fmMultiSelectSingle', show)
+        self.assertIn('mLstRows.MultiSelect = fmMultiSelectSingle', layout)
         self.assertIn('If categoryIndex <> 4 And mLstCases.ListCount > 0 Then mLstCases.ListIndex = 0', show)
         count = procedure(FORM, "ESelectedCount", "Function")
         self.assertIn('If mCboCategory.ListIndex <> 4 Then Exit Function', count)
         self.assertIn('mLstCases.Selected(i)', count)
         selection = procedure(FORM, "UpdateESelection")
         self.assertIn('CStr(n) & "件選択中"', selection)
+        self.assertIn('identitySafe = Not CBool(record("identityIssue"))', selection)
         for name in ('mCmdApprove', 'mCmdOther', 'mCmdHold'):
-            self.assertIn(name + '.Enabled = (n = 1)', selection)
+            self.assertIn(name + '.Enabled = (n = 1 And Not item Is Nothing And identitySafe)', selection)
         self.assertIn('mCmdEClear.Enabled = (n > 0)', selection)
         self.assertIn('複数選択は表示専用です', selection)
 
@@ -59,15 +62,17 @@ class ESelectionOnlyContracts(unittest.TestCase):
             self.assertIn('BidirectionalSyncResolveConflict(item,', body)
             self.assertLess(body.index('If ESelectedCount() <> 1 Then Exit Sub'),
                             body.index('BidirectionalSyncResolveConflict(item,'))
-        self.assertIn('MsgBox("システム側の値で関連するExcelセルを更新します。続けますか？"', approve)
+        self.assertIn('MsgBox("文書管理システムの値をExcel基準表へ反映します。選択した関連項目グループ全体が対象です。続けますか？"', approve)
         self.assertIn('If MsgBox(', approve)
 
     def test_e_mouse_keyboard_and_focus_changes_refresh_selected_flags(self):
-        for event in ('mLstCases_MouseUp', 'mLstCases_KeyUp',
-                      'mLstCases_Change', 'mLstCases_Exit'):
+        for event in ('mLstCases_MouseUp', 'mLstCases_KeyUp', 'mLstCases_Change'):
             body = procedure(FORM, event)
             self.assertIn('If Not rendering And mCboCategory.ListIndex = 4 Then ShowCurrent', body)
             self.assertNotIn('BidirectionalSyncResolveConflict(', body)
+        exit_body = procedure(FORM, 'mLstCases_Exit')
+        self.assertIn('If Not rendering And mCboCategory.ListIndex = 4 Then UpdateESelection', exit_body)
+        self.assertNotIn('BidirectionalSyncResolveConflict(', exit_body)
         self.assertIn('ByVal KeyCode As MSForms.ReturnInteger',
                       procedure(FORM, 'mLstCases_KeyUp'))
         self.assertIn('ByVal Cancel As MSForms.ReturnBoolean',
