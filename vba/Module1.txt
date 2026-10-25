@@ -18088,6 +18088,7 @@ Private Function BidirectionalSyncPrepareClassificationCodeGroup( _
     ByVal itemKeys As Collection, ByVal groupName As String, ByRef holdReason As String) As Boolean
 
     Dim codeHeader As String, nameHeaderA As String, nameHeaderB As String
+    Dim isGeneric10 As Boolean, codeLabel As String
     Dim codeKey As String, nameKey As String, canonical As String, key As Variant
     Dim codeMatchCount As Long, nameMatchCount As Long
     Dim systemCodeCell As Range, excelCodeCell As Range, systemNameCell As Range, excelNameCell As Range
@@ -18105,39 +18106,69 @@ Private Function BidirectionalSyncPrepareClassificationCodeGroup( _
             codeHeader = "分類コード２": nameHeaderA = "第1ガイド": nameHeaderB = "分類名２"
         Case "第2ガイド・分類コード３"
             codeHeader = "分類コード３": nameHeaderA = "第2ガイド": nameHeaderB = "分類名３"
+        Case "汎用項目１０"
+            codeHeader = "汎用項目１０": isGeneric10 = True
         Case Else
             Exit Function
     End Select
 
     BidirectionalSyncPrepareClassificationCodeGroup = False
-    holdReason = "分類コードの違いが先頭ゼロだけの表記差と確認できないため、自動更新しません。"
+    codeLabel = IIf(isGeneric10, "汎用項目１０", "分類コード")
+    holdReason = codeLabel & "の違いが先頭ゼロだけの表記差と確認できないため、自動更新しません。"
     If itemKeys Is Nothing Then Exit Function
-    If itemKeys.Count <> 2 Then Exit Function
+    If isGeneric10 Then
+        If itemKeys.Count <> 1 Then Exit Function
+    Else
+        If itemKeys.Count <> 2 Then Exit Function
+    End If
     For Each key In itemKeys
         canonical = CanonicalHeaderName(CStr(key))
         If StrComp(canonical, CanonicalHeaderName(codeHeader), vbTextCompare) = 0 Then
             codeKey = CStr(key): codeMatchCount = codeMatchCount + 1
-        ElseIf StrComp(canonical, CanonicalHeaderName(nameHeaderA), vbTextCompare) = 0 Or _
-               StrComp(canonical, CanonicalHeaderName(nameHeaderB), vbTextCompare) = 0 Then
+        ElseIf Not isGeneric10 And (StrComp(canonical, CanonicalHeaderName(nameHeaderA), vbTextCompare) = 0 Or _
+               StrComp(canonical, CanonicalHeaderName(nameHeaderB), vbTextCompare) = 0) Then
             nameKey = CStr(key): nameMatchCount = nameMatchCount + 1
         End If
     Next key
-    If codeMatchCount <> 1 Or nameMatchCount <> 1 Then
-        holdReason = "関連する分類名・分類コードの対応を一意に確認できないため、自動更新しません。"
+    If codeMatchCount <> 1 Or (Not isGeneric10 And nameMatchCount <> 1) Then
+        If isGeneric10 Then
+            holdReason = "汎用項目１０の見出し対応を一意に確認できないため、自動更新しません。"
+        Else
+            holdReason = "関連する分類名・分類コードの対応を一意に確認できないため、自動更新しません。"
+        End If
         Exit Function
     End If
     If Not srcHeaderMap.Exists(codeKey) Or Not srcToDstMap.Exists(codeKey) Or _
-       Not srcHeaderMap.Exists(nameKey) Or Not srcToDstMap.Exists(nameKey) Then
-        holdReason = "関連する分類名・分類コードの見出し対応を確認できないため、自動更新しません。"
+       (Not isGeneric10 And (Not srcHeaderMap.Exists(nameKey) Or Not srcToDstMap.Exists(nameKey))) Then
+        If isGeneric10 Then
+            holdReason = "汎用項目１０の見出し対応を確認できないため、自動更新しません。"
+        Else
+            holdReason = "関連する分類名・分類コードの見出し対応を確認できないため、自動更新しません。"
+        End If
         Exit Function
     End If
 
     Set systemCodeCell = wsSrc.Cells(srcRow, CLng(srcHeaderMap(codeKey)))
     Set excelCodeCell = wsDst.Cells(dstRow, CLng(srcToDstMap(codeKey)))
-    Set systemNameCell = wsSrc.Cells(srcRow, CLng(srcHeaderMap(nameKey)))
-    Set excelNameCell = wsDst.Cells(dstRow, CLng(srcToDstMap(nameKey)))
+    If isGeneric10 Then
+        If StrComp(CanonicalHeaderName(CStr(wsSrc.Cells(1, systemCodeCell.Column).Value2)), _
+                   CanonicalHeaderName(codeHeader), vbTextCompare) <> 0 Or _
+           StrComp(CanonicalHeaderName(CStr(wsDst.Cells(1, excelCodeCell.Column).Value2)), _
+                   CanonicalHeaderName(codeHeader), vbTextCompare) <> 0 Then
+            holdReason = "汎用項目１０の更新先見出しを確認できないため、自動更新しません。"
+            Exit Function
+        End If
+        If excelCodeCell.MergeCells Then
+            holdReason = "汎用項目１０が結合セルのため、自動更新しません。"
+            Exit Function
+        End If
+    End If
+    If Not isGeneric10 Then
+        Set systemNameCell = wsSrc.Cells(srcRow, CLng(srcHeaderMap(nameKey)))
+        Set excelNameCell = wsDst.Cells(dstRow, CLng(srcToDstMap(nameKey)))
+    End If
     If systemCodeCell.HasFormula Or excelCodeCell.HasFormula Then
-        holdReason = "分類コードの参照元またはExcelセルが数式のため、自動更新しません。"
+        holdReason = codeLabel & "の参照元またはExcelセルが数式のため、自動更新しません。"
         Exit Function
     End If
     systemRaw = systemCodeCell.Value2: excelRaw = excelCodeCell.Value2
@@ -18149,39 +18180,46 @@ Private Function BidirectionalSyncPrepareClassificationCodeGroup( _
         End If
     End If
     If StrComp(BidirectionalSyncCurrentMatchKind(), "正式ID一意一致", vbBinaryCompare) <> 0 Then
-        holdReason = "正式ファイルIDの一意一致を確認できないため、分類コードを自動修正しません。"
+        holdReason = "正式ファイルIDの一意一致を確認できないため、" & codeLabel & "を自動修正しません。"
         Exit Function
     End If
     If VarType(systemRaw) <> vbString Then
-        holdReason = "目録CSVの正式分類コードが文字列ではないため、自動修正しません。"
+        holdReason = "目録CSVの正式" & codeLabel & "が文字列ではないため、自動修正しません。"
         Exit Function
     End If
     If Not BidirectionalSyncDigitsOnlyCodeKey(systemRaw, systemCodeKey) Or _
        Not BidirectionalSyncDigitsOnlyCodeKey(excelRaw, excelCodeKey) Then
-        holdReason = "分類コードが数字だけの先頭ゼロ表記差ではないため、自動修正しません。"
+        holdReason = codeLabel & "が数字だけの先頭ゼロ表記差ではないため、自動修正しません。"
         Exit Function
     End If
     If StrComp(systemCodeKey, excelCodeKey, vbBinaryCompare) <> 0 Then
-        holdReason = "分類コードの数字部分が異なり別分類の可能性があるため、自動更新しません。"
+        If isGeneric10 Then
+            holdReason = "汎用項目１０の数字部分が異なるため、自動更新しません。"
+        Else
+            holdReason = "分類コードの数字部分が異なり別分類の可能性があるため、自動更新しません。"
+        End If
         Exit Function
     End If
-    If systemNameCell.HasFormula Or excelNameCell.HasFormula Then
-        holdReason = "対応する分類名の参照元またはExcelセルが数式のため、自動更新しません。"
-        Exit Function
+    If Not isGeneric10 Then
+        If systemNameCell.HasFormula Or excelNameCell.HasFormula Then
+            holdReason = "対応する分類名の参照元またはExcelセルが数式のため、自動更新しません。"
+            Exit Function
+        End If
+        If IsError(systemNameCell.Value2) Or IsError(excelNameCell.Value2) Or _
+           IsNull(systemNameCell.Value2) Or IsNull(excelNameCell.Value2) Or _
+           IsEmpty(systemNameCell.Value2) Or IsEmpty(excelNameCell.Value2) Then
+            holdReason = "対応する分類名を安全に比較できないため、自動更新しません。"
+            Exit Function
+        End If
+        systemName = NormalizeValueForUpdateCompare(nameKey, systemNameCell.Value2)
+        excelName = NormalizeValueForUpdateCompare(nameKey, excelNameCell.Value2)
+        If Len(systemName) = 0 Or Len(excelName) = 0 Or _
+           StrComp(systemName, excelName, vbTextCompare) <> 0 Then
+            holdReason = "対応する分類名が一致しないため、分類コードを自動修正しません。"
+            Exit Function
+        End If
     End If
-    If IsError(systemNameCell.Value2) Or IsError(excelNameCell.Value2) Or _
-       IsNull(systemNameCell.Value2) Or IsNull(excelNameCell.Value2) Or _
-       IsEmpty(systemNameCell.Value2) Or IsEmpty(excelNameCell.Value2) Then
-        holdReason = "対応する分類名を安全に比較できないため、自動更新しません。"
-        Exit Function
-    End If
-    systemName = NormalizeValueForUpdateCompare(nameKey, systemNameCell.Value2)
-    excelName = NormalizeValueForUpdateCompare(nameKey, excelNameCell.Value2)
-    If Len(systemName) = 0 Or Len(excelName) = 0 Or _
-       StrComp(systemName, excelName, vbTextCompare) <> 0 Then
-        holdReason = "対応する分類名が一致しないため、分類コードを自動修正しません。"
-        Exit Function
-    End If
+
     If Not BidirectionalSyncDestinationRowIdIsUnique(wsDst, rowId, dstRow) Then
         holdReason = "Excel管理行IDを一意に確認できないため、同期基準値を伴う自動修正をしません。"
         Exit Function
@@ -18190,7 +18228,11 @@ Private Function BidirectionalSyncPrepareClassificationCodeGroup( _
         CLng(mBidirectionalSyncContext("TargetYear")), rowId, groupName) Then
         If Not BidirectionalSyncSavedConflictAllowsCodeNotation( _
             wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, codeKey, nameKey, groupName) Then
-            holdReason = "同じ分類名・コードグループに保存済みの競合判断があるため、自動修正しません。"
+            If isGeneric10 Then
+                holdReason = "汎用項目１０に保存済みの競合判断があるため、自動修正しません。"
+            Else
+                holdReason = "同じ分類名・コードグループに保存済みの競合判断があるため、自動修正しません。"
+            End If
             Exit Function
         End If
     End If
@@ -18203,7 +18245,7 @@ Private Function BidirectionalSyncPrepareClassificationCodeGroup( _
     If VarType(excelCodeCell.Value2) <> vbString Or _
        StrComp(CStr(excelCodeCell.Value2), CStr(systemRaw), vbBinaryCompare) <> 0 Then _
         Err.Raise vbObjectError + 2862, "BidirectionalSyncPrepareClassificationCodeGroup", _
-            "正式分類コードを書き込んだ後の文字列照合に失敗しました。"
+            "正式" & codeLabel & "を書き込んだ後の文字列照合に失敗しました。"
     Application.EnableEvents = oldEvents
     eventsCaptured = False
     mBidirectionalSyncContext("CsvAppliedCount") = _
@@ -18343,6 +18385,13 @@ Private Sub BidirectionalSyncApplyManagedGroup( _
             initialMismatchReason = initialMismatchReason & " " & classificationCodeHoldReason
         BidirectionalSyncAppendGroupDecision "初期不一致", wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, _
             mismatchedKeys, groupName, initialMismatchReason
+        Exit Sub
+    End If
+
+    ' 汎用項目１０で安全条件を満たさない不一致は、基準値ありでもE競合として保持する。
+    If groupName = "汎用項目１０" And Not classificationCodeReady Then
+        BidirectionalSyncAppendGroupDecision "競合保留", wsSrc, wsDst, srcRow, dstRow, rowId, _
+            srcHeaderMap, srcToDstMap, itemKeys, groupName, classificationCodeHoldReason
         Exit Sub
     End If
 
@@ -18687,13 +18736,17 @@ Private Function BidirectionalSyncSavedConflictAllowsCodeNotation( _
     Dim currentSystemValue As String, currentExcelValue As String
     Dim savedSystemKey As String, savedExcelKey As String
     Dim sourceCol As Long, destinationCol As Long
-    Dim codeSeen As Boolean
+    Dim codeSeen As Boolean, isGeneric10 As Boolean
 
     On Error GoTo FailClosed
     If wsSrc Is Nothing Then Exit Function
     If wsDst Is Nothing Then Exit Function
     If srcHeaderMap Is Nothing Or srcToDstMap Is Nothing Then Exit Function
     If Len(Trim$(rowId)) = 0 Or Len(Trim$(groupName)) = 0 Then Exit Function
+    isGeneric10 = (StrComp(CanonicalHeaderName(codeKey), _
+        CanonicalHeaderName("汎用項目１０"), vbTextCompare) = 0 And _
+        StrComp(groupName, "汎用項目１０", vbBinaryCompare) = 0 And Len(nameKey) = 0)
+    If groupName = "汎用項目１０" And Not isGeneric10 Then Exit Function
     If Not BidirectionalSyncContextIsActive() Then Exit Function
 
     currentStableKey = BuildFileKeyFromSheetRow(wsSrc, srcRow, srcHeaderMap)
@@ -18728,7 +18781,11 @@ Private Function BidirectionalSyncSavedConflictAllowsCodeNotation( _
     If Not savedCase.Exists("headers") Then Exit Function
     Set savedHeaders = savedCase("headers")
     If savedHeaders Is Nothing Then Exit Function
-    If savedHeaders.Count < 1 Or savedHeaders.Count > 2 Then Exit Function
+    If isGeneric10 Then
+        If savedHeaders.Count <> 1 Then Exit Function
+    Else
+        If savedHeaders.Count < 1 Or savedHeaders.Count > 2 Then Exit Function
+    End If
 
     For Each savedHeader In savedHeaders
         If Not savedHeader.Exists("sourceHeader") Or Not savedHeader.Exists("destinationHeader") Or _
@@ -18741,7 +18798,8 @@ Private Function BidirectionalSyncSavedConflictAllowsCodeNotation( _
             codeSeen = True
             sourceCol = CLng(srcHeaderMap(codeKey))
             destinationCol = CLng(srcToDstMap(codeKey))
-        ElseIf StrComp(CanonicalHeaderName(headerName), CanonicalHeaderName(nameKey), vbTextCompare) = 0 Then
+        ElseIf Not isGeneric10 And _
+            StrComp(CanonicalHeaderName(headerName), CanonicalHeaderName(nameKey), vbTextCompare) = 0 Then
             If Not srcHeaderMap.Exists(nameKey) Or Not srcToDstMap.Exists(nameKey) Then Exit Function
             sourceCol = CLng(srcHeaderMap(nameKey))
             destinationCol = CLng(srcToDstMap(nameKey))

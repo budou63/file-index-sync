@@ -131,11 +131,11 @@ class ClassificationCodeNotationTests(unittest.TestCase):
                 excel_value,
             )
 
-    def test_vba_normalizer_is_limited_to_the_two_classification_groups(self):
+    def test_vba_normalizer_is_limited_to_classification_two_three_and_generic_ten(self):
         body = procedure("BidirectionalSyncPrepareClassificationCodeGroup")
         self.assertIn("第1ガイド・分類コード２", body)
         self.assertIn("第2ガイド・分類コード３", body)
-        self.assertNotIn("汎用項目１０", body)
+        self.assertIn('Case "汎用項目１０"', body)
         self.assertIn("BidirectionalSyncCurrentMatchKind()", body)
         self.assertIn("正式ID一意一致", body)
         self.assertIn("BidirectionalSyncDigitsOnlyCodeKey", body)
@@ -155,7 +155,7 @@ class ClassificationCodeNotationTests(unittest.TestCase):
         self.assertIn('"競合保留"', body)
         self.assertIn('"システム手動編集待ち"', body)
 
-    def test_code_text_import_and_generic_item_10_are_preserved_without_expanding_normalization(self):
+    def test_code_text_import_and_generic_item_10_notation_scope(self):
         importer = procedure("CsvHeaderIsIdentifier")
         opener = procedure("CsvOpenTextAsWorkbook")
         writer = procedure("WriteStep2SourceValue")
@@ -168,7 +168,7 @@ class ClassificationCodeNotationTests(unittest.TestCase):
         self.assertIn("FieldInfo:=fieldInfo", opener)
         self.assertIn('targetCell.NumberFormat = "@"', writer)
         self.assertIn("targetCell.Value2 = CStr(sourceValue)", writer)
-        self.assertNotIn("汎用項目１０", normalizer)
+        self.assertIn('Case "汎用項目１０"', normalizer)
         self.assertEqual(normalize_model("090200", "090200", exact_id=True, names_match=True), "090200")
 
     def test_new_code_write_has_a_scoped_value_and_number_format_rollback(self):
