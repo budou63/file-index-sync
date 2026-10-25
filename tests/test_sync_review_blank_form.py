@@ -9,6 +9,7 @@ CANONICAL = ROOT / "frmSyncReview.frm"
 PASTE = ROOT / "vba/frmSyncReview.txt"
 NATIVE = ROOT / "frmSyncReview-native.frm"
 FRX = ROOT / "frmSyncReview-native.frx"
+MODULE1 = ROOT / "vba/Module1.txt"
 
 CONTROLS = {
     "lblCounts": "Label", "cboCategory": "ComboBox", "lblCase": "Label",
@@ -74,6 +75,21 @@ class BlankFormTests(unittest.TestCase):
                     declaration = f'Private Const {identifier} As String = "{value}"'
                     self.assertEqual(source.count(declaration), 1, identifier)
                     self.assertIn(f"Worksheets({identifier})", source)
+
+    def test_no_vba_component_references_module1_private_constants(self):
+        module = MODULE1.read_text(encoding="utf-8-sig")
+        private_constants = re.findall(
+            r"(?im)^\s*Private\s+Const\s+([A-Za-z_]\w*)\s+As\s+", module
+        )
+        violations = []
+        for component in (ROOT / "vba").glob("*.txt"):
+            if component.name == "Module1.txt":
+                continue
+            source = component.read_text(encoding="utf-8-sig")
+            for identifier in private_constants:
+                if re.search(rf"\b{re.escape(identifier)}\b", source, re.IGNORECASE):
+                    violations.append(f"{component.name}: {identifier}")
+        self.assertEqual(violations, [])
 
     def test_opener_loads_before_show_and_form_initializes_before_data_render(self):
         module = (ROOT / 'vba/modSyncReview.txt').read_text(encoding='utf-8')

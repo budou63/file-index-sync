@@ -1547,7 +1547,7 @@ Private Sub ERecordDisplayValues(ByVal record As Object, ByRef guide2Value As St
     Dim src As Worksheet, dst As Worksheet, sourceRow As Long, destinationRow As Long
     On Error GoTo Unavailable
     Set src = ThisWorkbook.Worksheets(CSV_SHEET)
-    Set dst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
     sourceRow = CLng(record("sourceRow"))
     destinationRow = CLng(record("destinationRow"))
     guide2Value = EIdentityPair(src, dst, sourceRow, destinationRow, 7)
@@ -1699,7 +1699,7 @@ Private Function ERecordIdentityDetails(ByVal record As Object) As String
     Dim recordCases As Collection, firstCase As Object, matchKind As String
     On Error GoTo Unavailable
     Set src = ThisWorkbook.Worksheets(CSV_SHEET)
-    Set dst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
     sourceRow = CLng(record("sourceRow"))
     destinationRow = CLng(record("destinationRow"))
     Set recordCases = record("cases")
