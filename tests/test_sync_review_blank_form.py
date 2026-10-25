@@ -12,6 +12,7 @@ FRX = ROOT / "frmSyncReview-native.frx"
 
 CONTROLS = {
     "lblCounts": "Label", "cboCategory": "ComboBox", "lblCase": "Label",
+    "cboEGroup": "ComboBox", "lblESelection": "Label", "cmdEClear": "CommandButton",
     "lstCases": "ListBox", "lblRows": "Label", "lstRows": "ListBox",
     "lblCompareRows": "Label", "fraCompare": "Frame", "txtDetails": "TextBox",
     "chkDelete": "CheckBox", "lblStatus": "Label",
@@ -21,7 +22,7 @@ CONTROLS = {
     "cmdNext": "CommandButton", "cmdDelete": "CommandButton",
     "cmdClear": "CommandButton", "cmdRefresh": "CommandButton", "cmdFinish": "CommandButton",
 }
-EVENTS = {"cboCategory", "lstCases", "lstRows", "chkDelete"} | {n for n in CONTROLS if n.startswith("cmd")}
+EVENTS = {"cboCategory", "cboEGroup", "lstCases", "lstRows", "chkDelete"} | {n for n in CONTROLS if n.startswith("cmd")}
 
 
 class BlankFormTests(unittest.TestCase):
@@ -38,7 +39,7 @@ class BlankFormTests(unittest.TestCase):
             self.assertIn(f'Set {field} = EnsureControl("{name}", "Forms.{kind}.1")', source)
             self.assertNotRegex(source, rf"(?m)^Private (?:WithEvents )?{name} As ")
             if name in EVENTS:
-                suffix = "Change" if name == "cboCategory" else "Click"
+                suffix = "Change" if name in ("cboCategory", "cboEGroup") else "Click"
                 self.assertIn(f"Private Sub {field}_{suffix}()", source)
         self.assertEqual(source.count('EnsureControl("'), len(CONTROLS))
         self.assertIn("Me.Controls.Add(progId, controlName, True)", source)
@@ -47,7 +48,8 @@ class BlankFormTests(unittest.TestCase):
         self.assertIn('rendering = True\n    BuildControls', source)
         self.assertIn('mCboCategory.ListIndex = 0\n    rendering = False', source)
         self.assertLess(source.index('Set mCboCategory = EnsureControl'), source.index('mCboCategory.AddItem "A'))
-        self.assertLess(source.index('If mLstCases.ListCount > 0 Then mLstCases.ListIndex = 0'), source.index('    rendering = False\n    ShowCurrent'))
+        show_category = source[source.index('Private Sub ShowCategory()'):source.index('End Sub', source.index('Private Sub ShowCategory()'))]
+        self.assertLess(show_category.index('If categoryIndex <> 4 And mLstCases.ListCount > 0 Then mLstCases.ListIndex = 0'), show_category.index('ShowCurrent'))
         self.assertIn("Me.Width = 760", source)
         self.assertIn("Me.Height = Me.Height + (440 - Me.InsideHeight)", source)
         self.assertNotIn("Me.InsideHeight =", source)

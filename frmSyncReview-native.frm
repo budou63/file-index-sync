@@ -17,6 +17,9 @@ Option Explicit
 
 Private mLblCounts As MSForms.Label
 Private WithEvents mCboCategory As MSForms.ComboBox
+Private WithEvents mCboEGroup As MSForms.ComboBox
+Private mLblESelection As MSForms.Label
+Private WithEvents mCmdEClear As MSForms.CommandButton
 Private mLblCase As MSForms.Label
 Private WithEvents mLstCases As MSForms.ListBox
 Private mLblRows As MSForms.Label
@@ -100,6 +103,17 @@ Private Sub BuildControls()
     mLblCounts.Caption = "候補を読み込みます"
     Set mCboCategory = EnsureControl("cboCategory", "Forms.ComboBox.1")
     PlaceControl mCboCategory, 9, 28, 187.5, 16.5
+    Set mCboEGroup = EnsureControl("cboEGroup", "Forms.ComboBox.1")
+    PlaceControl mCboEGroup, 205, 28, 110, 16.5
+    mCboEGroup.Style = fmStyleDropDownList
+    mCboEGroup.Visible = False
+    Set mLblESelection = EnsureControl("lblESelection", "Forms.Label.1")
+    PlaceControl mLblESelection, 9, 301.5, 190, 17.5
+    mLblESelection.Visible = False
+    Set mCmdEClear = EnsureControl("cmdEClear", "Forms.CommandButton.1")
+    PlaceControl mCmdEClear, 205, 300, 110, 21
+    mCmdEClear.Caption = "選択解除"
+    mCmdEClear.Visible = False
     Set mLblCase = EnsureControl("lblCase", "Forms.Label.1")
     PlaceControl mLblCase, 9, 50, 187.5, 14
     mLblCase.Caption = "案件一覧（1件ずつ確認）"
@@ -218,6 +232,7 @@ Public Sub LoadCases(ByVal loaded As Collection, ByVal yearValue As Long, _
     targetYear = yearValue
     mDUnavailableReason = unavailableReason
     Set deletionSelection = CreateObject("Scripting.Dictionary")
+    PopulateEGroups
     UpdateDWarning
     If Len(mDUnavailableReason) > 0 And mCboCategory.ListIndex = 3 Then
         rendering = True: mCboCategory.ListIndex = 0: rendering = False
@@ -253,6 +268,62 @@ Private Sub SelectDWhenOnlyCategory()
     End If
 End Sub
 
+Private Sub PopulateEGroups()
+    Dim item As Object, groupNames As Object, name As Variant
+    Set groupNames = CreateObject("Scripting.Dictionary")
+    groupNames.CompareMode = vbTextCompare
+    rendering = True
+    mCboEGroup.Clear
+    mCboEGroup.AddItem "すべて"
+    If Not cases Is Nothing Then
+        For Each item In cases
+            If CStr(item("category")) = "E" And CLng(item("year")) = targetYear Then
+                If Not groupNames.Exists(CStr(item("groupName"))) Then _
+                    groupNames.Add CStr(item("groupName")), True
+            End If
+        Next item
+    End If
+    For Each name In groupNames.Keys: mCboEGroup.AddItem CStr(name): Next name
+    mCboEGroup.ListIndex = 0
+    rendering = False
+End Sub
+
+Private Function ESelectedCount() As Long
+    Dim i As Long
+    If mCboCategory.ListIndex <> 4 Then Exit Function
+    For i = 0 To mLstCases.ListCount - 1
+        If mLstCases.Selected(i) Then ESelectedCount = ESelectedCount + 1
+    Next i
+End Function
+
+Private Sub UpdateESelection()
+    Dim n As Long
+    If mCboCategory.ListIndex <> 4 Then Exit Sub
+    n = ESelectedCount()
+    mLblESelection.Caption = CStr(n) & "件選択中"
+    ' Batch decisions are intentionally unavailable until Stage 2 has a safe commit design.
+    mCmdApprove.Enabled = (n = 1)
+    mCmdOther.Enabled = (n = 1)
+    mCmdHold.Enabled = (n = 1)
+    mCmdEClear.Enabled = (n > 0)
+    If n > 1 Then mLblStatus.Caption = "複数選択は表示専用です。判断は1件だけ選び直してください。"
+End Sub
+
+Private Sub mCboEGroup_Change()
+    If rendering Or mCboCategory.ListIndex <> 4 Then Exit Sub
+    ShowCategory
+End Sub
+
+Private Sub mCmdEClear_Click()
+    Dim i As Long
+    If mCboCategory.ListIndex <> 4 Then Exit Sub
+    rendering = True
+    For i = 0 To mLstCases.ListCount - 1: mLstCases.Selected(i) = False: Next i
+    mLstCases.ListIndex = -1
+    rendering = False
+    ShowCurrent
+End Sub
+
 Private Function HasReviewCategory(ByVal category As String) As Boolean
     Dim value As Object
     If cases Is Nothing Then Exit Function
@@ -262,9 +333,19 @@ Private Function HasReviewCategory(ByVal category As String) As Boolean
 End Function
 
 Private Function SelectedCase() As Object
+    Dim n As Long
     If shown Is Nothing Then Exit Function
-    If mLstCases.ListIndex < 0 Or mLstCases.ListIndex + 1 > shown.Count Then Exit Function
-    Set SelectedCase = shown(mLstCases.ListIndex + 1)
+    If mLstCases.ListIndex >= 0 And mLstCases.ListIndex + 1 <= shown.Count Then
+        If mCboCategory.ListIndex <> 4 Or mLstCases.Selected(mLstCases.ListIndex) Then
+            Set SelectedCase = shown(mLstCases.ListIndex + 1)
+            Exit Function
+        End If
+    End If
+    If mCboCategory.ListIndex = 4 Then
+        For n = 0 To mLstCases.ListCount - 1
+            If mLstCases.Selected(n) Then Set SelectedCase = shown(n + 1): Exit Function
+        Next n
+    End If
 End Function
 
 Private Function SelectedRow() As Long
@@ -547,14 +628,27 @@ End Sub
 Private Sub ShowCategory()
     Dim i As Long, item As Object, category As String, counts(1 To 5) As Long, unresolved(1 To 5) As Long
     Dim decision As String, displayDecision As String, idx As Long, categoryIndex As Long, isD As Boolean
+    Dim filteredUnresolved As Long, filteredHeld As Long, selectedGroup As String
     If cases Is Nothing Then Exit Sub
     rendering = True
     Set shown = New Collection
-    mLstCases.Clear: mLstRows.Clear
     categoryIndex = mCboCategory.ListIndex
+    If categoryIndex = 4 Then
+        mLstCases.MultiSelect = fmMultiSelectExtended
+    Else
+        mLstCases.MultiSelect = fmMultiSelectSingle
+    End If
+    mLstCases.Clear: mLstRows.Clear
+    mCboEGroup.Visible = (categoryIndex = 4)
+    mLblESelection.Visible = (categoryIndex = 4)
+    mCmdEClear.Visible = (categoryIndex = 4)
+    selectedGroup = "すべて"
+    If categoryIndex = 4 And mCboEGroup.ListIndex >= 0 Then selectedGroup = CStr(mCboEGroup.Value)
+    mLblCase.Caption = IIf(categoryIndex = 4, "E案件一覧（Ctrl/Shiftで複数選択）", "案件一覧（1件ずつ確認）")
     For i = 1 To cases.Count
         Set item = cases(i)
         category = CStr(item("category"))
+        If category = "E" And CLng(item("year")) <> targetYear Then GoTo NextCase
         Select Case category
             Case "A": idx = 1
             Case "B": idx = 2
@@ -572,8 +666,14 @@ Private Sub ShowCategory()
             decision = SyncReviewDecision(item)
             If Len(decision) = 0 Or (category = "E" And decision = "保留") Then unresolved(idx) = unresolved(idx) + 1
         End If
-        If categoryIndex = idx - 1 Then
+        If categoryIndex = idx - 1 And _
+           (category <> "E" Or mCboEGroup.ListIndex <= 0 Or _
+            StrComp(CStr(item("groupName")), selectedGroup, vbTextCompare) = 0) Then
             shown.Add item
+            If category = "E" Then
+                If Len(decision) = 0 Then filteredUnresolved = filteredUnresolved + 1
+                If decision = "保留" Then filteredHeld = filteredHeld + 1
+            End If
             If isD Then
                 mLstCases.AddItem "CSV行" & CStr(item("sourceRow")) & " / 保持Excel " & _
                     CStr(item("copyKeeperRow")) & " / クリア候補 " & CStr(item("copyCandidateRows").Count) & "件"
@@ -594,9 +694,14 @@ NextCase:
         " / C " & counts(3) & "件（未 " & unresolved(3) & "）" & _
         " / D " & counts(4) & "件（候補 " & unresolved(4) & "行）" & _
         " / E " & counts(5) & "件（未解決/保留 " & unresolved(5) & "）"
+    If categoryIndex = 4 Then
+        mLblCounts.Caption = "対象年度 " & targetYear & " / " & selectedGroup & "：" & _
+            CStr(shown.Count) & "件表示／未解決" & CStr(filteredUnresolved) & "件／保留" & _
+            CStr(filteredHeld) & "件（E全体 " & CStr(counts(5)) & "件）"
+    End If
     mTxtDetails.Text = "候補を選んでください。"
     mChkDelete.Value = False
-    If mLstCases.ListCount > 0 Then mLstCases.ListIndex = 0
+    If categoryIndex <> 4 And mLstCases.ListCount > 0 Then mLstCases.ListIndex = 0
     rendering = False
     ShowCurrent
 End Sub
@@ -619,6 +724,7 @@ Private Sub ShowCurrent()
         mCmdOther.Enabled = False: mCmdHold.Enabled = False: mCmdDelete.Enabled = False
         mChkDelete.Visible = False
         rendering = False
+        UpdateESelection
         Exit Sub
     End If
     category = CStr(item("category"))
@@ -679,6 +785,7 @@ Private Sub ShowCurrent()
     End If
     rendering = False
     RenderComparison item, rowNo
+    UpdateESelection
 End Sub
 
 Private Function IsCopyCandidate(ByVal item As Object, ByVal rowNo As Long) As Boolean
@@ -818,7 +925,9 @@ Private Sub mCmdApprove_Click()
     Set item = SelectedCase()
     If item Is Nothing Then Exit Sub
     If CStr(item("category")) = "E" Then
-        If MsgBox("システム側の値で関連するExcelセルを更新します。続けますか？", vbQuestion + vbYesNo, "競合解決の確認") <> vbYes Then Exit Sub
+        If ESelectedCount() <> 1 Then Exit Sub
+        If MsgBox("システム側の値で関連するExcelセルを更新します。続けますか？", _
+                  vbQuestion + vbYesNo, "競合解決の確認") <> vbYes Then Exit Sub
         If Module1.BidirectionalSyncResolveConflict(item, "システム採用") Then mCmdRefresh_Click
         Exit Sub
     End If
@@ -838,6 +947,7 @@ Private Sub RecordChoice(ByVal decision As String)
     If CStr(item("category")) = "E" Then
         If decision = "別物" Then decision = "Excel採用"
         If decision <> "Excel採用" And decision <> "保留" Then Exit Sub
+        If ESelectedCount() <> 1 Then Exit Sub
         If Module1.BidirectionalSyncResolveConflict(item, decision) Then
             ShowCategory
             mCmdNext_Click
@@ -868,6 +978,16 @@ Private Sub RecordChoice(ByVal decision As String)
         mCmdNext_Click
     End If
 End Sub
+Private Sub SelectSingleECase(ByVal newIndex As Long)
+    Dim n As Long
+    rendering = True
+    For n = 0 To mLstCases.ListCount - 1: mLstCases.Selected(n) = False: Next n
+    mLstCases.Selected(newIndex) = True
+    mLstCases.ListIndex = newIndex
+    rendering = False
+    ShowCurrent
+End Sub
+
 Private Sub mCmdNext_Click()
     Dim i As Long, startAt As Long, item As Object, candidate As Variant
     Dim candidates As Collection, selected As Long, j As Long, rowNo As Long
@@ -914,8 +1034,12 @@ Private Sub mCmdNext_Click()
     For i = 1 To shown.Count
         Set item = shown(((startAt + i) Mod shown.Count) + 1)
         If Len(SyncReviewDecision(item)) = 0 Then
-            mLstCases.ListIndex = (startAt + i) Mod shown.Count
-            ShowCurrent
+            If mCboCategory.ListIndex = 4 Then
+                SelectSingleECase (startAt + i) Mod shown.Count
+            Else
+                mLstCases.ListIndex = (startAt + i) Mod shown.Count
+                ShowCurrent
+            End If
             Exit Sub
         End If
     Next i
@@ -1001,6 +1125,7 @@ Private Sub mCmdRefresh_Click()
     previousCategory = mCboCategory.ListIndex
     committed = True
     Set cases = refreshed
+    PopulateEGroups
     Set deletionSelection = newSelection
     mDUnavailableReason = unavailableReason
     UpdateDWarning
@@ -1020,6 +1145,7 @@ Failed:
         On Error Resume Next
         Err.Clear
         Set cases = previousCases
+        PopulateEGroups
         Set deletionSelection = previousSelection
         mDUnavailableReason = previousReason
         rendering = True: mCboCategory.ListIndex = previousCategory: rendering = False
