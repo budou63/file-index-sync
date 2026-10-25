@@ -10,7 +10,7 @@ FORM = (ROOT / "vba/frmSyncReview.txt").read_text(encoding="utf-8-sig")
 MODULE = (ROOT / "vba/Module1.txt").read_text(encoding="utf-8-sig")
 
 EXPECTED_HEADERS = {
-    "毎年度利用区分1:毎年作成 2:単年のみ": "毎年度利用区分",
+    "毎年度利用区分1:毎年作成 2:単年のみ": "毎年度利用区分（1：毎年作成、2：単年のみ）",
     "原課": "原課",
     "年度（和暦）": "年度（和暦）",
     "分類名１": "分類名１",
@@ -136,6 +136,41 @@ class NormalDisplayTests(unittest.TestCase):
         for forbidden in ("BidirectionalSyncResolveConflict", "SyncReviewDecide(", "WriteStep2", "SaveConflict"):
             self.assertNotIn(forbidden, event)
 
+    def test_api_free_size_and_pane_presets_resize_lists_headers_and_details(self):
+        self.assertIn('mCboEWindowSize.AddItem "コンパクト"', FORM)
+        self.assertIn('mCboEWindowSize.AddItem "標準"', FORM)
+        self.assertIn('mCboEWindowSize.AddItem "拡大"', FORM)
+        self.assertIn('mCboEPaneSize.AddItem "一覧を広く"', FORM)
+        self.assertIn('mCboEPaneSize.AddItem "比較を広く"', FORM)
+        layout = procedure("LayoutReviewForE")
+        for token in (
+            "Me.Width = 960", "targetInsideHeight = 400", "Me.Width = 1100",
+            "Me.Width = 1280", "targetInsideHeight = 560",
+            "Me.Height = Me.Height + (targetInsideHeight - Me.InsideHeight)",
+            "PlaceControl mLstCases, 9, 64.5, leftWidth, listHeight",
+            "PlaceControl mLstRows, rightLeft, 64.5, rightWidth, listHeight",
+            "PlaceControl mEColumnHeaders(i), headerLeft, 50, columnWidths(i), 14",
+            "PlaceControl mTxtDetails, rightLeft, detailsTop, rightWidth, detailsHeight",
+            "PlaceControl mLblStatus, 9, footerTop, availableWidth - 18, 21",
+        ):
+            self.assertIn(token, layout)
+        self.assertIn("mLstRows.ColumnWidths = CStr(CLng(columnWidths(0)))", layout)
+        self.assertNotIn('mLstRows.ColumnWidths = "130 pt;145 pt;145 pt;145 pt;180 pt"', procedure("ShowECurrent"))
+        self.assertIn('mLblRows.Caption = "項目群"', layout)
+        self.assertIn('mLblCase.Caption = "第2ガイド ／ 個別フォルダー ／ 作成年度"', layout)
+        self.assertIn('ControlTipText = "項目グループで対象ファイルを絞り込みます。判断状態は変更しません。"', FORM)
+        top_row = ((205, 42), (251, 160), (419, 42), (464, 112), (582, 35), (620, 88), (716, 28), (748, 112))
+        for (left, width), (next_left, _) in zip(top_row, top_row[1:]):
+            self.assertLessEqual(left + width, next_left)
+        self.assertLessEqual(top_row[-1][0] + top_row[-1][1], 900)
+        self.assertIn("footerTop = Me.InsideHeight - 84", layout)
+        self.assertIn("PlaceControl mCmdApprove, 9, footerTop + 23.5, 110, 21", layout)
+        for event_name in ("mCboEWindowSize_Change", "mCboEPaneSize_Change"):
+            self.assertIn("ShowECategory True", procedure(event_name))
+        for forbidden in ("SetWindowLong", "FindWindow", "CreateWindow", "PtrSafe"):
+            self.assertNotIn(forbidden, FORM)
+        self.assertNotRegex(FORM, r"(?im)^\s*(?:Private\s+)?Declare\s+")
+
     def test_counts_are_dynamic_existing_judgment_units_and_partition_the_total(self):
         show = procedure("ShowECategory")
         self.assertIn("totalItems = totalItems + recordCases.Count", show)
@@ -199,11 +234,14 @@ class NormalDisplayTests(unittest.TestCase):
         self.assertIn("If mCboCategory.ListIndex = 4 Then", procedure("mCmdNext_Click"))
         self.assertIn('If CStr(item("category")) = "B" And decision = "別物" Then', procedure("RecordChoice"))
         layout = procedure("LayoutReviewForE")
-        a_to_d = layout.split("Else", 1)[1]
+        a_to_d = layout.split("\n    Else\n", 1)[1]
         self.assertIn("mLblEVisibility.Visible = False", a_to_d)
         self.assertIn("mCboEVisibility.Visible = False", a_to_d)
+        self.assertIn("mCboEWindowSize.Visible = False", a_to_d)
+        self.assertIn("mCboEPaneSize.Visible = False", a_to_d)
         self.assertIn("mLblCompareRows.Visible = True", a_to_d)
         self.assertIn("Me.Width = 760", a_to_d)
+        self.assertIn("Me.Height = Me.Height + (440 - Me.InsideHeight)", a_to_d)
 
 
 if __name__ == "__main__":

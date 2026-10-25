@@ -133,6 +133,10 @@ Private WithEvents mCboCategory As MSForms.ComboBox
 Private WithEvents mCboEGroup As MSForms.ComboBox
 Private mLblEVisibility As MSForms.Label
 Private WithEvents mCboEVisibility As MSForms.ComboBox
+Private mLblEWindowSize As MSForms.Label
+Private WithEvents mCboEWindowSize As MSForms.ComboBox
+Private mLblEPaneSize As MSForms.Label
+Private WithEvents mCboEPaneSize As MSForms.ComboBox
 Private mLblESelection As MSForms.Label
 Private WithEvents mCmdEClear As MSForms.CommandButton
 Private mLblCase As MSForms.Label
@@ -225,6 +229,7 @@ Private Sub BuildControls()
     Set mCboEGroup = EnsureControl("cboEGroup", "Forms.ComboBox.1")
     PlaceControl mCboEGroup, 205, 28, 110, 16.5
     mCboEGroup.Style = fmStyleDropDownList
+    mCboEGroup.ControlTipText = "項目グループで対象ファイルを絞り込みます。判断状態は変更しません。"
     mCboEGroup.Visible = False
     Set mLblEVisibility = EnsureControl("lblEVisibility", "Forms.Label.1")
     PlaceControl mLblEVisibility, 324, 28, 42, 16.5
@@ -234,6 +239,24 @@ Private Sub BuildControls()
     PlaceControl mCboEVisibility, 370, 28, 112, 16.5
     mCboEVisibility.Style = fmStyleDropDownList
     mCboEVisibility.Visible = False
+    Set mLblEWindowSize = EnsureControl("lblEWindowSize", "Forms.Label.1")
+    PlaceControl mLblEWindowSize, 525, 28, 42, 16.5
+    mLblEWindowSize.Caption = "画面"
+    mLblEWindowSize.Visible = False
+    Set mCboEWindowSize = EnsureControl("cboEWindowSize", "Forms.ComboBox.1")
+    PlaceControl mCboEWindowSize, 570, 28, 88, 16.5
+    mCboEWindowSize.Style = fmStyleDropDownList
+    mCboEWindowSize.ControlTipText = "画面サイズをプリセットから選びます（ウィンドウのドラッグ変更はできません）。"
+    mCboEWindowSize.Visible = False
+    Set mLblEPaneSize = EnsureControl("lblEPaneSize", "Forms.Label.1")
+    PlaceControl mLblEPaneSize, 664, 28, 36, 16.5
+    mLblEPaneSize.Caption = "幅"
+    mLblEPaneSize.Visible = False
+    Set mCboEPaneSize = EnsureControl("cboEPaneSize", "Forms.ComboBox.1")
+    PlaceControl mCboEPaneSize, 704, 28, 112, 16.5
+    mCboEPaneSize.Style = fmStyleDropDownList
+    mCboEPaneSize.ControlTipText = "ファイル一覧と不一致比較領域の幅配分を選びます。"
+    mCboEPaneSize.Visible = False
     Set mLblESelection = EnsureControl("lblESelection", "Forms.Label.1")
     PlaceControl mLblESelection, 9, 301.5, 190, 17.5
     mLblESelection.Visible = False
@@ -363,6 +386,14 @@ Private Sub UserForm_Initialize()
     mCboEVisibility.AddItem "通常表示"
     mCboEVisibility.AddItem "すべて表示"
     mCboEVisibility.ListIndex = 0
+    mCboEWindowSize.AddItem "コンパクト"
+    mCboEWindowSize.AddItem "標準"
+    mCboEWindowSize.AddItem "拡大"
+    mCboEWindowSize.ListIndex = 1
+    mCboEPaneSize.AddItem "標準"
+    mCboEPaneSize.AddItem "一覧を広く"
+    mCboEPaneSize.AddItem "比較を広く"
+    mCboEPaneSize.ListIndex = 0
     rendering = False
 End Sub
 
@@ -466,6 +497,16 @@ Private Sub mCboEGroup_Change()
 End Sub
 
 Private Sub mCboEVisibility_Change()
+    If rendering Or mCboCategory.ListIndex <> 4 Then Exit Sub
+    ShowECategory True
+End Sub
+
+Private Sub mCboEWindowSize_Change()
+    If rendering Or mCboCategory.ListIndex <> 4 Then Exit Sub
+    ShowECategory True
+End Sub
+
+Private Sub mCboEPaneSize_Change()
     If rendering Or mCboCategory.ListIndex <> 4 Then Exit Sub
     ShowECategory True
 End Sub
@@ -1380,58 +1421,139 @@ Private Sub mCmdFinish_Click()
 End Sub
 
 Private Sub LayoutReviewForE(ByVal isE As Boolean)
-    Dim i As Long
+    Dim i As Long, targetInsideHeight As Single, availableWidth As Single
+    Dim leftWidth As Single, rightLeft As Single, rightWidth As Single
+    Dim caseColumnArea As Single, guideColumnWidth As Long, folderColumnWidth As Long, yearColumnWidth As Long
+    Dim itemNameWidth As Long, decisionWidth As Long, valueWidth As Long
+    Dim detailsHeight As Single, footerTop As Single, detailsTop As Single, listHeight As Single
+    Dim headerLeft As Single, columnWidths(0 To 4) As Single
     If isE Then
-        Me.Width = 1100
-        PlaceControl mLblCounts, 9, 6, 1070, 19
+        Select Case mCboEWindowSize.ListIndex
+            Case 0
+                Me.Width = 960
+                targetInsideHeight = 400
+            Case 2
+                Me.Width = 1280
+                targetInsideHeight = 560
+            Case Else
+                Me.Width = 1100
+                targetInsideHeight = 440
+        End Select
+        Me.Height = Me.Height + (targetInsideHeight - Me.InsideHeight)
+        availableWidth = Me.InsideWidth
+        Select Case mCboEPaneSize.ListIndex
+            Case 1
+                leftWidth = 320
+            Case 2
+                leftWidth = 205
+            Case Else
+                leftWidth = 245
+        End Select
+        If leftWidth > availableWidth - 575 Then leftWidth = availableWidth - 575
+        If leftWidth < 170 Then leftWidth = 170
+        rightLeft = 9 + leftWidth + 9
+        rightWidth = availableWidth - rightLeft - 9
+        caseColumnArea = leftWidth - 16
+        guideColumnWidth = CLng(caseColumnArea * 0.28)
+        folderColumnWidth = CLng(caseColumnArea * 0.56)
+        yearColumnWidth = CLng(caseColumnArea) - guideColumnWidth - folderColumnWidth
+        If yearColumnWidth < 55 Then
+            folderColumnWidth = folderColumnWidth - (55 - yearColumnWidth)
+            yearColumnWidth = 55
+        End If
+        itemNameWidth = CLng(rightWidth * 0.23)
+        If itemNameWidth < 130 Then itemNameWidth = 130
+        If itemNameWidth > 260 Then itemNameWidth = 260
+        decisionWidth = CLng(rightWidth * 0.18)
+        If decisionWidth < 130 Then decisionWidth = 130
+        If decisionWidth > 180 Then decisionWidth = 180
+        valueWidth = CLng((rightWidth - itemNameWidth - decisionWidth - 16) / 3)
+        If valueWidth < 90 Then valueWidth = 90
+        columnWidths(0) = itemNameWidth
+        columnWidths(1) = valueWidth
+        columnWidths(2) = valueWidth
+        columnWidths(3) = valueWidth
+        columnWidths(4) = decisionWidth
+        PlaceControl mLblCounts, 9, 6, availableWidth - 18, 19
         PlaceControl mCboCategory, 9, 28, 187.5, 16.5
-        PlaceControl mCboEGroup, 205, 28, 110, 16.5
-        mLblEVisibility.Visible = False
-        mCboEVisibility.Visible = False
-        PlaceControl mLblEVisibility, 324, 28, 42, 16.5
-        PlaceControl mCboEVisibility, 370, 28, 112, 16.5
+        mLblRows.Caption = "項目群"
+        PlaceControl mLblRows, 205, 28, 42, 16.5
+        mLblRows.Visible = True
+        PlaceControl mCboEGroup, 251, 28, 160, 16.5
+        mCboEGroup.Visible = True
+        PlaceControl mLblEVisibility, 419, 28, 42, 16.5
+        PlaceControl mCboEVisibility, 464, 28, 112, 16.5
+        PlaceControl mLblEWindowSize, 582, 28, 35, 16.5
+        PlaceControl mCboEWindowSize, 620, 28, 88, 16.5
+        PlaceControl mLblEPaneSize, 716, 28, 28, 16.5
+        PlaceControl mCboEPaneSize, 748, 28, 112, 16.5
         mLblEVisibility.Visible = True
         mCboEVisibility.Visible = True
-        PlaceControl mLblCase, 9, 50, 245, 14
-        mLblCase.Caption = "第2ガイド ／ 個別フォルダ ／ 作成年"
-        PlaceControl mLstCases, 9, 64.5, 245, 228
+        mLblEWindowSize.Visible = True
+        mCboEWindowSize.Visible = True
+        mLblEPaneSize.Visible = True
+        mCboEPaneSize.Visible = True
+        PlaceControl mLblCase, 9, 50, leftWidth, 14
+        mLblCase.Caption = "第2ガイド ／ 個別フォルダー ／ 作成年度"
+        PlaceControl mLstCases, 9, 64.5, leftWidth, 228
         mLstCases.ColumnCount = 3
-        mLstCases.ColumnWidths = "70 pt;110 pt;55 pt"
-        mLblRows.Visible = False
-        PlaceControl mLstRows, 263, 64.5, 800, 228
-        mLstRows.ColumnCount = 5
-        mLstRows.ColumnWidths = "130 pt;145 pt;145 pt;145 pt;180 pt"
-        mLstRows.MultiSelect = fmMultiSelectSingle
+        mLstCases.ColumnWidths = CStr(guideColumnWidth) & " pt;" & CStr(folderColumnWidth) & _
+                                 " pt;" & CStr(yearColumnWidth) & " pt"
         mLblCompareRows.Visible = False
-        PlaceControl mTxtDetails, 263, 299, 800, 55
-        PlaceControl mLblStatus, 9, 356, 1070, 21
-        PlaceControl mLblDWarning, 9, 380, 1070, 21
+        PlaceControl mLstRows, rightLeft, 64.5, rightWidth, 228
+        mLstRows.ColumnCount = 5
+        mLstRows.ColumnWidths = CStr(CLng(columnWidths(0))) & " pt;" & CStr(CLng(columnWidths(1))) & _
+            " pt;" & CStr(CLng(columnWidths(2))) & " pt;" & CStr(CLng(columnWidths(3))) & _
+            " pt;" & CStr(CLng(columnWidths(4))) & " pt"
+        mLstRows.MultiSelect = fmMultiSelectSingle
+        headerLeft = rightLeft
+        For i = 0 To 4
+            PlaceControl mEColumnHeaders(i), headerLeft, 50, columnWidths(i), 14
+            headerLeft = headerLeft + columnWidths(i)
+            mEColumnHeaders(i).Visible = True
+        Next i
+        If targetInsideHeight > 440 Then
+            detailsHeight = 75
+        Else
+            detailsHeight = 55
+        End If
+        footerTop = Me.InsideHeight - 84
+        detailsTop = footerTop - detailsHeight - 2
+        listHeight = detailsTop - 70.5
+        If listHeight < 150 Then listHeight = 150
+        PlaceControl mLstCases, 9, 64.5, leftWidth, listHeight
+        PlaceControl mLstRows, rightLeft, 64.5, rightWidth, listHeight
+        PlaceControl mTxtDetails, rightLeft, detailsTop, rightWidth, detailsHeight
+        PlaceControl mLblESelection, 9, detailsTop + 2.5, leftWidth - 120, 19
+        PlaceControl mCmdEClear, 9 + leftWidth - 110, detailsTop + 2.5, 108, 22
+        PlaceControl mLblStatus, 9, footerTop, availableWidth - 18, 21
+        PlaceControl mLblDWarning, 9, footerTop + 24, availableWidth - 18, 21
         mLblDWarning.Visible = False
-        PlaceControl mLblESelection, 9, 301.5, 120, 19
-        PlaceControl mCmdEClear, 136, 301.5, 108, 22
         mFraCompare.Visible = False
         mLblESelection.Visible = True
         mCmdEClear.Visible = True
         mCmdGoTo.Visible = False
         mCmdDelete.Visible = False
         mCmdClear.Visible = False
-        PlaceControl mCmdApprove, 9, 379.5, 110, 21
+        PlaceControl mCmdApprove, 9, footerTop + 23.5, 110, 21
         mCmdApprove.Caption = "文書管理を採用"
-        PlaceControl mCmdOther, 124, 379.5, 125, 21
+        PlaceControl mCmdOther, 124, footerTop + 23.5, 125, 21
         mCmdOther.Caption = "Excel基準表を採用"
-        PlaceControl mCmdHold, 254, 379.5, 55, 21
+        PlaceControl mCmdHold, 254, footerTop + 23.5, 55, 21
         mCmdHold.Caption = "保留"
-        PlaceControl mCmdNext, 314, 379.5, 100, 21
+        PlaceControl mCmdNext, 314, footerTop + 23.5, 100, 21
         mCmdNext.Caption = "次の未解決項目"
-        PlaceControl mCmdRefresh, 419, 379.5, 75, 21
-        PlaceControl mCmdFinish, 499, 379.5, 82, 21
-        For i = 0 To 4
-            mEColumnHeaders(i).Visible = True
-        Next i
+        PlaceControl mCmdRefresh, 419, footerTop + 23.5, 75, 21
+        PlaceControl mCmdFinish, 499, footerTop + 23.5, 82, 21
     Else
         Me.Width = 760
+        Me.Height = Me.Height + (440 - Me.InsideHeight)
         mLblEVisibility.Visible = False
         mCboEVisibility.Visible = False
+        mLblEWindowSize.Visible = False
+        mCboEWindowSize.Visible = False
+        mLblEPaneSize.Visible = False
+        mCboEPaneSize.Visible = False
         PlaceControl mLblCounts, 9, 6, 740, 19
         PlaceControl mCboCategory, 9, 28, 187.5, 16.5
         PlaceControl mCboEGroup, 205, 28, 110, 16.5
@@ -1440,6 +1562,7 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         mLstCases.ColumnCount = 1
         mLstCases.ColumnWidths = ""
         PlaceControl mLblRows, 205, 50, 110, 14
+        mLblRows.Caption = "候補のExcel行"
         mLblRows.Visible = True
         PlaceControl mLstRows, 205, 64.5, 110, 228
         mLstRows.ColumnCount = 1
@@ -1522,8 +1645,8 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
     mLstRows.Clear
     mLstRows.ListIndex = -1
     mCboEGroup.Visible = True
-    mLblCase.Caption = "第2ガイド ／ 個別フォルダ ／ 作成年"
-    mLblRows.Visible = False
+    mLblCase.Caption = "第2ガイド ／ 個別フォルダー ／ 作成年度"
+    mLblRows.Visible = True
     mLblESelection.Caption = "0件選択中"
     mLblCompareRows.Caption = "ファイルを選択してください。"
     mTxtDetails.Text = "確認対象ファイルを左側から選択すると、そのファイルの不一致項目を表示します。"
@@ -1727,7 +1850,7 @@ Private Function EHeaderNormalDisplayCaption(ByVal headerName As String) As Stri
     Dim headerKey As String
     headerKey = CompareHeaderKey(headerName)
     If headerKey = CompareHeaderKey("毎年度利用区分1:毎年作成 2:単年のみ") Then
-        EHeaderNormalDisplayCaption = "毎年度利用区分"
+        EHeaderNormalDisplayCaption = "毎年度利用区分（1：毎年作成、2：単年のみ）"
     ElseIf headerKey = CompareHeaderKey("原課") Then
         EHeaderNormalDisplayCaption = "原課"
     ElseIf headerKey = CompareHeaderKey("年度（和暦）") Then
@@ -1934,7 +2057,6 @@ Private Sub ShowECurrent()
     Set eFieldItems = New Collection
     mLstRows.Clear
     mLstRows.ColumnCount = 5
-    mLstRows.ColumnWidths = "130 pt;145 pt;145 pt;145 pt;180 pt"
     mLstRows.MultiSelect = fmMultiSelectSingle
     mLstRows.ListIndex = -1
     Set record = SelectedRecord()
