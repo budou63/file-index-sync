@@ -49,8 +49,9 @@ class ESelectionOnlyContracts(unittest.TestCase):
         selection = procedure(FORM, "UpdateESelection")
         self.assertIn('CStr(n) & "件選択中"', selection)
         self.assertIn('identitySafe = Not CBool(record("identityIssue"))', selection)
+        self.assertIn('groupSafe = (EIsAllDisplayMode() Or Not ECaseHasOutOfScopeFields(item))', selection)
         for name in ('mCmdApprove', 'mCmdOther', 'mCmdHold'):
-            self.assertIn(name + '.Enabled = (n = 1 And Not item Is Nothing And identitySafe)', selection)
+            self.assertIn(name + '.Enabled = (n = 1 And Not item Is Nothing And identitySafe And groupSafe)', selection)
         self.assertIn('mCmdEClear.Enabled = (n > 0)', selection)
         self.assertIn('複数選択は表示専用です', selection)
 

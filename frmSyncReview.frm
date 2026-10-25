@@ -131,6 +131,8 @@ Option Explicit
 Private mLblCounts As MSForms.Label
 Private WithEvents mCboCategory As MSForms.ComboBox
 Private WithEvents mCboEGroup As MSForms.ComboBox
+Private mLblEVisibility As MSForms.Label
+Private WithEvents mCboEVisibility As MSForms.ComboBox
 Private mLblESelection As MSForms.Label
 Private WithEvents mCmdEClear As MSForms.CommandButton
 Private mLblCase As MSForms.Label
@@ -224,6 +226,14 @@ Private Sub BuildControls()
     PlaceControl mCboEGroup, 205, 28, 110, 16.5
     mCboEGroup.Style = fmStyleDropDownList
     mCboEGroup.Visible = False
+    Set mLblEVisibility = EnsureControl("lblEVisibility", "Forms.Label.1")
+    PlaceControl mLblEVisibility, 324, 28, 42, 16.5
+    mLblEVisibility.Caption = "項目表示"
+    mLblEVisibility.Visible = False
+    Set mCboEVisibility = EnsureControl("cboEVisibility", "Forms.ComboBox.1")
+    PlaceControl mCboEVisibility, 370, 28, 112, 16.5
+    mCboEVisibility.Style = fmStyleDropDownList
+    mCboEVisibility.Visible = False
     Set mLblESelection = EnsureControl("lblESelection", "Forms.Label.1")
     PlaceControl mLblESelection, 9, 301.5, 190, 17.5
     mLblESelection.Visible = False
@@ -350,6 +360,9 @@ Private Sub UserForm_Initialize()
     mCboCategory.AddItem "D：コピー識別番号のクリア候補"
     mCboCategory.AddItem "E：3方向編集競合"
     mCboCategory.ListIndex = 0
+    mCboEVisibility.AddItem "通常表示"
+    mCboEVisibility.AddItem "すべて表示"
+    mCboEVisibility.ListIndex = 0
     rendering = False
 End Sub
 
@@ -424,29 +437,37 @@ Private Function ESelectedCount() As Long
 End Function
 
 Private Sub UpdateESelection()
-    Dim n As Long, item As Object, record As Object, identitySafe As Boolean
+    Dim n As Long, item As Object, record As Object, identitySafe As Boolean, groupSafe As Boolean
     If mCboCategory.ListIndex <> 4 Then Exit Sub
     n = ESelectedCount()
     Set item = SelectedCase()
     Set record = SelectedRecord()
     If n = 1 Then
         If Not record Is Nothing Then identitySafe = Not CBool(record("identityIssue"))
+        If Not item Is Nothing Then groupSafe = (EIsAllDisplayMode() Or Not ECaseHasOutOfScopeFields(item))
     End If
     mLblESelection.Caption = CStr(n) & "件選択中"
-    mCmdApprove.Enabled = (n = 1 And Not item Is Nothing And identitySafe)
-    mCmdOther.Enabled = (n = 1 And Not item Is Nothing And identitySafe)
-    mCmdHold.Enabled = (n = 1 And Not item Is Nothing And identitySafe)
+    mCmdApprove.Enabled = (n = 1 And Not item Is Nothing And identitySafe And groupSafe)
+    mCmdOther.Enabled = (n = 1 And Not item Is Nothing And identitySafe And groupSafe)
+    mCmdHold.Enabled = (n = 1 And Not item Is Nothing And identitySafe And groupSafe)
     mCmdEClear.Enabled = (n > 0)
     If n > 1 Then
         mLblStatus.Caption = "複数選択は表示専用です。判断は1件だけ選び直してください。"
     ElseIf n = 1 And Not record Is Nothing And Not identitySafe Then
         mLblStatus.Caption = "識別情報の一貫性を確認できないため、採用・保留はできません。正式ID等を確認してください。"
+    ElseIf n = 1 And Not item Is Nothing And Not groupSafe Then
+        mLblStatus.Caption = "この判断グループには通常表示対象外の関連項目があります。全項目を確認するため「すべて表示」に切り替えてください。"
     End If
 End Sub
 
 Private Sub mCboEGroup_Change()
     If rendering Or mCboCategory.ListIndex <> 4 Then Exit Sub
     ShowCategory
+End Sub
+
+Private Sub mCboEVisibility_Change()
+    If rendering Or mCboCategory.ListIndex <> 4 Then Exit Sub
+    ShowECategory True
 End Sub
 
 Private Sub mCmdEClear_Click()
@@ -1113,6 +1134,7 @@ Private Sub mCmdApprove_Click()
     If item Is Nothing Then Exit Sub
     If CStr(item("category")) = "E" Then
         If ESelectedCount() <> 1 Then Exit Sub
+        If Not ESelectedDecisionIsSafe() Then Exit Sub
         If MsgBox("文書管理システムの値をExcel基準表へ反映します。選択した関連項目グループ全体が対象です。続けますか？", _
                   vbQuestion + vbYesNo, "競合解決の確認") <> vbYes Then Exit Sub
         If Module1.BidirectionalSyncResolveConflict(item, "システム採用") Then mCmdRefresh_Click
@@ -1135,6 +1157,7 @@ Private Sub RecordChoice(ByVal decision As String)
         If decision = "別物" Then decision = "Excel採用"
         If decision <> "Excel採用" And decision <> "保留" Then Exit Sub
         If ESelectedCount() <> 1 Then Exit Sub
+        If Not ESelectedDecisionIsSafe() Then Exit Sub
         If Module1.BidirectionalSyncResolveConflict(item, decision) Then
             ShowCategory
             mCmdNext_Click
@@ -1363,6 +1386,12 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         PlaceControl mLblCounts, 9, 6, 1070, 19
         PlaceControl mCboCategory, 9, 28, 187.5, 16.5
         PlaceControl mCboEGroup, 205, 28, 110, 16.5
+        mLblEVisibility.Visible = False
+        mCboEVisibility.Visible = False
+        PlaceControl mLblEVisibility, 324, 28, 42, 16.5
+        PlaceControl mCboEVisibility, 370, 28, 112, 16.5
+        mLblEVisibility.Visible = True
+        mCboEVisibility.Visible = True
         PlaceControl mLblCase, 9, 50, 245, 14
         mLblCase.Caption = "第2ガイド ／ 個別フォルダ ／ 作成年"
         PlaceControl mLstCases, 9, 64.5, 245, 228
@@ -1373,7 +1402,7 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         mLstRows.ColumnCount = 5
         mLstRows.ColumnWidths = "130 pt;145 pt;145 pt;145 pt;180 pt"
         mLstRows.MultiSelect = fmMultiSelectSingle
-        PlaceControl mLblCompareRows, 263, 28, 800, 18
+        mLblCompareRows.Visible = False
         PlaceControl mTxtDetails, 263, 299, 800, 55
         PlaceControl mLblStatus, 9, 356, 1070, 21
         PlaceControl mLblDWarning, 9, 380, 1070, 21
@@ -1401,6 +1430,8 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         Next i
     Else
         Me.Width = 760
+        mLblEVisibility.Visible = False
+        mCboEVisibility.Visible = False
         PlaceControl mLblCounts, 9, 6, 740, 19
         PlaceControl mCboCategory, 9, 28, 187.5, 16.5
         PlaceControl mCboEGroup, 205, 28, 110, 16.5
@@ -1415,6 +1446,7 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         mLstRows.ColumnWidths = ""
         mLstRows.MultiSelect = fmMultiSelectSingle
         PlaceControl mLblCompareRows, 324, 28, 420, 18
+        mLblCompareRows.Visible = True
         PlaceControl mFraCompare, 324, 48, 420, 225
         mFraCompare.Visible = True
         PlaceControl mTxtDetails, 324, 278, 420, 50
@@ -1456,12 +1488,29 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
     End If
 End Sub
 
-Private Sub ShowECategory()
-    Dim allRecords As Collection, record As Object, recordCases As Collection
-    Dim selectedGroup As String, filtered As Boolean
-    Dim rowIndex As Long, guide2Value As String, folderValue As String, creationYearValue As String
-    Dim totalItems As Long, filteredItems As Long, unresolvedFiles As Long, filteredUnresolvedFiles As Long
+Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = False)
+    Dim allRecords As Collection, record As Object, recordCases As Collection, item As Object
+    Dim selectedGroup As String, filtered As Boolean, selectedIndices As Object
+    Dim priorCase As Object, priorField As Object, existingItem As Object, existingField As Object
+    Dim priorCaseKey As String, priorHeaderName As String
+    Dim rowIndex As Long, i As Long, guide2Value As String, folderValue As String, creationYearValue As String
+    Dim totalItems As Long, normalTargetItems As Long, outOfTargetItems As Long
+    Dim filteredItems As Long, unresolvedFiles As Long, filteredUnresolvedFiles As Long
     If cases Is Nothing Then Exit Sub
+    If preserveFileSelection Then
+        Set selectedIndices = CreateObject("Scripting.Dictionary")
+        For i = 0 To mLstCases.ListCount - 1
+            If mLstCases.Selected(i) Then selectedIndices(CStr(i)) = True
+        Next i
+        If ESelectedCount() = 1 Then
+            Set priorCase = SelectedCase()
+            Set priorField = SelectedEField()
+            If Not priorCase Is Nothing And Not priorField Is Nothing Then
+                priorCaseKey = CStr(priorCase("key"))
+                priorHeaderName = CStr(priorField("sourceHeader"))
+            End If
+        End If
+    End If
     rendering = True
     LayoutReviewForE True
     Set allRecords = BuildERecords(cases, targetYear)
@@ -1494,6 +1543,13 @@ Private Sub ShowECategory()
     For Each record In allRecords
         Set recordCases = record("cases")
         totalItems = totalItems + recordCases.Count
+        For Each item In recordCases
+            If ECaseHasNormalDisplayFields(item) Then
+                normalTargetItems = normalTargetItems + 1
+            Else
+                outOfTargetItems = outOfTargetItems + 1
+            End If
+        Next item
         If ERecordNeedsConfirmation(record) Then unresolvedFiles = unresolvedFiles + 1
         If ERecordHasGroup(record, selectedGroup) Then
             shown.Add record
@@ -1502,12 +1558,16 @@ Private Sub ShowECategory()
             mLstCases.AddItem guide2Value
             mLstCases.List(rowIndex, 1) = folderValue
             mLstCases.List(rowIndex, 2) = creationYearValue
+            If preserveFileSelection And Not selectedIndices Is Nothing Then
+                If selectedIndices.Exists(CStr(rowIndex)) Then mLstCases.Selected(rowIndex) = True
+            End If
             filteredItems = filteredItems + recordCases.Count
             If ERecordNeedsConfirmation(record) Then filteredUnresolvedFiles = filteredUnresolvedFiles + 1
         End If
     Next record
     mLblCounts.Caption = "ファイル数 " & CStr(allRecords.Count) & "件 / 不一致項目 " & CStr(totalItems) & _
-                        "件 / 確認待ち " & CStr(unresolvedFiles) & "ファイル"
+            "件（通常表示対象 " & CStr(normalTargetItems) & "件・通常表示対象外 " & CStr(outOfTargetItems) & "件） / 確認待ち " & _
+            CStr(unresolvedFiles) & "ファイル"
     If filtered Then
         mLblCounts.Caption = mLblCounts.Caption & " ／ 絞り込み表示 " & CStr(shown.Count) & "ファイル・" & _
                              CStr(filteredItems) & "項目（確認待ち " & CStr(filteredUnresolvedFiles) & "ファイル）"
@@ -1517,7 +1577,26 @@ Private Sub ShowECategory()
         mLblStatus.Caption = "絞り込みを変更するか、［すべて］を選択してください。"
     End If
     rendering = False
-    UpdateESelection
+    If preserveFileSelection Then
+        ShowCurrent
+        If Len(priorCaseKey) > 0 And Len(priorHeaderName) > 0 Then
+            For i = 1 To eFieldCases.Count
+                Set existingItem = eFieldCases(i)
+                Set existingField = eFieldItems(i)
+                If StrComp(CStr(existingItem("key")), priorCaseKey, vbBinaryCompare) = 0 And _
+                   StrComp(CompareHeaderKey(CStr(existingField("sourceHeader"))), _
+                           CompareHeaderKey(priorHeaderName), vbBinaryCompare) = 0 Then
+                    rendering = True
+                    mLstRows.ListIndex = i - 1
+                    rendering = False
+                    UpdateEFieldSelection
+                    Exit For
+                End If
+            Next i
+        End If
+    Else
+        UpdateESelection
+    End If
 End Sub
 
 Private Function BuildERecords(ByVal sourceCases As Collection, ByVal yearValue As Long) As Collection
@@ -1639,6 +1718,127 @@ Private Function ERecordHasGroup(ByVal record As Object, ByVal selectedGroup As 
     Next item
 End Function
 
+Private Function EIsAllDisplayMode() As Boolean
+    If mCboEVisibility Is Nothing Then Exit Function
+    EIsAllDisplayMode = (mCboEVisibility.ListIndex = 1)
+End Function
+
+Private Function EHeaderNormalDisplayCaption(ByVal headerName As String) As String
+    Dim headerKey As String
+    headerKey = CompareHeaderKey(headerName)
+    If headerKey = CompareHeaderKey("毎年度利用区分1:毎年作成 2:単年のみ") Then
+        EHeaderNormalDisplayCaption = "毎年度利用区分"
+    ElseIf headerKey = CompareHeaderKey("原課") Then
+        EHeaderNormalDisplayCaption = "原課"
+    ElseIf headerKey = CompareHeaderKey("年度（和暦）") Then
+        EHeaderNormalDisplayCaption = "年度（和暦）"
+    ElseIf headerKey = CompareHeaderKey("分類名１") Or headerKey = CompareHeaderKey("分類名1") Then
+        EHeaderNormalDisplayCaption = "分類名１"
+    ElseIf headerKey = CompareHeaderKey("第1ガイド") Or headerKey = CompareHeaderKey("第１ガイド") Or _
+           headerKey = CompareHeaderKey("分類名２") Or headerKey = CompareHeaderKey("分類名2") Then
+        EHeaderNormalDisplayCaption = "第1ガイド"
+    ElseIf headerKey = CompareHeaderKey("色名") Then
+        EHeaderNormalDisplayCaption = "色名"
+    ElseIf headerKey = CompareHeaderKey("第2ガイド") Or headerKey = CompareHeaderKey("第２ガイド") Or _
+           headerKey = CompareHeaderKey("分類名３") Or headerKey = CompareHeaderKey("分類名3") Then
+        EHeaderNormalDisplayCaption = "第2ガイド"
+    ElseIf headerKey = CompareHeaderKey("2色名") Or headerKey = CompareHeaderKey("２色名") Then
+        EHeaderNormalDisplayCaption = "2色名"
+    ElseIf headerKey = CompareHeaderKey("作成年度（和暦）") Or headerKey = CompareHeaderKey("作成年度(和暦)") Then
+        EHeaderNormalDisplayCaption = "作成年度（和暦）"
+    ElseIf headerKey = CompareHeaderKey("個別フォルダー") Or headerKey = CompareHeaderKey("個別フォルダ") Or _
+           headerKey = CompareHeaderKey("タイトル") Then
+        EHeaderNormalDisplayCaption = "個別フォルダー"
+    ElseIf headerKey = CompareHeaderKey("保存期間") Then
+        EHeaderNormalDisplayCaption = "保存期間"
+    ElseIf headerKey = CompareHeaderKey("媒体種別") Then
+        EHeaderNormalDisplayCaption = "媒体種別"
+    ElseIf headerKey = CompareHeaderKey("保存番号") Then
+        EHeaderNormalDisplayCaption = "保存番号"
+    ElseIf headerKey = CompareHeaderKey("廃棄年月日") Then
+        EHeaderNormalDisplayCaption = "廃棄年月日"
+    ElseIf headerKey = CompareHeaderKey("同期状態") Then
+        EHeaderNormalDisplayCaption = "同期状態"
+    ElseIf headerKey = CompareHeaderKey("内容・取扱い") Then
+        EHeaderNormalDisplayCaption = "内容・取扱い"
+    ElseIf headerKey = CompareHeaderKey("備考") Then
+        EHeaderNormalDisplayCaption = "備考"
+    End If
+End Function
+
+Private Function EFieldNormalDisplayCaption(ByVal caseItem As Object, ByVal fieldItem As Object) As String
+    Dim sourceCaption As String, destinationCaption As String
+    sourceCaption = EHeaderNormalDisplayCaption(CStr(fieldItem("sourceHeader")))
+    destinationCaption = EHeaderNormalDisplayCaption(CStr(fieldItem("destinationHeader")))
+    If Len(sourceCaption) = 0 Or StrComp(sourceCaption, destinationCaption, vbBinaryCompare) <> 0 Then Exit Function
+    If EGroupMatchesNormalDisplay(CStr(caseItem("groupName")), CStr(fieldItem("sourceHeader")), sourceCaption) Then _
+        EFieldNormalDisplayCaption = sourceCaption
+End Function
+
+Private Function EGroupMatchesNormalDisplay(ByVal groupName As String, ByVal sourceHeader As String, _
+                                            ByVal categoryCaption As String) As Boolean
+    Dim groupKey As String, sourceKey As String
+    groupKey = CompareHeaderKey(groupName)
+    sourceKey = CompareHeaderKey(sourceHeader)
+    Select Case categoryCaption
+        Case "原課"
+            EGroupMatchesNormalDisplay = (groupKey = CompareHeaderKey("原課・原課ID") And _
+                                          sourceKey = CompareHeaderKey("原課"))
+        Case "分類名１"
+            EGroupMatchesNormalDisplay = (groupKey = CompareHeaderKey("分類名１・分類コード１") And _
+                (sourceKey = CompareHeaderKey("分類名１") Or sourceKey = CompareHeaderKey("分類名1")))
+        Case "第1ガイド"
+            EGroupMatchesNormalDisplay = (groupKey = CompareHeaderKey("第1ガイド・分類コード２") And _
+                (sourceKey = CompareHeaderKey("第1ガイド") Or sourceKey = CompareHeaderKey("第１ガイド") Or _
+                 sourceKey = CompareHeaderKey("分類名２") Or sourceKey = CompareHeaderKey("分類名2")))
+        Case "第2ガイド"
+            EGroupMatchesNormalDisplay = (groupKey = CompareHeaderKey("第2ガイド・分類コード３") And _
+                (sourceKey = CompareHeaderKey("第2ガイド") Or sourceKey = CompareHeaderKey("第２ガイド") Or _
+                 sourceKey = CompareHeaderKey("分類名３") Or sourceKey = CompareHeaderKey("分類名3")))
+        Case "保存期間"
+            EGroupMatchesNormalDisplay = (groupKey = CompareHeaderKey("保存期間・保存期間ID") And _
+                                          sourceKey = CompareHeaderKey("保存期間"))
+        Case "媒体種別"
+            EGroupMatchesNormalDisplay = (groupKey = CompareHeaderKey("媒体種別・媒体種別ID") And _
+                                          sourceKey = CompareHeaderKey("媒体種別"))
+        Case Else
+            EGroupMatchesNormalDisplay = (StrComp(groupKey, sourceKey, vbBinaryCompare) = 0)
+    End Select
+End Function
+
+Private Function ECaseHasNormalDisplayFields(ByVal caseItem As Object) As Boolean
+    Dim fields As Collection, fieldItem As Object
+    Set fields = caseItem("headers")
+    For Each fieldItem In fields
+        If Len(EFieldNormalDisplayCaption(caseItem, fieldItem)) > 0 Then
+            ECaseHasNormalDisplayFields = True
+            Exit Function
+        End If
+    Next fieldItem
+End Function
+
+Private Function ECaseHasOutOfScopeFields(ByVal caseItem As Object) As Boolean
+    Dim fields As Collection, fieldItem As Object
+    Set fields = caseItem("headers")
+    For Each fieldItem In fields
+        If Len(EFieldNormalDisplayCaption(caseItem, fieldItem)) = 0 Then
+            ECaseHasOutOfScopeFields = True
+            Exit Function
+        End If
+    Next fieldItem
+End Function
+
+Private Function ESelectedDecisionIsSafe() As Boolean
+    Dim item As Object, record As Object
+    If mCboCategory.ListIndex <> 4 Or ESelectedCount() <> 1 Then Exit Function
+    Set item = SelectedCase()
+    Set record = SelectedRecord()
+    If item Is Nothing Or record Is Nothing Then Exit Function
+    If CBool(record("identityIssue")) Then Exit Function
+    If Not EIsAllDisplayMode() And ECaseHasOutOfScopeFields(item) Then Exit Function
+    ESelectedDecisionIsSafe = True
+End Function
+
 Private Function ERecordNeedsConfirmation(ByVal record As Object) As Boolean
     Dim item As Object, recordCases As Collection, decision As String
     If CBool(record("identityIssue")) Then
@@ -1727,7 +1927,8 @@ End Function
 Private Sub ShowECurrent()
     Dim record As Object, item As Object, fieldItem As Object
     Dim recordCases As Collection, fieldItems As Collection
-    Dim rowIndex As Long, decision As String
+    Dim rowIndex As Long, decision As String, displayCaption As String, allMode As Boolean
+    Dim normalTargetItems As Long, outOfTargetItems As Long, mixedGroups As Long
     rendering = True
     Set eFieldCases = New Collection
     Set eFieldItems = New Collection
@@ -1752,29 +1953,56 @@ Private Sub ShowECurrent()
         Exit Sub
     End If
     Set recordCases = record("cases")
+    allMode = EIsAllDisplayMode()
     For Each item In recordCases
         Set fieldItems = item("headers")
         decision = EConflictDecisionDisplay(item)
+        If ECaseHasNormalDisplayFields(item) Then
+            normalTargetItems = normalTargetItems + 1
+            If ECaseHasOutOfScopeFields(item) Then mixedGroups = mixedGroups + 1
+        Else
+            outOfTargetItems = outOfTargetItems + 1
+        End If
         For Each fieldItem In fieldItems
-            rowIndex = mLstRows.ListCount
-            mLstRows.AddItem CStr(fieldItem("sourceHeader"))
-            If CBool(fieldItem("baselineKnown")) Then
-                mLstRows.List(rowIndex, 1) = EConflictValueDisplay(CStr(fieldItem("baselineValue")))
-            Else
-                mLstRows.List(rowIndex, 1) = "未確定"
+            displayCaption = EFieldNormalDisplayCaption(item, fieldItem)
+            If allMode Or Len(displayCaption) > 0 Then
+                rowIndex = mLstRows.ListCount
+                If allMode Then
+                    mLstRows.AddItem CStr(fieldItem("sourceHeader"))
+                Else
+                    mLstRows.AddItem displayCaption
+                End If
+                If CBool(fieldItem("baselineKnown")) Then
+                    mLstRows.List(rowIndex, 1) = EConflictValueDisplay(CStr(fieldItem("baselineValue")))
+                Else
+                    mLstRows.List(rowIndex, 1) = "未確定"
+                End If
+                mLstRows.List(rowIndex, 2) = EConflictValueDisplay(CStr(fieldItem("systemValue")))
+                mLstRows.List(rowIndex, 3) = EConflictValueDisplay(CStr(fieldItem("excelValue")))
+                mLstRows.List(rowIndex, 4) = decision
+                eFieldCases.Add item
+                eFieldItems.Add fieldItem
             End If
-            mLstRows.List(rowIndex, 2) = EConflictValueDisplay(CStr(fieldItem("systemValue")))
-            mLstRows.List(rowIndex, 3) = EConflictValueDisplay(CStr(fieldItem("excelValue")))
-            mLstRows.List(rowIndex, 4) = decision
-            eFieldCases.Add item
-            eFieldItems.Add fieldItem
         Next fieldItem
     Next item
     mLstRows.ListIndex = -1
     mLblCompareRows.Caption = "CSV行 " & CStr(record("sourceRow")) & " ／ Excel行 " & _
                               CStr(record("destinationRow")) & " ／ 判断単位 " & CStr(recordCases.Count) & "件"
     mTxtDetails.Text = ERecordIdentityDetails(record)
-    mLblStatus.Caption = "不一致項目を選ぶと、項目グループの理由と判断範囲を確認できます。"
+    If allMode Then
+        mLblStatus.Caption = "不一致項目を選ぶと、理由と判断範囲を確認できます。"
+    Else
+        mLblStatus.Caption = "通常表示対象 " & CStr(normalTargetItems) & "件 ／ 対象外 " & _
+            CStr(outOfTargetItems) & "件（既存の判断単位）"
+        If mixedGroups > 0 Then mLblStatus.Caption = mLblStatus.Caption & _
+            "。関連項目を含む" & CStr(mixedGroups) & "件は、全項目を確認するまで判断できません。"
+        If mLstRows.ListCount = 0 Then
+            mTxtDetails.Text = mTxtDetails.Text & vbCrLf & _
+                "通常表示の対象項目に不一致はありません。その他の項目に" & CStr(outOfTargetItems) & _
+                "件の不一致があります。「すべて表示」に切り替えると確認できます。"
+            mLblStatus.Caption = "このファイルの競合は通常表示対象外です。ファイル一覧には残しています。"
+        End If
+    End If
     mCmdApprove.Caption = "文書管理を採用"
     mCmdOther.Caption = "Excel基準表を採用"
     mCmdHold.Caption = "保留"
@@ -1803,7 +2031,13 @@ Private Sub UpdateEFieldSelection()
         Exit Sub
     End If
     mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & EConflictFieldDetails(item, fieldItem)
-    mLblStatus.Caption = "判断単位「" & CStr(item("groupName")) & "」の関連項目全体に選択した判断が適用されます。"
+    If Not EIsAllDisplayMode() And ECaseHasOutOfScopeFields(item) Then
+        mLblStatus.Caption = "この判断単位には通常表示対象外の関連項目が含まれます。判断操作は無効です。全項目確認のため「すべて表示」に切り替えてください。"
+    ElseIf EIsAllDisplayMode() Then
+        mLblStatus.Caption = "判断単位「" & CStr(item("groupName")) & "」の関連項目全体に選択した判断が適用されます。"
+    Else
+        mLblStatus.Caption = "通常表示の項目を1件選択しています。判断は表示中の判断単位に適用されます。"
+    End If
     UpdateESelection
 End Sub
 
@@ -1843,15 +2077,38 @@ End Function
 
 Private Function EConflictFieldDetails(ByVal item As Object, ByVal selectedField As Object) As String
     Dim fieldItems As Collection, fieldItem As Object, fieldNames As String
-    Dim previousValue As String
+    Dim previousValue As String, fieldCaption As String, selectedCaption As String
+    Dim groupCaption As String, hiddenFieldCount As Long, allMode As Boolean
     Set fieldItems = item("headers")
+    allMode = EIsAllDisplayMode()
     For Each fieldItem In fieldItems
-        If Len(fieldNames) > 0 Then fieldNames = fieldNames & "、"
-        fieldNames = fieldNames & CStr(fieldItem("sourceHeader"))
+        fieldCaption = EFieldNormalDisplayCaption(item, fieldItem)
+        If allMode Then fieldCaption = CStr(fieldItem("sourceHeader"))
+        If Len(fieldCaption) > 0 Then
+            If Len(fieldNames) > 0 Then fieldNames = fieldNames & "、"
+            fieldNames = fieldNames & fieldCaption
+        Else
+            hiddenFieldCount = hiddenFieldCount + 1
+        End If
     Next fieldItem
-    EConflictFieldDetails = "判断単位: " & CStr(item("groupName")) & " ／ 関連項目: " & fieldNames & vbCrLf & _
-        "理由: " & EConflictReasonDisplay(item) & vbCrLf & _
-        "選択項目: " & CStr(selectedField("sourceHeader")) & " ／ 文書管理システム: " & _
+    If allMode Then
+        groupCaption = CStr(item("groupName"))
+    ElseIf hiddenFieldCount > 0 Then
+        groupCaption = "通常表示項目を含む判断グループ"
+    Else
+        groupCaption = fieldNames
+    End If
+    If Len(fieldNames) = 0 Then fieldNames = "（表示できる項目なし）"
+    EConflictFieldDetails = "判断単位: " & groupCaption & " ／ 関連項目: " & fieldNames
+    If Not allMode And hiddenFieldCount > 0 Then
+        EConflictFieldDetails = EConflictFieldDetails & "（通常表示対象外の関連項目 " & _
+            CStr(hiddenFieldCount) & "件は非表示）"
+    End If
+    selectedCaption = CStr(selectedField("sourceHeader"))
+    If Not allMode Then selectedCaption = EFieldNormalDisplayCaption(item, selectedField)
+    EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
+        "理由: " & EConflictReasonDisplay(item, allMode) & vbCrLf & _
+        "選択項目: " & selectedCaption & " ／ 文書管理システム: " & _
         EConflictValueDisplay(CStr(selectedField("systemValue"))) & " ／ Excel基準表: " & _
         EConflictValueDisplay(CStr(selectedField("excelValue")))
     If CBool(selectedField("baselineKnown")) Then
@@ -1861,6 +2118,10 @@ Private Function EConflictFieldDetails(ByVal item As Object, ByVal selectedField
     End If
     EConflictFieldDetails = EConflictFieldDetails & vbCrLf & "前回同期値: " & previousValue & _
         " ／ この判断は同じ判断単位の関連項目全体に適用されます。"
+    If Not allMode And hiddenFieldCount > 0 Then
+        EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
+            "安全のため、この項目グループの採用・保留は無効です。「すべて表示」で関連項目を確認してください。"
+    End If
     If InStr(1, CStr(selectedField("sourceHeader")), "コード", vbTextCompare) > 0 Or _
        StrComp(CStr(selectedField("sourceHeader")), "汎用項目１０", vbTextCompare) = 0 Then
         EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
@@ -1891,7 +2152,7 @@ Private Function EConflictDecisionDisplay(ByVal item As Object) As String
     End Select
 End Function
 
-Private Function EConflictReasonDisplay(ByVal item As Object) As String
+Private Function EConflictReasonDisplay(ByVal item As Object, Optional ByVal includeTechnicalDetail As Boolean = True) As String
     Dim reasonText As String, summary As String
     reasonText = CStr(item("reason"))
     If InStr(1, reasonText, "前回同期確認値がない", vbTextCompare) > 0 Or _
@@ -1906,24 +2167,39 @@ Private Function EConflictReasonDisplay(ByVal item As Object) As String
     Else
         summary = "値の違いを自動で判断できないため、両方の値を保持しています。"
     End If
-    EConflictReasonDisplay = summary & vbCrLf & "検出時の説明: " & reasonText
+    If includeTechnicalDetail Then
+        EConflictReasonDisplay = summary & vbCrLf & "検出時の説明: " & reasonText
+    ElseIf InStr(1, reasonText, "汎用項目１０", vbTextCompare) > 0 Then
+        EConflictReasonDisplay = "追加の関連情報があるため、全項目表示に切り替えて確認してください。"
+    Else
+        EConflictReasonDisplay = summary
+    End If
 End Function
 
 Private Sub SelectNextECase()
     Dim recordIndex As Long, record As Object, recordCases As Collection, item As Object
+    Dim foundOutOfTarget As Boolean
     If shown Is Nothing Then Exit Sub
     For recordIndex = 1 To shown.Count
         Set record = shown(recordIndex)
         Set recordCases = record("cases")
         For Each item In recordCases
             If Len(SyncReviewDecision(item)) = 0 Then
-                SelectSingleECase recordIndex - 1
-                SelectEFieldCase item
-                Exit Sub
+                If Not EIsAllDisplayMode() And (Not ECaseHasNormalDisplayFields(item) Or ECaseHasOutOfScopeFields(item)) Then
+                    foundOutOfTarget = True
+                Else
+                    SelectSingleECase recordIndex - 1
+                    SelectEFieldCase item
+                    Exit Sub
+                End If
             End If
         Next item
     Next recordIndex
-    mLblStatus.Caption = "この絞り込み条件に未解決の不一致項目はありません。"
+    If Not EIsAllDisplayMode() And foundOutOfTarget Then
+        mLblStatus.Caption = "通常表示で操作できる未解決項目はありません。対象外または関連項目を含む不一致が残る場合は「すべて表示」に切り替えてください。"
+    Else
+        mLblStatus.Caption = "この絞り込み条件に未解決の不一致項目はありません。"
+    End If
 End Sub
 
 Private Sub SelectEFieldCase(ByVal targetCase As Object)

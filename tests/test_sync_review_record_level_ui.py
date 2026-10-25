@@ -203,9 +203,9 @@ class RecordLevelConflictUiTests(unittest.TestCase):
     def test_selection_actions_remain_item_level_and_multi_select_is_read_only(self):
         selection = procedure(FORM, "UpdateESelection")
         self.assertIn('identitySafe = Not CBool(record("identityIssue"))', selection)
-        self.assertIn('mCmdApprove.Enabled = (n = 1 And Not item Is Nothing And identitySafe)', selection)
-        self.assertIn('mCmdOther.Enabled = (n = 1 And Not item Is Nothing And identitySafe)', selection)
-        self.assertIn('mCmdHold.Enabled = (n = 1 And Not item Is Nothing And identitySafe)', selection)
+        self.assertIn('mCmdApprove.Enabled = (n = 1 And Not item Is Nothing And identitySafe And groupSafe)', selection)
+        self.assertIn('mCmdOther.Enabled = (n = 1 And Not item Is Nothing And identitySafe And groupSafe)', selection)
+        self.assertIn('mCmdHold.Enabled = (n = 1 And Not item Is Nothing And identitySafe And groupSafe)', selection)
         pending = procedure(FORM, "ERecordNeedsConfirmation", "Function")
         self.assertIn('If CBool(record("identityIssue")) Then', pending)
         self.assertIn('識別情報の一貫性を確認できないため', selection)
@@ -223,7 +223,7 @@ class RecordLevelConflictUiTests(unittest.TestCase):
 
     def test_selected_item_explains_related_group_and_previous_value(self):
         details = procedure(FORM, "EConflictFieldDetails", "Function")
-        self.assertIn('EConflictReasonDisplay(item)', details)
+        self.assertIn('EConflictReasonDisplay(item, allMode)', details)
         self.assertIn('item("reason")', procedure(FORM, "EConflictReasonDisplay", "Function"))
         self.assertIn('item("groupName")', details)
         self.assertIn('baselineValue', details)
