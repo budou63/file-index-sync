@@ -210,10 +210,10 @@ class RecordLevelConflictUiTests(unittest.TestCase):
         self.assertIn('If CBool(record("identityIssue")) Then', pending)
         self.assertIn('識別情報の一貫性を確認できないため', selection)
         manual = (ROOT / "新ファイル基準表.md").read_text(encoding="utf-8")
-        for label in ("第2ガイド／個別フォルダー名／作成年度", "不一致項目数", "確認待ちファイル数",
+        for label in ("第2ガイド／個別フォルダー名／作成年度", "確認が必要な入力項目", "確認待ちファイル数",
                       "ファイル一覧", "複数ファイルの選択は表示専用", "関連項目全体"):
             self.assertIn(label, manual)
-        self.assertIn("A～D表示では従来のカテゴリ別件数・未確認件数を維持し", manual)
+        self.assertIn("A～D表示の従来のカテゴリ別件数・未確認件数は維持します。", manual)
         self.assertIn("識別情報が欠落・重複・不整合", manual)
         self.assertIn("第2ガイド・個別フォルダー名・作成年度", (ROOT / "同期候補確認フォーム_導入手順.md").read_text(encoding="utf-8"))
         self.assertIn('If ESelectedCount() <> 1 Then Exit Sub', procedure(FORM, "mCmdApprove_Click"))

@@ -13,29 +13,24 @@ EXPECTED_HEADERS = {
     "毎年度利用区分1:毎年作成 2:単年のみ": "毎年度利用区分（1：毎年作成、2：単年のみ）",
     "原課": "原課",
     "年度（和暦）": "年度（和暦）",
+    "年度(和暦)": "年度（和暦）",
     "分類名１": "分類名１",
     "分類名1": "分類名１",
     "第1ガイド": "第1ガイド",
     "第１ガイド": "第1ガイド",
     "分類名２": "第1ガイド",
     "分類名2": "第1ガイド",
-    "色名": "色名",
     "第2ガイド": "第2ガイド",
     "第２ガイド": "第2ガイド",
     "分類名３": "第2ガイド",
     "分類名3": "第2ガイド",
-    "2色名": "2色名",
-    "２色名": "2色名",
     "作成年度（和暦）": "作成年度（和暦）",
     "作成年度(和暦)": "作成年度（和暦）",
-    "個別フォルダー": "個別フォルダー",
-    "個別フォルダ": "個別フォルダー",
-    "タイトル": "個別フォルダー",
+    "個別フォルダー": "個別フォルダー（タイトル）",
+    "個別フォルダ": "個別フォルダー（タイトル）",
+    "タイトル": "個別フォルダー（タイトル）",
     "保存期間": "保存期間",
     "媒体種別": "媒体種別",
-    "保存番号": "保存番号",
-    "廃棄年月日": "廃棄年月日",
-    "同期状態": "同期状態",
     "内容・取扱い": "内容・取扱い",
     "備考": "備考",
 }
@@ -112,8 +107,8 @@ class NormalDisplayTests(unittest.TestCase):
         canonical = module_procedure("CanonicalHeaderName")
         display_headers = (
             "毎年度利用区分1:毎年作成 2:単年のみ", "原課", "年度（和暦）", "分類名１",
-            "第1ガイド", "色名", "第2ガイド", "2色名", "作成年度（和暦）", "個別フォルダー",
-            "保存期間", "媒体種別", "保存番号", "廃棄年月日", "同期状態", "内容・取扱い", "備考",
+            "第1ガイド", "第2ガイド", "作成年度（和暦）", "個別フォルダー",
+            "保存期間", "媒体種別", "内容・取扱い", "備考",
         )
         for header in display_headers:
             with self.subTest(header=header):
@@ -147,9 +142,10 @@ class NormalDisplayTests(unittest.TestCase):
             "Me.Width = 960", "targetInsideHeight = 400", "Me.Width = 1100",
             "Me.Width = 1280", "targetInsideHeight = 560",
             "Me.Height = Me.Height + (targetInsideHeight - Me.InsideHeight)",
-            "PlaceControl mLstCases, 9, 64.5, leftWidth, listHeight",
-            "PlaceControl mLstRows, rightLeft, 64.5, rightWidth, listHeight",
-            "PlaceControl mEColumnHeaders(i), headerLeft, 50, columnWidths(i), 14",
+            "PlaceControl mLblCounts, 9, 6, availableWidth - 18, 34",
+            "PlaceControl mLstCases, 9, 79.5, leftWidth, listHeight",
+            "PlaceControl mLstRows, rightLeft, 79.5, rightWidth, listHeight",
+            "PlaceControl mEColumnHeaders(i), headerLeft, 65, columnWidths(i), 14",
             "PlaceControl mTxtDetails, rightLeft, detailsTop, rightWidth, detailsHeight",
             "PlaceControl mLblStatus, 9, footerTop, availableWidth - 18, 21",
         ):
@@ -157,7 +153,7 @@ class NormalDisplayTests(unittest.TestCase):
         self.assertIn("mLstRows.ColumnWidths = CStr(CLng(columnWidths(0)))", layout)
         self.assertNotIn('mLstRows.ColumnWidths = "130 pt;145 pt;145 pt;145 pt;180 pt"', procedure("ShowECurrent"))
         self.assertIn('mLblRows.Caption = "項目群"', layout)
-        self.assertIn('mLblCase.Caption = "第2ガイド ／ 個別フォルダー ／ 作成年度"', layout)
+        self.assertIn('mLblCase.Caption = "確認が必要な入力項目"', layout)
         self.assertIn('ControlTipText = "項目グループで対象ファイルを絞り込みます。判断状態は変更しません。"', FORM)
         top_row = ((205, 42), (251, 160), (419, 42), (464, 112), (582, 35), (620, 88), (716, 28), (748, 112))
         for (left, width), (next_left, _) in zip(top_row, top_row[1:]):
@@ -174,19 +170,37 @@ class NormalDisplayTests(unittest.TestCase):
     def test_counts_are_dynamic_existing_judgment_units_and_partition_the_total(self):
         show = procedure("ShowECategory")
         self.assertIn("totalItems = totalItems + recordCases.Count", show)
-        self.assertIn("For Each item In recordCases", show)
-        self.assertIn("normalTargetItems = normalTargetItems + 1", show)
-        self.assertIn("outOfTargetItems = outOfTargetItems + 1", show)
-        self.assertIn('CStr(totalItems)', show)
-        self.assertIn('CStr(normalTargetItems)', show)
-        self.assertIn('CStr(outOfTargetItems)', show)
-        self.assertNotRegex(show, r"\b(?:385|580)\b")
+        self.assertIn("ECaseNeedsHumanDecision(item)", show)
         self.assertIn("ECaseHasNormalDisplayFields(item)", show)
+        self.assertIn("inputFileKeys.Count", show)
+        self.assertIn("CStr(inputItemCount)", show)
+        self.assertIn("CStr(internalMismatchCount)", show)
+        self.assertIn("CStr(safeNoReviewCount)", show)
+        self.assertIn("CStr(unresolvedInternalCount)", show)
+        self.assertIn("CStr(internalOnlyFileCount)", show)
+        self.assertIn("CStr(identityIssueFileCount)", show)
+        self.assertIn("safeNoReviewCount = 0", show)
+        self.assertNotIn("BidirectionalSyncLastSafeNoReviewCount", FORM)
+        self.assertNotRegex(show, r"\b(?:385|580)\b")
+        self.assertIn('"確認が必要なファイル: "', show)
+        self.assertIn("確認が必要な入力項目:", show)
+        self.assertIn("内部項目の不一致:", show)
+        self.assertIn("安全に確認不要:", show)
+        self.assertIn("未確認・要調査:", show)
+        internal_count = procedure("ECountInternalCase")
+        self.assertIn("internalMismatchCount = internalMismatchCount + 1", internal_count)
+        self.assertIn("unresolvedInternalCount = unresolvedInternalCount + 1", internal_count)
 
-    def test_normal_filter_only_removes_comparison_rows_not_file_or_conflict_records(self):
+    def test_normal_view_lists_only_open_input_files_and_all_view_keeps_internal_records(self):
         show_records = procedure("ShowECategory")
-        self.assertRegex(show_records, r"If ERecordHasGroup\(record, selectedGroup\) Then\s+shown\.Add record")
-        self.assertNotIn("If ECaseHasNormalDisplayFields(record)", show_records)
+        self.assertIn("(EIsAllDisplayMode() Or ERecordNeedsConfirmation(record)) And ERecordHasGroup(record, selectedGroup)", show_records)
+        needs_input = procedure("ERecordNeedsConfirmation", "Function")
+        self.assertIn("ECaseNeedsHumanDecision(item)", needs_input)
+        self.assertIn("ECaseHasNormalDisplayFields(item)", needs_input)
+        self.assertIn("ERecordNeedsInternalInvestigation(record)", show_records)
+        self.assertIn("内部のみ・要調査: ", show_records)
+        self.assertIn("識別要確認: ", FORM)
+        self.assertIn("自動解決はせず、差異を保持しています。", FORM)
         show_current = procedure("ShowECurrent")
         self.assertIn("For Each item In recordCases", show_current)
         self.assertIn("If allMode Or Len(displayCaption) > 0 Then", show_current)
@@ -199,7 +213,8 @@ class NormalDisplayTests(unittest.TestCase):
         show = procedure("ShowECategory")
         for token in (
             "If preserveFileSelection Then",
-            "selectedIndices(CStr(i)) = True",
+            "selectedRecordKeys(ERecordBucketKey(record)) = True",
+            "selectedRecordKeys.Exists(recordKey)",
             "mLstCases.Selected(rowIndex) = True",
             'priorCaseKey = CStr(priorCase("key"))',
             "CompareHeaderKey(priorHeaderName)",
@@ -218,6 +233,9 @@ class NormalDisplayTests(unittest.TestCase):
             self.assertLess(handler.index("ESelectedDecisionIsSafe()"), handler.index("BidirectionalSyncResolveConflict(item,"))
         self.assertIn("ECaseHasOutOfScopeFields(item)", safe)
         self.assertIn("If Not EIsAllDisplayMode() And ECaseHasOutOfScopeFields(item) Then Exit Function", safe)
+        out_of_scope = procedure("ECaseHasOutOfScopeFields", "Function")
+        self.assertIn("If Len(EFieldNormalDisplayCaption(caseItem, fieldItem)) = 0 Then", out_of_scope)
+        self.assertIn("ECaseHasOutOfScopeFields = True", out_of_scope)
         self.assertIn("identitySafe And groupSafe", selection)
         self.assertIn("全項目を確認するため「すべて表示」に切り替えてください", selection)
 

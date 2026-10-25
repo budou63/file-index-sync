@@ -1474,33 +1474,34 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         columnWidths(2) = valueWidth
         columnWidths(3) = valueWidth
         columnWidths(4) = decisionWidth
-        PlaceControl mLblCounts, 9, 6, availableWidth - 18, 19
-        PlaceControl mCboCategory, 9, 28, 187.5, 16.5
+        PlaceControl mLblCounts, 9, 6, availableWidth - 18, 34
+        mLblCounts.WordWrap = True
+        PlaceControl mCboCategory, 9, 43, 187.5, 16.5
         mLblRows.Caption = "項目群"
-        PlaceControl mLblRows, 205, 28, 42, 16.5
+        PlaceControl mLblRows, 205, 43, 42, 16.5
         mLblRows.Visible = True
-        PlaceControl mCboEGroup, 251, 28, 160, 16.5
+        PlaceControl mCboEGroup, 251, 43, 160, 16.5
         mCboEGroup.Visible = True
-        PlaceControl mLblEVisibility, 419, 28, 42, 16.5
-        PlaceControl mCboEVisibility, 464, 28, 112, 16.5
-        PlaceControl mLblEWindowSize, 582, 28, 35, 16.5
-        PlaceControl mCboEWindowSize, 620, 28, 88, 16.5
-        PlaceControl mLblEPaneSize, 716, 28, 28, 16.5
-        PlaceControl mCboEPaneSize, 748, 28, 112, 16.5
+        PlaceControl mLblEVisibility, 419, 43, 42, 16.5
+        PlaceControl mCboEVisibility, 464, 43, 112, 16.5
+        PlaceControl mLblEWindowSize, 582, 43, 35, 16.5
+        PlaceControl mCboEWindowSize, 620, 43, 88, 16.5
+        PlaceControl mLblEPaneSize, 716, 43, 28, 16.5
+        PlaceControl mCboEPaneSize, 748, 43, 112, 16.5
         mLblEVisibility.Visible = True
         mCboEVisibility.Visible = True
         mLblEWindowSize.Visible = True
         mCboEWindowSize.Visible = True
         mLblEPaneSize.Visible = True
         mCboEPaneSize.Visible = True
-        PlaceControl mLblCase, 9, 50, leftWidth, 14
-        mLblCase.Caption = "第2ガイド ／ 個別フォルダー ／ 作成年度"
-        PlaceControl mLstCases, 9, 64.5, leftWidth, 228
+        PlaceControl mLblCase, 9, 65, leftWidth, 14
+        mLblCase.Caption = "確認が必要な入力項目"
+        PlaceControl mLstCases, 9, 79.5, leftWidth, 228
         mLstCases.ColumnCount = 3
         mLstCases.ColumnWidths = CStr(guideColumnWidth) & " pt;" & CStr(folderColumnWidth) & _
                                  " pt;" & CStr(yearColumnWidth) & " pt"
         mLblCompareRows.Visible = False
-        PlaceControl mLstRows, rightLeft, 64.5, rightWidth, 228
+        PlaceControl mLstRows, rightLeft, 79.5, rightWidth, 228
         mLstRows.ColumnCount = 5
         mLstRows.ColumnWidths = CStr(CLng(columnWidths(0))) & " pt;" & CStr(CLng(columnWidths(1))) & _
             " pt;" & CStr(CLng(columnWidths(2))) & " pt;" & CStr(CLng(columnWidths(3))) & _
@@ -1508,7 +1509,7 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         mLstRows.MultiSelect = fmMultiSelectSingle
         headerLeft = rightLeft
         For i = 0 To 4
-            PlaceControl mEColumnHeaders(i), headerLeft, 50, columnWidths(i), 14
+            PlaceControl mEColumnHeaders(i), headerLeft, 65, columnWidths(i), 14
             headerLeft = headerLeft + columnWidths(i)
             mEColumnHeaders(i).Visible = True
         Next i
@@ -1519,10 +1520,10 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         End If
         footerTop = Me.InsideHeight - 84
         detailsTop = footerTop - detailsHeight - 2
-        listHeight = detailsTop - 70.5
+        listHeight = detailsTop - 85.5
         If listHeight < 150 Then listHeight = 150
-        PlaceControl mLstCases, 9, 64.5, leftWidth, listHeight
-        PlaceControl mLstRows, rightLeft, 64.5, rightWidth, listHeight
+        PlaceControl mLstCases, 9, 79.5, leftWidth, listHeight
+        PlaceControl mLstRows, rightLeft, 79.5, rightWidth, listHeight
         PlaceControl mTxtDetails, rightLeft, detailsTop, rightWidth, detailsHeight
         PlaceControl mLblESelection, 9, detailsTop + 2.5, leftWidth - 120, 19
         PlaceControl mCmdEClear, 9 + leftWidth - 110, detailsTop + 2.5, 108, 22
@@ -1613,17 +1614,24 @@ End Sub
 
 Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = False)
     Dim allRecords As Collection, record As Object, recordCases As Collection, item As Object
-    Dim selectedGroup As String, filtered As Boolean, selectedIndices As Object
+    Dim selectedGroup As String, filtered As Boolean, selectedRecordKeys As Object
     Dim priorCase As Object, priorField As Object, existingItem As Object, existingField As Object
-    Dim priorCaseKey As String, priorHeaderName As String
+    Dim priorCaseKey As String, priorHeaderName As String, recordKey As String
     Dim rowIndex As Long, i As Long, guide2Value As String, folderValue As String, creationYearValue As String
-    Dim totalItems As Long, normalTargetItems As Long, outOfTargetItems As Long
-    Dim filteredItems As Long, unresolvedFiles As Long, filteredUnresolvedFiles As Long
+    Dim totalItems As Long, inputItemCount As Long, internalMismatchCount As Long
+    Dim unresolvedInternalCount As Long, safeNoReviewCount As Long
+    Dim internalOnlyFileCount As Long, identityIssueFileCount As Long
+    Dim inputFileKeys As Object
     If cases Is Nothing Then Exit Sub
     If preserveFileSelection Then
-        Set selectedIndices = CreateObject("Scripting.Dictionary")
+        Set selectedRecordKeys = CreateObject("Scripting.Dictionary")
         For i = 0 To mLstCases.ListCount - 1
-            If mLstCases.Selected(i) Then selectedIndices(CStr(i)) = True
+            If mLstCases.Selected(i) And Not shown Is Nothing Then
+                If i + 1 <= shown.Count Then
+                    Set record = shown(i + 1)
+                    selectedRecordKeys(ERecordBucketKey(record)) = True
+                End If
+            End If
         Next i
         If ESelectedCount() = 1 Then
             Set priorCase = SelectedCase()
@@ -1640,17 +1648,21 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
     Set shown = New Collection
     Set eFieldCases = New Collection
     Set eFieldItems = New Collection
+    Set inputFileKeys = CreateObject("Scripting.Dictionary")
+    inputFileKeys.CompareMode = vbBinaryCompare
+    ' This stage does not auto-exclude any internal conflict; all such differences remain unresolved.
+    safeNoReviewCount = 0
     mLstCases.MultiSelect = fmMultiSelectExtended
     mLstCases.Clear
     mLstRows.Clear
     mLstRows.ListIndex = -1
     mCboEGroup.Visible = True
-    mLblCase.Caption = "第2ガイド ／ 個別フォルダー ／ 作成年度"
+    mLblCase.Caption = "確認が必要な入力項目"
     mLblRows.Visible = True
     mLblESelection.Caption = "0件選択中"
     mLblCompareRows.Caption = "ファイルを選択してください。"
-    mTxtDetails.Text = "確認対象ファイルを左側から選択すると、そのファイルの不一致項目を表示します。"
-    mLblStatus.Caption = "複数ファイルの選択は表示専用です。判断時はファイル1件と不一致項目1件を選んでください。"
+    mTxtDetails.Text = "通常表示には職員が確認する入力項目だけを表示します。内部項目だけの競合や識別不明は［すべて表示］で確認できます。"
+    mLblStatus.Caption = "複数ファイルの選択は表示専用です。判断時は識別情報が一意なファイル1件を選んでください。"
     mChkDelete.Visible = False
     mCmdApprove.Caption = "文書管理を採用"
     mCmdOther.Caption = "Excel基準表を採用"
@@ -1666,38 +1678,56 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
     For Each record In allRecords
         Set recordCases = record("cases")
         totalItems = totalItems + recordCases.Count
+        If CBool(record("identityIssue")) Then
+            identityIssueFileCount = identityIssueFileCount + 1
+        ElseIf ERecordNeedsConfirmation(record) Then
+            recordKey = ERecordBucketKey(record)
+            If Not inputFileKeys.Exists(recordKey) Then inputFileKeys.Add recordKey, True
+        ElseIf ERecordNeedsInternalInvestigation(record) Then
+            internalOnlyFileCount = internalOnlyFileCount + 1
+        End If
         For Each item In recordCases
-            If ECaseHasNormalDisplayFields(item) Then
-                normalTargetItems = normalTargetItems + 1
-            Else
-                outOfTargetItems = outOfTargetItems + 1
+            If ECaseNeedsHumanDecision(item) Then
+                If Not CBool(record("identityIssue")) And ECaseHasNormalDisplayFields(item) Then _
+                    inputItemCount = inputItemCount + 1
+                ECountInternalCase item, internalMismatchCount, unresolvedInternalCount
             End If
         Next item
-        If ERecordNeedsConfirmation(record) Then unresolvedFiles = unresolvedFiles + 1
-        If ERecordHasGroup(record, selectedGroup) Then
+        If (EIsAllDisplayMode() Or ERecordNeedsConfirmation(record)) And ERecordHasGroup(record, selectedGroup) Then
             shown.Add record
             ERecordDisplayValues record, guide2Value, folderValue, creationYearValue
             rowIndex = mLstCases.ListCount
             mLstCases.AddItem guide2Value
             mLstCases.List(rowIndex, 1) = folderValue
             mLstCases.List(rowIndex, 2) = creationYearValue
-            If preserveFileSelection And Not selectedIndices Is Nothing Then
-                If selectedIndices.Exists(CStr(rowIndex)) Then mLstCases.Selected(rowIndex) = True
+            If Not CBool(record("identityIssue")) And Not ERecordNeedsConfirmation(record) And _
+               ERecordNeedsInternalInvestigation(record) Then
+                mLstCases.List(rowIndex, 0) = "内部のみ・要調査: " & CStr(mLstCases.List(rowIndex, 0))
             End If
-            filteredItems = filteredItems + recordCases.Count
-            If ERecordNeedsConfirmation(record) Then filteredUnresolvedFiles = filteredUnresolvedFiles + 1
+            recordKey = ERecordBucketKey(record)
+            If preserveFileSelection And Not selectedRecordKeys Is Nothing Then
+                If selectedRecordKeys.Exists(recordKey) Then mLstCases.Selected(rowIndex) = True
+            End If
         End If
     Next record
-    mLblCounts.Caption = "ファイル数 " & CStr(allRecords.Count) & "件 / 不一致項目 " & CStr(totalItems) & _
-            "件（通常表示対象 " & CStr(normalTargetItems) & "件・通常表示対象外 " & CStr(outOfTargetItems) & "件） / 確認待ち " & _
-            CStr(unresolvedFiles) & "ファイル"
-    If filtered Then
-        mLblCounts.Caption = mLblCounts.Caption & " ／ 絞り込み表示 " & CStr(shown.Count) & "ファイル・" & _
-                             CStr(filteredItems) & "項目（確認待ち " & CStr(filteredUnresolvedFiles) & "ファイル）"
-    End If
+    mLblCounts.Caption = "確認が必要なファイル: " & CStr(inputFileKeys.Count) & "件 / 確認が必要な入力項目: " & _
+        CStr(inputItemCount) & "件" & vbCrLf & _
+        "内部項目の不一致: " & CStr(internalMismatchCount) & "件 / 安全に確認不要: " & _
+        CStr(safeNoReviewCount) & "件 / 未確認・要調査: " & CStr(unresolvedInternalCount) & _
+        "件 / 内部のみ: " & CStr(internalOnlyFileCount) & "ファイル / 識別要確認: " & _
+        CStr(identityIssueFileCount) & "ファイル"
+    If filtered Then mLblStatus.Caption = mLblStatus.Caption & " 絞り込み後 " & CStr(shown.Count) & "ファイル／全競合項目 " & CStr(totalItems) & "件。"
     If shown.Count = 0 Then
-        mTxtDetails.Text = "この絞り込み条件に該当するファイルはありません。"
-        mLblStatus.Caption = "絞り込みを変更するか、［すべて］を選択してください。"
+        If filtered Then
+            mTxtDetails.Text = "この絞り込み条件に該当するファイルはありません。"
+            mLblStatus.Caption = "絞り込みを変更するか、［すべて］を選択してください。"
+        ElseIf EIsAllDisplayMode() Then
+            mTxtDetails.Text = "この絞り込み条件に該当するファイルはありません。"
+            mLblStatus.Caption = "絞り込みを変更するか、［すべて］を選択してください。"
+        Else
+            mTxtDetails.Text = "確認が必要な入力項目はありません。内部項目の未確認分は件数に含めており、［すべて表示］で確認できます。"
+            mLblStatus.Caption = "職員入力の確認待ちはありません。内部項目の調査が必要な場合は［すべて表示］に切り替えてください。"
+        End If
     End If
     rendering = False
     If preserveFileSelection Then
@@ -1720,6 +1750,23 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
     Else
         UpdateESelection
     End If
+End Sub
+
+Private Sub ECountInternalCase(ByVal caseItem As Object, ByRef internalMismatchCount As Long, _
+                               ByRef unresolvedInternalCount As Long)
+    Dim fields As Collection, fieldItem As Object
+    Dim systemValue As String, excelValue As String
+    Set fields = caseItem("headers")
+    For Each fieldItem In fields
+        If Len(EFieldNormalDisplayCaption(caseItem, fieldItem)) = 0 Then
+            systemValue = CStr(fieldItem("systemValue"))
+            excelValue = CStr(fieldItem("excelValue"))
+            If StrComp(systemValue, excelValue, vbBinaryCompare) <> 0 Then
+                internalMismatchCount = internalMismatchCount + 1
+                unresolvedInternalCount = unresolvedInternalCount + 1
+            End If
+        End If
+    Next fieldItem
 End Sub
 
 Private Function BuildERecords(ByVal sourceCases As Collection, ByVal yearValue As Long) As Collection
@@ -1853,35 +1900,25 @@ Private Function EHeaderNormalDisplayCaption(ByVal headerName As String) As Stri
         EHeaderNormalDisplayCaption = "毎年度利用区分（1：毎年作成、2：単年のみ）"
     ElseIf headerKey = CompareHeaderKey("原課") Then
         EHeaderNormalDisplayCaption = "原課"
-    ElseIf headerKey = CompareHeaderKey("年度（和暦）") Then
+    ElseIf headerKey = CompareHeaderKey("年度（和暦）") Or headerKey = CompareHeaderKey("年度(和暦)") Then
         EHeaderNormalDisplayCaption = "年度（和暦）"
     ElseIf headerKey = CompareHeaderKey("分類名１") Or headerKey = CompareHeaderKey("分類名1") Then
         EHeaderNormalDisplayCaption = "分類名１"
     ElseIf headerKey = CompareHeaderKey("第1ガイド") Or headerKey = CompareHeaderKey("第１ガイド") Or _
            headerKey = CompareHeaderKey("分類名２") Or headerKey = CompareHeaderKey("分類名2") Then
         EHeaderNormalDisplayCaption = "第1ガイド"
-    ElseIf headerKey = CompareHeaderKey("色名") Then
-        EHeaderNormalDisplayCaption = "色名"
     ElseIf headerKey = CompareHeaderKey("第2ガイド") Or headerKey = CompareHeaderKey("第２ガイド") Or _
            headerKey = CompareHeaderKey("分類名３") Or headerKey = CompareHeaderKey("分類名3") Then
         EHeaderNormalDisplayCaption = "第2ガイド"
-    ElseIf headerKey = CompareHeaderKey("2色名") Or headerKey = CompareHeaderKey("２色名") Then
-        EHeaderNormalDisplayCaption = "2色名"
     ElseIf headerKey = CompareHeaderKey("作成年度（和暦）") Or headerKey = CompareHeaderKey("作成年度(和暦)") Then
         EHeaderNormalDisplayCaption = "作成年度（和暦）"
     ElseIf headerKey = CompareHeaderKey("個別フォルダー") Or headerKey = CompareHeaderKey("個別フォルダ") Or _
            headerKey = CompareHeaderKey("タイトル") Then
-        EHeaderNormalDisplayCaption = "個別フォルダー"
+        EHeaderNormalDisplayCaption = "個別フォルダー（タイトル）"
     ElseIf headerKey = CompareHeaderKey("保存期間") Then
         EHeaderNormalDisplayCaption = "保存期間"
     ElseIf headerKey = CompareHeaderKey("媒体種別") Then
         EHeaderNormalDisplayCaption = "媒体種別"
-    ElseIf headerKey = CompareHeaderKey("保存番号") Then
-        EHeaderNormalDisplayCaption = "保存番号"
-    ElseIf headerKey = CompareHeaderKey("廃棄年月日") Then
-        EHeaderNormalDisplayCaption = "廃棄年月日"
-    ElseIf headerKey = CompareHeaderKey("同期状態") Then
-        EHeaderNormalDisplayCaption = "同期状態"
     ElseIf headerKey = CompareHeaderKey("内容・取扱い") Then
         EHeaderNormalDisplayCaption = "内容・取扱い"
     ElseIf headerKey = CompareHeaderKey("備考") Then
@@ -1894,6 +1931,7 @@ Private Function EFieldNormalDisplayCaption(ByVal caseItem As Object, ByVal fiel
     sourceCaption = EHeaderNormalDisplayCaption(CStr(fieldItem("sourceHeader")))
     destinationCaption = EHeaderNormalDisplayCaption(CStr(fieldItem("destinationHeader")))
     If Len(sourceCaption) = 0 Or StrComp(sourceCaption, destinationCaption, vbBinaryCompare) <> 0 Then Exit Function
+    If StrComp(CStr(fieldItem("systemValue")), CStr(fieldItem("excelValue")), vbBinaryCompare) = 0 Then Exit Function
     If EGroupMatchesNormalDisplay(CStr(caseItem("groupName")), CStr(fieldItem("sourceHeader")), sourceCaption) Then _
         EFieldNormalDisplayCaption = sourceCaption
 End Function
@@ -1962,17 +2000,34 @@ Private Function ESelectedDecisionIsSafe() As Boolean
     ESelectedDecisionIsSafe = True
 End Function
 
+Private Function ECaseNeedsHumanDecision(ByVal caseItem As Object) As Boolean
+    Dim decision As String
+    decision = SyncReviewDecision(caseItem)
+    ECaseNeedsHumanDecision = (Len(decision) = 0 Or decision = "保留")
+End Function
+
 Private Function ERecordNeedsConfirmation(ByVal record As Object) As Boolean
-    Dim item As Object, recordCases As Collection, decision As String
+    Dim item As Object, recordCases As Collection
+    If CBool(record("identityIssue")) Then Exit Function
+    Set recordCases = record("cases")
+    For Each item In recordCases
+        If ECaseNeedsHumanDecision(item) And ECaseHasNormalDisplayFields(item) Then
+            ERecordNeedsConfirmation = True
+            Exit Function
+        End If
+    Next item
+End Function
+
+Private Function ERecordNeedsInternalInvestigation(ByVal record As Object) As Boolean
+    Dim item As Object, recordCases As Collection
     If CBool(record("identityIssue")) Then
-        ERecordNeedsConfirmation = True
+        ERecordNeedsInternalInvestigation = True
         Exit Function
     End If
     Set recordCases = record("cases")
     For Each item In recordCases
-        decision = SyncReviewDecision(item)
-        If Len(decision) = 0 Or decision = "保留" Then
-            ERecordNeedsConfirmation = True
+        If ECaseNeedsHumanDecision(item) And ECaseHasOutOfScopeFields(item) Then
+            ERecordNeedsInternalInvestigation = True
             Exit Function
         End If
     Next item
@@ -1989,7 +2044,7 @@ Private Sub ERecordDisplayValues(ByVal record As Object, ByRef guide2Value As St
     guide2Value = EIdentityPair(src, dst, sourceRow, destinationRow, 7)
     folderValue = EIdentityPair(src, dst, sourceRow, destinationRow, 8)
     creationYearValue = EIdentityPair(src, dst, sourceRow, destinationRow, 5)
-    If CBool(record("identityIssue")) Then guide2Value = "要確認: " & guide2Value
+    If CBool(record("identityIssue")) Then guide2Value = "識別要確認: " & guide2Value
     Exit Sub
 Unavailable:
     Err.Clear
@@ -2112,7 +2167,13 @@ Private Sub ShowECurrent()
                               CStr(record("destinationRow")) & " ／ 判断単位 " & CStr(recordCases.Count) & "件"
     mTxtDetails.Text = ERecordIdentityDetails(record)
     If allMode Then
-        mLblStatus.Caption = "不一致項目を選ぶと、理由と判断範囲を確認できます。"
+        If CBool(record("identityIssue")) Then
+            mLblStatus.Caption = "識別情報が要確認のファイルです。採用・保留はできません。別のレコードを巻き込まないよう、識別情報を確認してください。"
+        ElseIf Not ERecordNeedsConfirmation(record) And ERecordNeedsInternalInvestigation(record) Then
+            mLblStatus.Caption = "内部項目だけに未解決差異があるファイルです。自動解決はせず、差異を保持しています。"
+        Else
+            mLblStatus.Caption = "不一致項目を選ぶと、理由と判断範囲を確認できます。"
+        End If
     Else
         mLblStatus.Caption = "通常表示対象 " & CStr(normalTargetItems) & "件 ／ 対象外 " & _
             CStr(outOfTargetItems) & "件（既存の判断単位）"

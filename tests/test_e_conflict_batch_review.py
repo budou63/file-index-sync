@@ -31,7 +31,12 @@ class ESelectionOnlyContracts(unittest.TestCase):
         show = procedure(FORM, "ShowECategory")
         self.assertIn('ERecordHasGroup(record, selectedGroup)', show)
         self.assertIn('mCboEGroup.ListIndex > 0', show)  # a real group named すべて stays selectable
-        self.assertIn('CStr(allRecords.Count)', show)
+        self.assertIn('CStr(inputFileKeys.Count)', show)
+        self.assertIn('CStr(inputItemCount)', show)
+        self.assertIn('CStr(internalMismatchCount)', show)
+        self.assertIn('CStr(unresolvedInternalCount)', show)
+        self.assertIn('CStr(internalOnlyFileCount)', show)
+        self.assertIn('CStr(identityIssueFileCount)', show)
         self.assertIn('CStr(totalItems)', show)
         self.assertIn('mCboEGroup.Visible = True', show)
 
