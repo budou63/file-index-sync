@@ -795,6 +795,25 @@ End Sub
 Private Sub mLstCases_Click()
     If Not rendering Then ShowCurrent
 End Sub
+
+' In an extended-selection ListBox, changing the selected rows need not change Value.
+' Click alone therefore does not cover Ctrl/Shift selections or keyboard navigation.
+Private Sub mLstCases_Change()
+    If Not rendering And mCboCategory.ListIndex = 4 Then ShowCurrent
+End Sub
+
+Private Sub mLstCases_MouseUp(ByVal Button As Integer, ByVal Shift As Integer, _
+    ByVal X As Single, ByVal Y As Single)
+    If Not rendering And mCboCategory.ListIndex = 4 Then ShowCurrent
+End Sub
+
+Private Sub mLstCases_KeyUp(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    If Not rendering And mCboCategory.ListIndex = 4 Then ShowCurrent
+End Sub
+
+Private Sub mLstCases_Exit(ByVal Cancel As MSForms.ReturnBoolean)
+    If Not rendering And mCboCategory.ListIndex = 4 Then ShowCurrent
+End Sub
 Private Sub mLstRows_Click()
     Dim item As Object
     If rendering Then Exit Sub

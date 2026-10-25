@@ -62,6 +62,21 @@ class ESelectionOnlyContracts(unittest.TestCase):
         self.assertIn('MsgBox("システム側の値で関連するExcelセルを更新します。続けますか？"', approve)
         self.assertIn('If MsgBox(', approve)
 
+    def test_e_mouse_keyboard_and_focus_changes_refresh_selected_flags(self):
+        for event in ('mLstCases_MouseUp', 'mLstCases_KeyUp',
+                      'mLstCases_Change', 'mLstCases_Exit'):
+            body = procedure(FORM, event)
+            self.assertIn('If Not rendering And mCboCategory.ListIndex = 4 Then ShowCurrent', body)
+            self.assertNotIn('BidirectionalSyncResolveConflict(', body)
+        self.assertIn('ByVal KeyCode As MSForms.ReturnInteger',
+                      procedure(FORM, 'mLstCases_KeyUp'))
+        self.assertIn('ByVal Cancel As MSForms.ReturnBoolean',
+                      procedure(FORM, 'mLstCases_Exit'))
+        self.assertIn('ByVal Button As Integer', procedure(FORM, 'mLstCases_MouseUp'))
+        self.assertIn('UpdateESelection', procedure(FORM, 'ShowCurrent'))
+        self.assertIn('mLstCases.Selected(i)', procedure(FORM, 'ESelectedCount', 'Function'))
+        self.assertIn('If Not rendering Then ShowCurrent', procedure(FORM, 'mLstCases_Click'))
+
     def test_selection_clear_filter_and_reload_drop_prior_selection(self):
         clear = procedure(FORM, "mCmdEClear_Click")
         self.assertIn('mLstCases.Selected(i) = False', clear)
