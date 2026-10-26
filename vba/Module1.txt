@@ -19964,7 +19964,7 @@ Public Function BidirectionalSyncResolveConflict(ByVal item As Object, ByVal dec
     previousDecision = CStr(oldDecision)
     If (CStr(item("groupName")) = "分類名１・分類コード１" Or _
         CStr(item("groupName")) = "保存期間・保存期間ID") And _
-       (previousDecision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or previousDecision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL) Then _
+       (previousDecision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or previousDecision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL) Then
         Err.Raise vbObjectError + 2850, , "この判断単位には確定済みの採用判断があります。既存判断を上書きしません。"
     End If
     Set fieldItems = BidirectionalSyncUnpackConflictHeaders(CStr(item("snapshot")))
