@@ -56,7 +56,8 @@ class ESelectionOnlyContracts(unittest.TestCase):
         self.assertIn('identitySafe = Not CBool(record("identityIssue"))', selection)
         self.assertIn('groupSafe = (EIsAllDisplayMode() Or Not ECaseHasOutOfScopeFields(item))', selection)
         for name in ('mCmdApprove', 'mCmdOther', 'mCmdHold'):
-            self.assertIn(name + '.Enabled = (n = 1 And Not item Is Nothing And identitySafe And groupSafe)', selection)
+            allowed = {"mCmdApprove": "systemSafe", "mCmdOther": "excelSafe", "mCmdHold": "holdSafe"}[name]
+            self.assertIn(name + '.Enabled = (n = 1 And Not item Is Nothing And identitySafe And ' + allowed + ')', selection)
         self.assertIn('mCmdEClear.Enabled = (n > 0)', selection)
         self.assertIn('複数選択は表示専用です', selection)
 

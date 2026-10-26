@@ -19179,6 +19179,387 @@ InvalidState:
     reason = "競合内容を安全に再確認できません: " & Err.Description
 End Function
 
+Public Function BidirectionalSyncClassification1DecisionSafe( _
+    ByVal item As Object, ByVal decision As String, ByRef reasonText As String, ByRef previewText As String, _
+    Optional ByVal captureSignature As Boolean = False, Optional ByVal requireSignature As Boolean = False) As Boolean
+
+    Dim wsSrc As Worksheet, wsDst As Worksheet, wsConflict As Worksheet
+    Dim fieldItems As Collection, fieldItem As Object, reason As String, extraFields As String
+    Dim sourceRow As Long, destinationRow As Long, sourceLastCol As Long, destinationLastCol As Long
+    Dim sourceNameCol As Long, sourceCodeCol As Long, destinationNameCol As Long, destinationCodeCol As Long
+    Dim sourceName As String, sourceCode As String, excelName As String, excelCode As String
+    Dim sourceNameValue As Variant, sourceCodeValue As Variant, excelNameValue As Variant, excelCodeValue As Variant
+    Dim sourceMapOk As Boolean, excelMapOk As Boolean, sourceMapReason As String, excelMapReason As String
+    Dim selectedName As String, selectedCode As String, selectedSide As String, selectedMapOk As Boolean
+    Dim selectedMapReason As String, selectedValue As String, pairSignature As String
+    Dim stateRow As Long, currentDecision As String, canonicalSource As String, canonicalDestination As String
+    Dim hasNameField As Boolean, hasCodeField As Boolean
+
+    On Error GoTo Failed
+    reasonText = ""
+    previewText = ""
+    If item Is Nothing Then
+        reasonText = "選択された判断単位を確認できません。"
+        Exit Function
+    End If
+    If CStr(item("category")) <> "E" Or CStr(item("groupName")) <> "分類名１・分類コード１" Then
+        reasonText = "分類名１と分類コード１の既存判断グループではありません。"
+        Exit Function
+    End If
+    If decision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM And _
+       decision <> BIDIRECTIONAL_SYNC_CONFLICT_EXCEL And decision <> BIDIRECTIONAL_SYNC_CONFLICT_HOLD Then
+        reasonText = "判断方法を確認できません。"
+        Exit Function
+    End If
+    If Not BidirectionalSyncConflictLiveMatches(item, reason) Then
+        reasonText = "対象行・識別情報・比較値を再確認できません。" & reason
+        Exit Function
+    End If
+    If item.Exists("decision") Then
+        currentDecision = CStr(item("decision"))
+        If currentDecision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or _
+           currentDecision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL Then
+            reasonText = "この判断単位には確定済みの採用判断があります。既存判断を上書きしません。"
+            Exit Function
+        End If
+    End If
+    If Not BidirectionalSyncFindConflictStateRow(item, stateRow) Then
+        reasonText = "保存済みの競合判断行を一意に特定できません。"
+        Exit Function
+    End If
+    Set wsConflict = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_CONFLICT_SHEET)
+    currentDecision = CStr(wsConflict.Cells(stateRow, 6).Value2)
+    If currentDecision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or _
+       currentDecision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL Then
+        reasonText = "この判断単位には確定済みの採用判断があります。既存判断を上書きしません。"
+        Exit Function
+    End If
+
+    Set fieldItems = BidirectionalSyncUnpackConflictHeaders(CStr(item("snapshot")))
+    If fieldItems Is Nothing Then
+        reasonText = "分類名１・分類コード１の不一致項目を確認できません。"
+        Exit Function
+    End If
+    If fieldItems.Count = 0 Then
+        reasonText = "分類名１・分類コード１の不一致項目を確認できません。"
+        Exit Function
+    End If
+    For Each fieldItem In fieldItems
+        canonicalSource = CanonicalHeaderName(CStr(fieldItem("sourceHeader")))
+        canonicalDestination = CanonicalHeaderName(CStr(fieldItem("destinationHeader")))
+        If StrComp(canonicalSource, canonicalDestination, vbTextCompare) <> 0 Then
+            If Len(extraFields) > 0 Then extraFields = extraFields & "、"
+            extraFields = extraFields & CStr(fieldItem("sourceHeader")) & "（対応見出し不一致）"
+        ElseIf StrComp(canonicalSource, CanonicalHeaderName("分類名１"), vbTextCompare) = 0 Then
+            If hasNameField Then
+                If Len(extraFields) > 0 Then extraFields = extraFields & "、"
+                extraFields = extraFields & "分類名１（重複）"
+            End If
+            hasNameField = True
+        ElseIf StrComp(canonicalSource, CanonicalHeaderName("分類コード１"), vbTextCompare) = 0 Then
+            If hasCodeField Then
+                If Len(extraFields) > 0 Then extraFields = extraFields & "、"
+                extraFields = extraFields & "分類コード１（重複）"
+            End If
+            hasCodeField = True
+        Else
+            If Len(extraFields) > 0 Then extraFields = extraFields & "、"
+            extraFields = extraFields & CStr(fieldItem("sourceHeader"))
+        End If
+    Next fieldItem
+    If Len(extraFields) > 0 Then
+        reasonText = "既存判断グループに未対応の関連項目があります（" & extraFields & "）。一部だけの判断を防ぐため採用・保留を停止しました。"
+        Exit Function
+    End If
+    If Not hasNameField And Not hasCodeField Then
+        reasonText = "分類名１・分類コード１の判断対象を確認できません。"
+        Exit Function
+    End If
+
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    sourceRow = CLng(item("sourceRow")): destinationRow = CLng(item("destinationRow"))
+    sourceLastCol = GetLastHeaderCol(wsSrc): destinationLastCol = GetLastHeaderCol(wsDst)
+    sourceNameCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, sourceLastCol, GetStep2HeaderCandidates("分類名１"))
+    sourceCodeCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, sourceLastCol, Array("分類コード１"))
+    destinationNameCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, destinationLastCol, GetStep2HeaderCandidates("分類名１"))
+    destinationCodeCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, destinationLastCol, Array("分類コード１"))
+    If sourceNameCol <= 0 Or sourceCodeCol <= 0 Or destinationNameCol <= 0 Or destinationCodeCol <= 0 Then
+        reasonText = "文書管理システムとExcel基準表の分類名１・分類コード１の見出しを一意に特定できません。"
+        Exit Function
+    End If
+    sourceNameValue = wsSrc.Cells(sourceRow, sourceNameCol).Value2
+    sourceCodeValue = wsSrc.Cells(sourceRow, sourceCodeCol).Value2
+    excelNameValue = wsDst.Cells(destinationRow, destinationNameCol).Value2
+    excelCodeValue = wsDst.Cells(destinationRow, destinationCodeCol).Value2
+    If IsError(sourceNameValue) Or IsError(sourceCodeValue) Or IsError(excelNameValue) Or IsError(excelCodeValue) Then
+        reasonText = "分類名１または分類コード１にエラー値があり、採用値を確認できません。"
+        Exit Function
+    End If
+    sourceName = CStr(sourceNameValue): sourceCode = CStr(sourceCodeValue)
+    excelName = CStr(excelNameValue): excelCode = CStr(excelCodeValue)
+
+    sourceMapOk = BidirectionalSyncClassification1PairIsUnique(sourceCode, sourceName, sourceMapReason)
+    excelMapOk = BidirectionalSyncClassification1PairIsUnique(excelCode, excelName, excelMapReason)
+    Select Case decision
+        Case BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM
+            selectedSide = "文書管理システム"
+            selectedName = sourceName: selectedCode = sourceCode
+            selectedMapOk = sourceMapOk: selectedMapReason = sourceMapReason
+            selectedValue = "分類名１=" & BidirectionalSyncClassification1DisplayValue(selectedName) & _
+                "、分類コード１=" & BidirectionalSyncClassification1DisplayValue(selectedCode)
+        Case BIDIRECTIONAL_SYNC_CONFLICT_EXCEL
+            selectedSide = "Excel基準表"
+            selectedName = excelName: selectedCode = excelCode
+            selectedMapOk = excelMapOk: selectedMapReason = excelMapReason
+            selectedValue = "分類名１=" & BidirectionalSyncClassification1DisplayValue(selectedName) & _
+                "、分類コード１=" & BidirectionalSyncClassification1DisplayValue(selectedCode)
+        Case BIDIRECTIONAL_SYNC_CONFLICT_HOLD
+            selectedSide = "採用元なし（値は変更せず保留）"
+            selectedValue = "値は変更しません"
+    End Select
+    If (decision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or decision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL) And _
+       Not selectedMapOk Then
+        reasonText = selectedSide & "の分類名１・分類コード１の対応を一意に確認できないため採用できません。" & selectedMapReason
+        Exit Function
+    End If
+
+    previewText = "同時に判断する関連項目: 分類名１、分類コード１" & vbCrLf & _
+        "分類名１: 文書管理システム＝" & BidirectionalSyncClassification1DisplayValue(sourceName) & _
+        " ／ Excel基準表＝" & BidirectionalSyncClassification1DisplayValue(excelName) & vbCrLf & _
+        "分類コード１: 文書管理システム＝" & BidirectionalSyncClassification1DisplayValue(sourceCode) & _
+        " ／ Excel基準表＝" & BidirectionalSyncClassification1DisplayValue(excelCode) & vbCrLf & _
+        "文書管理システム側のコード対応: " & BidirectionalSyncClassification1MapDisplay(sourceMapOk, sourceMapReason) & vbCrLf & _
+        "Excel基準表側のコード対応: " & BidirectionalSyncClassification1MapDisplay(excelMapOk, excelMapReason) & vbCrLf & _
+        "採用値: " & selectedValue & vbCrLf & "採用後の判断状態: " & decision
+
+    pairSignature = BidirectionalSyncClassification1SignaturePart(decision) & _
+        BidirectionalSyncClassification1SignaturePart(CStr(item("year"))) & _
+        BidirectionalSyncClassification1SignaturePart(CStr(item("rowId"))) & _
+        BidirectionalSyncClassification1SignaturePart(CStr(item("stableKey"))) & _
+        BidirectionalSyncClassification1SignaturePart(CStr(item("sourceRow"))) & _
+        BidirectionalSyncClassification1SignaturePart(CStr(item("destinationRow"))) & _
+        BidirectionalSyncClassification1SignaturePart(sourceName) & _
+        BidirectionalSyncClassification1SignaturePart(sourceCode) & _
+        BidirectionalSyncClassification1SignaturePart(excelName) & _
+        BidirectionalSyncClassification1SignaturePart(excelCode)
+    If captureSignature Then
+        If item.Exists("linkedPairSignature") Then
+            item("linkedPairSignature") = pairSignature
+        Else
+            item.Add "linkedPairSignature", pairSignature
+        End If
+    End If
+    If requireSignature Then
+        If Not item.Exists("linkedPairSignature") Then
+            reasonText = "採用前の確認画面を経ていないため、連動判断を停止しました。"
+            Exit Function
+        End If
+        If StrComp(CStr(item("linkedPairSignature")), pairSignature, vbBinaryCompare) <> 0 Then
+            reasonText = "確認画面を表示した後に分類名１または分類コード１が変わりました。再読込して確認してください。"
+            Exit Function
+        End If
+    End If
+    BidirectionalSyncClassification1DecisionSafe = True
+    Exit Function
+
+Failed:
+    reasonText = "分類名１・分類コード１の安全確認に失敗しました。" & Err.Description
+    Err.Clear
+End Function
+
+Private Function BidirectionalSyncClassification1PairIsUnique( _
+    ByVal codeValue As String, ByVal nameValue As String, ByRef reasonText As String) As Boolean
+
+    Dim wsMaster As Worksheet, wsSource As Worksheet, lastRow As Long, values As Variant
+    Dim rowNo As Long, colNo As Long, exactCount As Long
+    Dim sourceLastCol As Long, sourceLastRow As Long, sourceNameColumn As Long, sourceCodeColumn As Long
+    Dim sourceRowNo As Long, sourceNameValue As Variant, sourceCodeValue As Variant
+    Dim sourceNameKey As String, sourceCodeKey As String, sourcePairFound As Boolean
+    Dim itemName As String, rowCode As String, rowName As String, stateValue As String, parentCode As String
+    Dim targetCode As String, targetName As String
+
+    On Error GoTo Failed
+    reasonText = ""
+    targetCode = Trim$(codeValue)
+    targetName = NormalizeClassificationGuideKey(nameValue)
+    If Len(targetCode) = 0 Or Len(targetName) = 0 Then
+        reasonText = "採用側の分類名１または分類コード１が空欄です。"
+        Exit Function
+    End If
+    Set wsSource = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    sourceLastCol = GetLastHeaderCol(wsSource)
+    sourceNameColumn = BidirectionalSyncFindUniqueHeaderColumn(wsSource, sourceLastCol, GetStep2HeaderCandidates("分類名１"))
+    sourceCodeColumn = BidirectionalSyncFindUniqueHeaderColumn(wsSource, sourceLastCol, Array("分類コード１"))
+    If sourceNameColumn <= 0 Or sourceCodeColumn <= 0 Then
+        reasonText = "現在の目録CSVから分類名１・分類コード１を一意に特定できません。"
+        Exit Function
+    End If
+    sourceLastRow = wsSource.Cells(wsSource.Rows.Count, sourceNameColumn).End(xlUp).Row
+    If wsSource.Cells(wsSource.Rows.Count, sourceCodeColumn).End(xlUp).Row > sourceLastRow Then _
+        sourceLastRow = wsSource.Cells(wsSource.Rows.Count, sourceCodeColumn).End(xlUp).Row
+    If sourceLastRow < 2 Then
+        reasonText = "現在の目録CSVに分類名１・分類コード１の対応データがありません。"
+        Exit Function
+    End If
+    For sourceRowNo = 2 To sourceLastRow
+        sourceNameValue = wsSource.Cells(sourceRowNo, sourceNameColumn).Value2
+        sourceCodeValue = wsSource.Cells(sourceRowNo, sourceCodeColumn).Value2
+        If IsError(sourceNameValue) Or IsError(sourceCodeValue) Then
+            reasonText = "現在の目録CSVの分類名１・分類コード１にエラー値があります（行 " & CStr(sourceRowNo) & "）。"
+            Exit Function
+        End If
+        sourceNameKey = NormalizeClassificationGuideKey(CStr(sourceNameValue))
+        sourceCodeKey = Trim$(CStr(sourceCodeValue))
+        If Len(sourceNameKey) > 0 Or Len(sourceCodeKey) > 0 Then
+            If Len(sourceNameKey) = 0 Or Len(sourceCodeKey) = 0 Then
+                If StrComp(sourceCodeKey, targetCode, vbBinaryCompare) = 0 Or _
+                   StrComp(sourceNameKey, targetName, vbBinaryCompare) = 0 Then
+                    reasonText = "現在の目録CSVに未完成の分類名１・分類コード１対応があります（行 " & CStr(sourceRowNo) & "）。"
+                    Exit Function
+                End If
+            ElseIf StrComp(sourceCodeKey, targetCode, vbBinaryCompare) = 0 And _
+                   StrComp(sourceNameKey, targetName, vbBinaryCompare) <> 0 Then
+                reasonText = "現在の目録CSVで分類コード「" & targetCode & "」が別の分類名にも対応しています。"
+                Exit Function
+            ElseIf StrComp(sourceNameKey, targetName, vbBinaryCompare) = 0 And _
+                   StrComp(sourceCodeKey, targetCode, vbBinaryCompare) <> 0 Then
+                reasonText = "現在の目録CSVで分類名「" & nameValue & "」に複数コード候補があります。"
+                Exit Function
+            ElseIf StrComp(sourceCodeKey, targetCode, vbBinaryCompare) = 0 And _
+                   StrComp(sourceNameKey, targetName, vbBinaryCompare) = 0 Then
+                sourcePairFound = True
+            End If
+        End If
+    Next sourceRowNo
+    If Not sourcePairFound Then
+        reasonText = "現在の目録CSVにこの分類名１・分類コード１の組合せがありません。"
+        Exit Function
+    End If
+    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    lastRow = GetLastStep3DataRow(wsMaster)
+    If lastRow < 2 Then
+        reasonText = "コード管理CSVに分類名１の対応データがありません。"
+        Exit Function
+    End If
+    values = wsMaster.Range(wsMaster.Cells(1, 1), wsMaster.Cells(lastRow, 5)).Value2
+    If StrComp(Trim$(CStr(values(1, 1))), "項目名", vbBinaryCompare) <> 0 Or _
+       StrComp(Trim$(CStr(values(1, 2))), "コード", vbBinaryCompare) <> 0 Or _
+       StrComp(Trim$(CStr(values(1, 3))), "表示名", vbBinaryCompare) <> 0 Or _
+       StrComp(Trim$(CStr(values(1, 4))), "状態", vbBinaryCompare) <> 0 Or _
+       StrComp(Trim$(CStr(values(1, 5))), "親分類コード", vbBinaryCompare) <> 0 Then
+        reasonText = "コード管理CSVの見出し構成を確認できません。"
+        Exit Function
+    End If
+    For rowNo = 2 To UBound(values, 1)
+        If IsError(values(rowNo, 1)) Then
+            reasonText = "コード管理CSVの項目名にエラー値があり、分類名１行を特定できません。"
+            Exit Function
+        End If
+        itemName = CanonicalHeaderName(Trim$(CStr(values(rowNo, 1))))
+        If StrComp(itemName, CanonicalHeaderName("分類名１"), vbTextCompare) = 0 Then
+            For colNo = 2 To 5
+                If IsError(values(rowNo, colNo)) Then
+                    reasonText = "コード管理CSVの分類名１行にエラー値があります（行 " & CStr(rowNo) & "）。"
+                    Exit Function
+                End If
+            Next colNo
+            rowCode = Trim$(CStr(values(rowNo, 2)))
+            rowName = NormalizeClassificationGuideKey(values(rowNo, 3))
+            stateValue = Trim$(CStr(values(rowNo, 4)))
+            parentCode = Trim$(CStr(values(rowNo, 5)))
+            If Len(rowCode) = 0 Or Len(rowName) = 0 Then
+                reasonText = "コード管理CSVに未完成の分類名１対応行があります（行 " & CStr(rowNo) & "）。"
+                Exit Function
+            End If
+            If StrComp(rowCode, targetCode, vbBinaryCompare) = 0 And _
+               StrComp(rowName, targetName, vbBinaryCompare) <> 0 Then
+                reasonText = "分類コード「" & targetCode & "」が別の分類名にも対応しています。"
+                Exit Function
+            End If
+            If StrComp(rowName, targetName, vbBinaryCompare) = 0 And _
+               StrComp(rowCode, targetCode, vbBinaryCompare) <> 0 Then
+                reasonText = "分類名「" & nameValue & "」に複数の分類コード候補があります。"
+                Exit Function
+            End If
+            If StrComp(rowCode, targetCode, vbBinaryCompare) = 0 And _
+               StrComp(rowName, targetName, vbBinaryCompare) = 0 Then
+                exactCount = exactCount + 1
+                ' Step3 imports class-1 pairs from the current system CSV and leaves State blank; reject all other nonblank states.
+                If Len(stateValue) > 0 And StrComp(stateValue, "システム", vbTextCompare) <> 0 Then
+                    reasonText = "対応行の状態が確定値ではありません（" & stateValue & "）。"
+                    Exit Function
+                End If
+                If Len(parentCode) > 0 Then
+                    reasonText = "分類名１の対応行に予期しない親分類コードがあります。"
+                    Exit Function
+                End If
+            End If
+        End If
+    Next rowNo
+    If exactCount <> 1 Then
+        If exactCount = 0 Then
+            reasonText = "コード管理CSVにこの分類名１・分類コード１の組合せがありません。"
+        Else
+            reasonText = "コード管理CSVに同一の分類名１・分類コード１が複数あります。"
+        End If
+        Exit Function
+    End If
+    BidirectionalSyncClassification1PairIsUnique = True
+    Exit Function
+
+Failed:
+    reasonText = "コード管理CSVの分類名１対応を読み取れません。" & Err.Description
+    Err.Clear
+End Function
+
+Private Function BidirectionalSyncFindUniqueHeaderColumn( _
+    ByVal ws As Worksheet, ByVal lastCol As Long, ByVal candidates As Variant) As Long
+
+    Dim colNo As Long, candidateIndex As Long, foundColumn As Long, candidateMatched As Boolean
+    Dim headerValue As String
+    If ws Is Nothing Or lastCol <= 0 Then Exit Function
+    For colNo = 1 To lastCol
+        headerValue = Trim$(CStr(ws.Cells(1, colNo).Value2))
+        candidateMatched = False
+        For candidateIndex = LBound(candidates) To UBound(candidates)
+            If StrComp(CanonicalHeaderName(headerValue), _
+                       CanonicalHeaderName(CStr(candidates(candidateIndex))), vbTextCompare) = 0 Then
+                candidateMatched = True
+                Exit For
+            End If
+        Next candidateIndex
+        If candidateMatched Then
+            If foundColumn > 0 Then
+                BidirectionalSyncFindUniqueHeaderColumn = 0
+                Exit Function
+            End If
+            foundColumn = colNo
+        End If
+    Next colNo
+    BidirectionalSyncFindUniqueHeaderColumn = foundColumn
+End Function
+
+Private Function BidirectionalSyncClassification1DisplayValue(ByVal valueText As String) As String
+    If Len(valueText) = 0 Then
+        BidirectionalSyncClassification1DisplayValue = "（空欄）"
+    Else
+        BidirectionalSyncClassification1DisplayValue = valueText
+    End If
+End Function
+
+Private Function BidirectionalSyncClassification1MapDisplay(ByVal isValid As Boolean, ByVal reasonText As String) As String
+    If isValid Then
+        BidirectionalSyncClassification1MapDisplay = "コード管理CSVで一意な対応を確認"
+    Else
+        BidirectionalSyncClassification1MapDisplay = "未確認: " & reasonText
+    End If
+End Function
+
+Private Function BidirectionalSyncClassification1SignaturePart(ByVal valueText As String) As String
+    BidirectionalSyncClassification1SignaturePart = CStr(Len(valueText)) & ":" & valueText & ";"
+End Function
+
 Public Function BidirectionalSyncResolveConflict(ByVal item As Object, ByVal decision As String) As Boolean
     Dim wsSrc As Worksheet, wsDst As Worksheet, wsConflict As Worksheet
     Dim fieldItems As Collection, fieldItem As Object, snapshots As Collection, snapshot As Object
@@ -19186,11 +19567,17 @@ Public Function BidirectionalSyncResolveConflict(ByVal item As Object, ByVal dec
     Dim srcCol As Long, dstCol As Long, targetCell As Range, oldDecision As Variant, oldUpdated As Variant
     Dim oldEvents As Boolean, eventsCaptured As Boolean, changing As Boolean, restoreOk As Boolean
     Dim reason As String, failureText As String, systemValue As Variant, i As Long
+    Dim classificationPreview As String, previousDecision As String
 
     On Error GoTo Failed
     If decision <> BIDIRECTIONAL_SYNC_CONFLICT_EXCEL And _
        decision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM And decision <> BIDIRECTIONAL_SYNC_CONFLICT_HOLD Then _
         Err.Raise vbObjectError + 2840, , "競合解決方法が不正です。"
+    If CStr(item("groupName")) = "分類名１・分類コード１" Then
+        If Not BidirectionalSyncClassification1DecisionSafe(item, decision, reason, classificationPreview, False, True) Then _
+            Err.Raise vbObjectError + 2849, , "分類名１・分類コード１の連動判断を中止しました。" & reason
+        If item.Exists("linkedPairSignature") Then item.Remove "linkedPairSignature"
+    End If
     If Not BidirectionalSyncConflictLiveMatches(item, reason) Then _
         Err.Raise vbObjectError + 2841, , "競合解決を中止しました。" & reason & " Step2を再実行してください。"
     Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
@@ -19201,6 +19588,11 @@ Public Function BidirectionalSyncResolveConflict(ByVal item As Object, ByVal dec
     If Not BidirectionalSyncFindConflictStateRow(item, stateRow) Then _
         Err.Raise vbObjectError + 2843, , "保存済み競合が見つからないため変更できません。"
     oldDecision = wsConflict.Cells(stateRow, 6).Value2: oldUpdated = wsConflict.Cells(stateRow, 7).Value2
+    previousDecision = CStr(oldDecision)
+    If CStr(item("groupName")) = "分類名１・分類コード１" And _
+       (previousDecision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or previousDecision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL) Then _
+        Err.Raise vbObjectError + 2850, , "この判断単位には確定済みの採用判断があります。既存判断を上書きしません。"
+    End If
     Set fieldItems = BidirectionalSyncUnpackConflictHeaders(CStr(item("snapshot")))
     Set snapshots = New Collection
     srcLastCol = GetLastHeaderCol(wsSrc): dstLastCol = GetLastHeaderCol(wsDst)

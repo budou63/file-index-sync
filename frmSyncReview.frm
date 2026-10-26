@@ -383,8 +383,8 @@ Private Sub UserForm_Initialize()
     mCboCategory.AddItem "D：コピー識別番号のクリア候補"
     mCboCategory.AddItem "E：3方向編集競合"
     mCboCategory.ListIndex = 0
-    mCboEVisibility.AddItem "通常表示"
-    mCboEVisibility.AddItem "すべて表示"
+    mCboEVisibility.AddItem "入力項目のみ"
+    mCboEVisibility.AddItem "全項目（管理コード含む）"
     mCboEVisibility.ListIndex = 0
     mCboEWindowSize.AddItem "コンパクト"
     mCboEWindowSize.AddItem "標準"
@@ -468,26 +468,49 @@ Private Function ESelectedCount() As Long
 End Function
 
 Private Sub UpdateESelection()
-    Dim n As Long, item As Object, record As Object, identitySafe As Boolean, groupSafe As Boolean
+    Dim n As Long, item As Object, record As Object, selectedField As Object
+    Dim identitySafe As Boolean, groupSafe As Boolean, systemSafe As Boolean, excelSafe As Boolean, holdSafe As Boolean
+    Dim systemReason As String, excelReason As String, holdReason As String, pairPreview As String, pairReason As String
     If mCboCategory.ListIndex <> 4 Then Exit Sub
     n = ESelectedCount()
     Set item = SelectedCase()
     Set record = SelectedRecord()
+    Set selectedField = SelectedEField()
     If n = 1 Then
         If Not record Is Nothing Then identitySafe = Not CBool(record("identityIssue"))
-        If Not item Is Nothing Then groupSafe = (EIsAllDisplayMode() Or Not ECaseHasOutOfScopeFields(item))
+        If Not item Is Nothing And identitySafe Then
+            If EIsClassification1Group(item) Then
+                systemSafe = ESelectedDecisionIsSafe("システム採用", systemReason)
+                excelSafe = ESelectedDecisionIsSafe("Excel採用", excelReason)
+                holdSafe = Module1.BidirectionalSyncClassification1DecisionSafe(item, "保留", pairReason, pairPreview)
+                If Not holdSafe And Len(holdReason) = 0 Then holdReason = pairReason
+            Else
+                groupSafe = (EIsAllDisplayMode() Or Not ECaseHasOutOfScopeFields(item))
+                systemSafe = groupSafe: excelSafe = groupSafe: holdSafe = groupSafe
+            End If
+        End If
     End If
     mLblESelection.Caption = CStr(n) & "件選択中"
-    mCmdApprove.Enabled = (n = 1 And Not item Is Nothing And identitySafe And groupSafe)
-    mCmdOther.Enabled = (n = 1 And Not item Is Nothing And identitySafe And groupSafe)
-    mCmdHold.Enabled = (n = 1 And Not item Is Nothing And identitySafe And groupSafe)
+    mCmdApprove.Enabled = (n = 1 And Not item Is Nothing And identitySafe And systemSafe)
+    mCmdOther.Enabled = (n = 1 And Not item Is Nothing And identitySafe And excelSafe)
+    mCmdHold.Enabled = (n = 1 And Not item Is Nothing And identitySafe And holdSafe)
     mCmdEClear.Enabled = (n > 0)
     If n > 1 Then
         mLblStatus.Caption = "複数選択は表示専用です。判断は1件だけ選び直してください。"
     ElseIf n = 1 And Not record Is Nothing And Not identitySafe Then
         mLblStatus.Caption = "識別情報の一貫性を確認できないため、採用・保留はできません。正式ID等を確認してください。"
+    ElseIf n = 1 And Not item Is Nothing And EIsClassification1Group(item) Then
+        mLblStatus.Caption = "分類名１と分類コード１は連動した判断単位です。採用前の確認画面で両方の値と採用元を確認してください。"
+        If Not selectedField Is Nothing And Not record Is Nothing Then
+            mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & EConflictFieldDetails(item, selectedField)
+        End If
+        If Len(pairPreview) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & pairPreview
+        If Len(pairReason) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & "連動確認: " & pairReason
+        If Not systemSafe And Len(systemReason) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & "文書管理を採用できません: " & systemReason
+        If Not excelSafe And Len(excelReason) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & "Excel基準表を採用できません: " & excelReason
+        If Not holdSafe And Len(holdReason) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & "保留できません: " & holdReason
     ElseIf n = 1 And Not item Is Nothing And Not groupSafe Then
-        mLblStatus.Caption = "この判断グループには通常表示対象外の関連項目があります。全項目を確認するため「すべて表示」に切り替えてください。"
+        mLblStatus.Caption = "この判断グループには「入力項目のみ」の表示対象外の関連項目があります。「全項目（管理コード含む）」に切り替えてください。"
     End If
 End Sub
 
@@ -1170,14 +1193,24 @@ Failed:
     MsgBox Err.Description, vbExclamation
 End Sub
 Private Sub mCmdApprove_Click()
-    Dim item As Object
+    Dim item As Object, reasonText As String
     Set item = SelectedCase()
     If item Is Nothing Then Exit Sub
     If CStr(item("category")) = "E" Then
         If ESelectedCount() <> 1 Then Exit Sub
-        If Not ESelectedDecisionIsSafe() Then Exit Sub
-        If MsgBox("文書管理システムの値をExcel基準表へ反映します。選択した関連項目グループ全体が対象です。続けますか？", _
-                  vbQuestion + vbYesNo, "競合解決の確認") <> vbYes Then Exit Sub
+        If Not ESelectedDecisionIsSafe("システム採用", reasonText) Then
+            If Len(reasonText) > 0 Then mLblStatus.Caption = reasonText
+            Exit Sub
+        End If
+        If EIsClassification1Group(item) Then
+            If Not EConfirmClassification1Decision(item, SelectedRecord(), "システム採用", reasonText) Then
+                If Len(reasonText) > 0 Then mLblStatus.Caption = reasonText
+                Exit Sub
+            End If
+        ElseIf MsgBox("文書管理システムの値をExcel基準表へ反映します。選択した関連項目グループ全体が対象です。続けますか？", _
+                      vbQuestion + vbYesNo, "競合解決の確認") <> vbYes Then
+            Exit Sub
+        End If
         If Module1.BidirectionalSyncResolveConflict(item, "システム採用") Then mCmdRefresh_Click
         Exit Sub
     End If
@@ -1191,14 +1224,23 @@ Private Sub mCmdHold_Click()
     RecordChoice "保留"
 End Sub
 Private Sub RecordChoice(ByVal decision As String)
-    Dim item As Object, rowNo As Long, nextRow As Long
+    Dim item As Object, rowNo As Long, nextRow As Long, reasonText As String
     Set item = SelectedCase()
     If item Is Nothing Then Exit Sub
     If CStr(item("category")) = "E" Then
         If decision = "別物" Then decision = "Excel採用"
         If decision <> "Excel採用" And decision <> "保留" Then Exit Sub
         If ESelectedCount() <> 1 Then Exit Sub
-        If Not ESelectedDecisionIsSafe() Then Exit Sub
+        If Not ESelectedDecisionIsSafe(decision, reasonText) Then
+            If Len(reasonText) > 0 Then mLblStatus.Caption = reasonText
+            Exit Sub
+        End If
+        If EIsClassification1Group(item) Then
+            If Not EConfirmClassification1Decision(item, SelectedRecord(), decision, reasonText) Then
+                If Len(reasonText) > 0 Then mLblStatus.Caption = reasonText
+                Exit Sub
+            End If
+        End If
         If Module1.BidirectionalSyncResolveConflict(item, decision) Then
             ShowCategory
             mCmdNext_Click
@@ -1661,7 +1703,7 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
     mLblRows.Visible = True
     mLblESelection.Caption = "0件選択中"
     mLblCompareRows.Caption = "ファイルを選択してください。"
-    mTxtDetails.Text = "通常表示には職員が確認する入力項目だけを表示します。内部項目だけの競合や識別不明は［すべて表示］で確認できます。"
+    mTxtDetails.Text = "［入力項目のみ］では職員が確認する入力項目を表示します。内部項目だけの競合や識別不明は［全項目（管理コード含む）］で確認できます。"
     mLblStatus.Caption = "複数ファイルの選択は表示専用です。判断時は識別情報が一意なファイル1件を選んでください。"
     mChkDelete.Visible = False
     mCmdApprove.Caption = "文書管理を採用"
@@ -1725,8 +1767,8 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
             mTxtDetails.Text = "この絞り込み条件に該当するファイルはありません。"
             mLblStatus.Caption = "絞り込みを変更するか、［すべて］を選択してください。"
         Else
-            mTxtDetails.Text = "確認が必要な入力項目はありません。内部項目の未確認分は件数に含めており、［すべて表示］で確認できます。"
-            mLblStatus.Caption = "職員入力の確認待ちはありません。内部項目の調査が必要な場合は［すべて表示］に切り替えてください。"
+            mTxtDetails.Text = "確認が必要な入力項目はありません。内部項目の未確認分は件数に含めており、［全項目（管理コード含む）］で確認できます。"
+            mLblStatus.Caption = "職員入力の確認待ちはありません。内部項目の調査が必要な場合は［全項目（管理コード含む）］に切り替えてください。"
         End If
     End If
     rendering = False
@@ -1989,16 +2031,105 @@ Private Function ECaseHasOutOfScopeFields(ByVal caseItem As Object) As Boolean
     Next fieldItem
 End Function
 
-Private Function ESelectedDecisionIsSafe() As Boolean
-    Dim item As Object, record As Object
-    If mCboCategory.ListIndex <> 4 Or ESelectedCount() <> 1 Then Exit Function
+Private Function ESelectedDecisionIsSafe(ByVal decision As String, ByRef reasonText As String) As Boolean
+    Dim item As Object, record As Object, previewText As String
+    reasonText = ""
+    If mCboCategory.ListIndex <> 4 Or ESelectedCount() <> 1 Then
+        reasonText = "ファイル1件と判断項目1件を選択してください。"
+        Exit Function
+    End If
     Set item = SelectedCase()
     Set record = SelectedRecord()
-    If item Is Nothing Or record Is Nothing Then Exit Function
-    If CBool(record("identityIssue")) Then Exit Function
-    If Not EIsAllDisplayMode() And ECaseHasOutOfScopeFields(item) Then Exit Function
+    If item Is Nothing Or record Is Nothing Then
+        reasonText = "判断対象を一意に特定できません。"
+        Exit Function
+    End If
+    If CBool(record("identityIssue")) Then
+        reasonText = "識別情報の一貫性を確認できないため、採用・保留はできません。"
+        Exit Function
+    End If
+    If EIsClassification1Group(item) Then
+        ESelectedDecisionIsSafe = Module1.BidirectionalSyncClassification1DecisionSafe(item, decision, reasonText, previewText)
+        Exit Function
+    End If
+    If Not EIsAllDisplayMode() And ECaseHasOutOfScopeFields(item) Then
+        reasonText = "この判断グループには入力項目のみの表示対象外の関連項目があります。全項目（管理コード含む）に切り替えてください。"
+        Exit Function
+    End If
     ESelectedDecisionIsSafe = True
 End Function
+
+Private Function EIsClassification1Group(ByVal item As Object) As Boolean
+    If item Is Nothing Then Exit Function
+    EIsClassification1Group = (StrComp(CStr(item("groupName")), "分類名１・分類コード１", vbBinaryCompare) = 0)
+End Function
+
+Private Function EConfirmClassification1Decision( _
+    ByVal item As Object, ByVal record As Object, ByVal decision As String, ByRef reasonText As String) As Boolean
+
+    Dim previewText As String, sourceLabel As String, stateLabel As String
+    Dim guide2Value As String, folderValue As String, creationYearValue As String, confirmationText As String, failureText As String
+
+    On Error GoTo Failed
+    reasonText = ""
+    If item Is Nothing Or record Is Nothing Then
+        reasonText = "対象ファイルまたは判断単位を確認できません。"
+        EClearClassification1PreviewSignature item
+        Exit Function
+    End If
+    If CBool(record("identityIssue")) Then
+        reasonText = "識別情報の一貫性を確認できないため、採用・保留はできません。"
+        EClearClassification1PreviewSignature item
+        Exit Function
+    End If
+    EClearClassification1PreviewSignature item
+    If Not Module1.BidirectionalSyncClassification1DecisionSafe(item, decision, reasonText, previewText, True, False) Then Exit Function
+    ERecordDisplayValues record, guide2Value, folderValue, creationYearValue
+    If Len(folderValue) = 0 Or folderValue = "―" Or folderValue = "（空欄）" Then
+        reasonText = "確認画面に対象ファイル名を表示できないため、連動判断を停止しました。"
+        EClearClassification1PreviewSignature item
+        Exit Function
+    End If
+    Select Case decision
+        Case "システム採用"
+            sourceLabel = "文書管理システム"
+            stateLabel = "文書管理を採用（関連項目グループ全体）"
+        Case "Excel採用"
+            sourceLabel = "Excel基準表"
+            stateLabel = "Excel基準表を採用（関連項目グループ全体）"
+        Case "保留"
+            sourceLabel = "なし（値は変更しません）"
+            stateLabel = "保留（関連項目グループ全体）"
+        Case Else
+            reasonText = "分類名１・分類コード１の判断方法が不正です。"
+            EClearClassification1PreviewSignature item
+            Exit Function
+    End Select
+    confirmationText = "対象ファイル（個別フォルダー）: " & folderValue & vbCrLf & _
+        ERecordIdentityDetails(record) & vbCrLf & "採用元: " & sourceLabel & vbCrLf & _
+        previewText & vbCrLf & "採用後の判断状態: " & stateLabel & vbCrLf & _
+        "この内容で、このファイル・年度の判断単位だけを確定します。続けますか？"
+    If MsgBox(confirmationText, vbQuestion + vbYesNo, "分類名１・分類コード１の連動判断確認") <> vbYes Then
+        EClearClassification1PreviewSignature item
+        Exit Function
+    End If
+    EConfirmClassification1Decision = True
+    Exit Function
+
+Failed:
+    failureText = Err.Description
+    EClearClassification1PreviewSignature item
+    reasonText = "採用前の確認画面を完了できなかったため、連動判断を停止しました。" & failureText
+    Err.Clear
+End Function
+
+Private Sub EClearClassification1PreviewSignature(ByVal item As Object)
+    On Error Resume Next
+    If Not item Is Nothing Then
+        If item.Exists("linkedPairSignature") Then item.Remove "linkedPairSignature"
+    End If
+    Err.Clear
+End Sub
 
 Private Function ECaseNeedsHumanDecision(ByVal caseItem As Object) As Boolean
     Dim decision As String
@@ -2106,7 +2237,7 @@ Private Sub ShowECurrent()
     Dim record As Object, item As Object, fieldItem As Object
     Dim recordCases As Collection, fieldItems As Collection
     Dim rowIndex As Long, decision As String, displayCaption As String, allMode As Boolean
-    Dim normalTargetItems As Long, outOfTargetItems As Long, mixedGroups As Long
+    Dim normalTargetItems As Long, outOfTargetItems As Long, mixedGroups As Long, linkedGroups As Long
     rendering = True
     Set eFieldCases = New Collection
     Set eFieldItems = New Collection
@@ -2136,7 +2267,13 @@ Private Sub ShowECurrent()
         decision = EConflictDecisionDisplay(item)
         If ECaseHasNormalDisplayFields(item) Then
             normalTargetItems = normalTargetItems + 1
-            If ECaseHasOutOfScopeFields(item) Then mixedGroups = mixedGroups + 1
+            If ECaseHasOutOfScopeFields(item) Then
+                If EIsClassification1Group(item) Then
+                    linkedGroups = linkedGroups + 1
+                Else
+                    mixedGroups = mixedGroups + 1
+                End If
+            End If
         Else
             outOfTargetItems = outOfTargetItems + 1
         End If
@@ -2175,15 +2312,18 @@ Private Sub ShowECurrent()
             mLblStatus.Caption = "不一致項目を選ぶと、理由と判断範囲を確認できます。"
         End If
     Else
-        mLblStatus.Caption = "通常表示対象 " & CStr(normalTargetItems) & "件 ／ 対象外 " & _
+        mLblStatus.Caption = "入力項目の不一致 " & CStr(normalTargetItems) & "件 ／ 表示対象外 " & _
             CStr(outOfTargetItems) & "件（既存の判断単位）"
         If mixedGroups > 0 Then mLblStatus.Caption = mLblStatus.Caption & _
-            "。関連項目を含む" & CStr(mixedGroups) & "件は、全項目を確認するまで判断できません。"
+            "。その他の関連項目を含む" & CStr(mixedGroups) & "件は、全項目を確認するまで判断できません。"
+        If linkedGroups > 0 Then mLblStatus.Caption = mLblStatus.Caption & _
+            "。分類名１・分類コード１の連動グループ" & CStr(linkedGroups) & _
+            "件は、対応関係を検証し、採用前の確認画面で両方の値を確認します。"
         If mLstRows.ListCount = 0 Then
             mTxtDetails.Text = mTxtDetails.Text & vbCrLf & _
-                "通常表示の対象項目に不一致はありません。その他の項目に" & CStr(outOfTargetItems) & _
-                "件の不一致があります。「すべて表示」に切り替えると確認できます。"
-            mLblStatus.Caption = "このファイルの競合は通常表示対象外です。ファイル一覧には残しています。"
+                "［入力項目のみ］の対象項目に不一致はありません。その他の項目に" & CStr(outOfTargetItems) & _
+                "件の不一致があります。「全項目（管理コード含む）」に切り替えると確認できます。"
+            mLblStatus.Caption = "このファイルの競合は［入力項目のみ］の対象外です。ファイル一覧には残しています。"
         End If
     End If
     mCmdApprove.Caption = "文書管理を採用"
@@ -2214,13 +2354,15 @@ Private Sub UpdateEFieldSelection()
         Exit Sub
     End If
     mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & EConflictFieldDetails(item, fieldItem)
-    If Not EIsAllDisplayMode() And ECaseHasOutOfScopeFields(item) Then
-        mLblStatus.Caption = "この判断単位には通常表示対象外の関連項目が含まれます。判断操作は無効です。全項目確認のため「すべて表示」に切り替えてください。"
-    ElseIf EIsAllDisplayMode() Then
-        mLblStatus.Caption = "判断単位「" & CStr(item("groupName")) & "」の関連項目全体に選択した判断が適用されます。"
-    Else
-        mLblStatus.Caption = "通常表示の項目を1件選択しています。判断は表示中の判断単位に適用されます。"
-    End If
+    If EIsClassification1Group(item) Then
+            mLblStatus.Caption = "分類名１と分類コード１は同じ判断単位です。採用前の確認画面で両方の値と採用元を確認します。"
+        ElseIf Not EIsAllDisplayMode() And ECaseHasOutOfScopeFields(item) Then
+            mLblStatus.Caption = "この判断単位には［入力項目のみ］の表示対象外の関連項目が含まれます。「全項目（管理コード含む）」に切り替えてください。"
+        ElseIf EIsAllDisplayMode() Then
+            mLblStatus.Caption = "判断単位「" & CStr(item("groupName")) & "」の関連項目全体に選択した判断が適用されます。"
+        Else
+            mLblStatus.Caption = "［入力項目のみ］の項目を1件選択しています。判断は表示中の判断単位に適用されます。"
+        End If
     UpdateESelection
 End Sub
 
@@ -2277,14 +2419,14 @@ Private Function EConflictFieldDetails(ByVal item As Object, ByVal selectedField
     If allMode Then
         groupCaption = CStr(item("groupName"))
     ElseIf hiddenFieldCount > 0 Then
-        groupCaption = "通常表示項目を含む判断グループ"
+        groupCaption = "入力項目を含む判断グループ"
     Else
         groupCaption = fieldNames
     End If
     If Len(fieldNames) = 0 Then fieldNames = "（表示できる項目なし）"
     EConflictFieldDetails = "判断単位: " & groupCaption & " ／ 関連項目: " & fieldNames
     If Not allMode And hiddenFieldCount > 0 Then
-        EConflictFieldDetails = EConflictFieldDetails & "（通常表示対象外の関連項目 " & _
+        EConflictFieldDetails = EConflictFieldDetails & "（［入力項目のみ］の表示対象外の関連項目 " & _
             CStr(hiddenFieldCount) & "件は非表示）"
     End If
     selectedCaption = CStr(selectedField("sourceHeader"))
@@ -2302,8 +2444,13 @@ Private Function EConflictFieldDetails(ByVal item As Object, ByVal selectedField
     EConflictFieldDetails = EConflictFieldDetails & vbCrLf & "前回同期値: " & previousValue & _
         " ／ この判断は同じ判断単位の関連項目全体に適用されます。"
     If Not allMode And hiddenFieldCount > 0 Then
-        EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
-            "安全のため、この項目グループの採用・保留は無効です。「すべて表示」で関連項目を確認してください。"
+        If EIsClassification1Group(item) Then
+            EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
+                "非表示の分類コード１も同じ判断単位に含まれます。対応関係を検証できた場合のみ、採用前の確認画面に両方の値を表示します。"
+        Else
+            EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
+                "安全のため、この項目グループの採用・保留は無効です。「全項目（管理コード含む）」で関連項目を確認してください。"
+        End If
     End If
     If InStr(1, CStr(selectedField("sourceHeader")), "コード", vbTextCompare) > 0 Or _
        StrComp(CStr(selectedField("sourceHeader")), "汎用項目１０", vbTextCompare) = 0 Then
@@ -2368,7 +2515,9 @@ Private Sub SelectNextECase()
         Set recordCases = record("cases")
         For Each item In recordCases
             If Len(SyncReviewDecision(item)) = 0 Then
-                If Not EIsAllDisplayMode() And (Not ECaseHasNormalDisplayFields(item) Or ECaseHasOutOfScopeFields(item)) Then
+                If Not EIsAllDisplayMode() And _
+                   (Not ECaseHasNormalDisplayFields(item) Or _
+                    (ECaseHasOutOfScopeFields(item) And Not EIsClassification1Group(item))) Then
                     foundOutOfTarget = True
                 Else
                     SelectSingleECase recordIndex - 1
@@ -2379,7 +2528,7 @@ Private Sub SelectNextECase()
         Next item
     Next recordIndex
     If Not EIsAllDisplayMode() And foundOutOfTarget Then
-        mLblStatus.Caption = "通常表示で操作できる未解決項目はありません。対象外または関連項目を含む不一致が残る場合は「すべて表示」に切り替えてください。"
+        mLblStatus.Caption = "［入力項目のみ］で操作できる未解決項目はありません。表示対象外または関連項目を含む不一致が残る場合は「全項目（管理コード含む）」に切り替えてください。"
     Else
         mLblStatus.Caption = "この絞り込み条件に未解決の不一致項目はありません。"
     End If

@@ -122,8 +122,8 @@ class NormalDisplayTests(unittest.TestCase):
         self.assertIn('Case "分類名3", "分類名３", "第2ガイド", "第２ガイド"', canonical)
 
     def test_display_mode_defaults_to_normal_and_toggle_only_rerenders(self):
-        self.assertIn('mCboEVisibility.AddItem "通常表示"', FORM)
-        self.assertIn('mCboEVisibility.AddItem "すべて表示"', FORM)
+        self.assertIn('mCboEVisibility.AddItem "入力項目のみ"', FORM)
+        self.assertIn('mCboEVisibility.AddItem "全項目（管理コード含む）"', FORM)
         self.assertIn("mCboEVisibility.ListIndex = 0", FORM)
         self.assertIn("EIsAllDisplayMode = (mCboEVisibility.ListIndex = 1)", procedure("EIsAllDisplayMode", "Function"))
         event = procedure("mCboEVisibility_Change")
@@ -206,7 +206,7 @@ class NormalDisplayTests(unittest.TestCase):
         self.assertIn("If allMode Or Len(displayCaption) > 0 Then", show_current)
         self.assertIn("eFieldCases.Add item", show_current)
         self.assertIn("eFieldItems.Add fieldItem", show_current)
-        self.assertIn("通常表示の対象項目に不一致はありません。その他の項目に", show_current)
+        self.assertIn("［入力項目のみ］の対象項目に不一致はありません。その他の項目に", show_current)
         self.assertIn("ファイル一覧には残しています", show_current)
 
     def test_selection_is_restored_by_file_and_visible_item_without_changing_judgments(self):
@@ -229,21 +229,26 @@ class NormalDisplayTests(unittest.TestCase):
         selection = procedure("UpdateESelection")
         safe = procedure("ESelectedDecisionIsSafe", "Function")
         for handler in (procedure("mCmdApprove_Click"), procedure("RecordChoice")):
-            self.assertIn("ESelectedDecisionIsSafe()", handler)
-            self.assertLess(handler.index("ESelectedDecisionIsSafe()"), handler.index("BidirectionalSyncResolveConflict(item,"))
+            self.assertIn("ESelectedDecisionIsSafe(", handler)
+            self.assertLess(handler.index("ESelectedDecisionIsSafe("), handler.index("BidirectionalSyncResolveConflict(item,"))
         self.assertIn("ECaseHasOutOfScopeFields(item)", safe)
-        self.assertIn("If Not EIsAllDisplayMode() And ECaseHasOutOfScopeFields(item) Then Exit Function", safe)
+        self.assertIn("If EIsClassification1Group(item) Then", safe)
+        self.assertIn("Module1.BidirectionalSyncClassification1DecisionSafe", safe)
+        self.assertIn("If Not EIsAllDisplayMode() And ECaseHasOutOfScopeFields(item) Then", safe)
         out_of_scope = procedure("ECaseHasOutOfScopeFields", "Function")
         self.assertIn("If Len(EFieldNormalDisplayCaption(caseItem, fieldItem)) = 0 Then", out_of_scope)
         self.assertIn("ECaseHasOutOfScopeFields = True", out_of_scope)
-        self.assertIn("identitySafe And groupSafe", selection)
-        self.assertIn("全項目を確認するため「すべて表示」に切り替えてください", selection)
+        self.assertIn("identitySafe And systemSafe", selection)
+        self.assertIn("identitySafe And excelSafe", selection)
+        self.assertIn("identitySafe And holdSafe", selection)
+        self.assertIn("「全項目（管理コード含む）」に切り替えてください", selection)
 
     def test_next_unresolved_skips_hidden_only_units_in_normal_mode(self):
         next_case = procedure("SelectNextECase")
-        self.assertIn("Not EIsAllDisplayMode() And (Not ECaseHasNormalDisplayFields(item) Or ECaseHasOutOfScopeFields(item))", next_case)
-        self.assertIn("通常表示で操作できる未解決項目はありません", next_case)
-        self.assertIn("すべて表示", next_case)
+        self.assertIn("Not EIsAllDisplayMode() And _", next_case)
+        self.assertIn("ECaseHasOutOfScopeFields(item) And Not EIsClassification1Group(item)", next_case)
+        self.assertIn("［入力項目のみ］で操作できる未解決項目はありません", next_case)
+        self.assertIn("全項目（管理コード含む）", next_case)
 
     def test_existing_resolution_engine_and_a_to_d_paths_are_not_replaced(self):
         self.assertIn("Public Function BidirectionalSyncResolveConflict(", MODULE)
