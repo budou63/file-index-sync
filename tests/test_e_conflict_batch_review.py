@@ -78,7 +78,9 @@ class ESelectionOnlyContracts(unittest.TestCase):
             self.assertIn('If Not rendering And mCboCategory.ListIndex = 4 Then ShowCurrent', body)
             self.assertNotIn('BidirectionalSyncResolveConflict(', body)
         exit_body = procedure(FORM, 'mLstCases_Exit')
-        self.assertIn('If Not rendering And mCboCategory.ListIndex = 4 Then UpdateESelection', exit_body)
+        self.assertIn('If Not rendering And mCboCategory.ListIndex = 4 Then', exit_body)
+        self.assertIn('eRenderedFieldSelection = ""', exit_body)
+        self.assertIn('UpdateESelection', exit_body)
         self.assertNotIn('BidirectionalSyncResolveConflict(', exit_body)
         self.assertIn('ByVal KeyCode As MSForms.ReturnInteger',
                       procedure(FORM, 'mLstCases_KeyUp'))

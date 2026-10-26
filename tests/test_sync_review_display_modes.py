@@ -193,7 +193,9 @@ class NormalDisplayTests(unittest.TestCase):
 
     def test_normal_view_lists_only_open_input_files_and_all_view_keeps_internal_records(self):
         show_records = procedure("ShowECategory")
-        self.assertIn("(EIsAllDisplayMode() Or ERecordNeedsConfirmation(record)) And ERecordHasGroup(record, selectedGroup)", show_records)
+        self.assertIn("needsConfirmation = ERecordNeedsConfirmation(record)", show_records)
+        self.assertIn("allMode = EIsAllDisplayMode()", show_records)
+        self.assertIn("(allMode Or needsConfirmation) And ERecordHasGroup(record, selectedGroup)", show_records)
         needs_input = procedure("ERecordNeedsConfirmation", "Function")
         self.assertIn("ECaseNeedsHumanDecision(item)", needs_input)
         self.assertIn("ECaseHasNormalDisplayFields(item)", needs_input)

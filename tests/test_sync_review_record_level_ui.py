@@ -187,8 +187,10 @@ class RecordLevelConflictUiTests(unittest.TestCase):
         self.assertIn('mLstCases.ColumnCount = 3', layout)
         self.assertIn('mLstCases.ColumnCount = 1', layout)
         e_show = procedure(FORM, "ShowECategory")
-        self.assertIn('mLstCases.List(rowIndex, 1) = folderValue', e_show)
-        self.assertIn('mLstCases.List(rowIndex, 2) = creationYearValue', e_show)
+        self.assertIn('pendingRows.Add Array(guide2Value, folderValue, creationYearValue)', e_show)
+        self.assertIn('listData(i - 1, 1) = displayRow(1)', e_show)
+        self.assertIn('listData(i - 1, 2) = displayRow(2)', e_show)
+        self.assertIn('mLstCases.List = listData', e_show)
 
     def test_selected_file_renders_every_item_and_both_sides_and_baseline(self):
         current = procedure(FORM, "ShowECurrent")
