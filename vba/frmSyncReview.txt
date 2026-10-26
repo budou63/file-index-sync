@@ -1529,8 +1529,10 @@ End Sub
 Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = False)
     Dim allRecords As Collection, record As Object, recordCases As Collection, item As Object
     Dim selectedGroup As String, filtered As Boolean, selectedRecordKeys As Object
-    Dim priorCase As Object, priorField As Object, existingItem As Object, existingField As Object
-    Dim priorCaseKey As String, priorHeaderName As String, recordKey As String
+    Dim priorCase As Object, priorField As Object, priorRecord As Object
+    Dim existingItem As Object, existingField As Object
+    Dim priorCaseKey As String, priorRecordKey As String, priorHeaderName As String
+    Dim recordKey As String, existingRecordKey As String, priorTopIndex As Long
     Dim rowIndex As Long, i As Long, guide2Value As String, folderValue As String, creationYearValue As String
     Dim totalItems As Long, inputItemCount As Long, internalMismatchCount As Long
     Dim unresolvedInternalCount As Long, safeNoReviewCount As Long
@@ -1538,19 +1540,24 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
     Dim inputFileKeys As Object
     If cases Is Nothing Then Exit Sub
     If preserveFileSelection Then
+        If mLstCases.ListCount > 0 Then priorTopIndex = mLstCases.TopIndex
         Set selectedRecordKeys = CreateObject("Scripting.Dictionary")
+        selectedRecordKeys.CompareMode = vbBinaryCompare
         For i = 0 To mLstCases.ListCount - 1
             If mLstCases.Selected(i) And Not shown Is Nothing Then
                 If i + 1 <= shown.Count Then
                     Set record = shown(i + 1)
-                    selectedRecordKeys(ERecordBucketKey(record)) = True
+                    recordKey = ERecordSelectionKey(record)
+                    If Len(recordKey) > 0 Then selectedRecordKeys(recordKey) = True
                 End If
             End If
         Next i
         If ESelectedCount() = 1 Then
             Set priorCase = SelectedCase()
             Set priorField = SelectedEField()
-            If Not priorCase Is Nothing And Not priorField Is Nothing Then
+            Set priorRecord = SelectedRecord()
+            priorRecordKey = ERecordSelectionKey(priorRecord)
+            If Len(priorRecordKey) > 0 And Not priorCase Is Nothing And Not priorField Is Nothing Then
                 priorCaseKey = CStr(priorCase("key"))
                 priorHeaderName = CStr(priorField("sourceHeader"))
             End If
@@ -1618,8 +1625,8 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
                ERecordNeedsInternalInvestigation(record) Then
                 mLstCases.List(rowIndex, 0) = "内部のみ・要調査: " & CStr(mLstCases.List(rowIndex, 0))
             End If
-            recordKey = ERecordBucketKey(record)
-            If preserveFileSelection And Not selectedRecordKeys Is Nothing Then
+            recordKey = ERecordSelectionKey(record)
+            If preserveFileSelection And Len(recordKey) > 0 And Not selectedRecordKeys Is Nothing Then
                 If selectedRecordKeys.Exists(recordKey) Then mLstCases.Selected(rowIndex) = True
             End If
         End If
@@ -1643,14 +1650,21 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
             mLblStatus.Caption = "職員入力の確認待ちはありません。内部項目の調査が必要な場合は［全項目（管理コード含む）］に切り替えてください。"
         End If
     End If
+    If preserveFileSelection And mLstCases.ListCount > 0 Then
+        If priorTopIndex < 0 Then priorTopIndex = 0
+        If priorTopIndex > mLstCases.ListCount - 1 Then priorTopIndex = mLstCases.ListCount - 1
+        mLstCases.TopIndex = priorTopIndex
+    End If
     rendering = False
     If preserveFileSelection Then
         ShowCurrent
-        If Len(priorCaseKey) > 0 And Len(priorHeaderName) > 0 Then
+        If Len(priorCaseKey) > 0 And Len(priorRecordKey) > 0 And Len(priorHeaderName) > 0 Then
             For i = 1 To eFieldCases.Count
                 Set existingItem = eFieldCases(i)
                 Set existingField = eFieldItems(i)
-                If StrComp(CStr(existingItem("key")), priorCaseKey, vbBinaryCompare) = 0 And _
+                existingRecordKey = ERecordSelectionKey(existingItem)
+                If StrComp(existingRecordKey, priorRecordKey, vbBinaryCompare) = 0 And _
+                   StrComp(CStr(existingItem("key")), priorCaseKey, vbBinaryCompare) = 0 And _
                    StrComp(CompareHeaderKey(CStr(existingField("sourceHeader"))), _
                            CompareHeaderKey(priorHeaderName), vbBinaryCompare) = 0 Then
                     rendering = True
@@ -1768,6 +1782,25 @@ Private Function ERecordBucketKey(ByVal item As Object) As String
     If Len(Trim$(rowId)) = 0 Or Len(stableKey) = 0 Or sourceRow < 2 Or destinationRow < 2 Then Exit Function
     ERecordBucketKey = CStr(yearValue) & ":" & CStr(Len(rowId)) & ":" & rowId & ":" & _
                        CStr(Len(stableKey)) & ":" & stableKey & ":" & CStr(sourceRow) & ":" & CStr(destinationRow)
+    Exit Function
+InvalidIdentity:
+    Err.Clear
+End Function
+
+Private Function ERecordSelectionKey(ByVal item As Object) As String
+    Dim rowId As String, stableKey As String, yearValue As Long
+    On Error GoTo InvalidIdentity
+    If item Is Nothing Then Exit Function
+    If Not item.Exists("rowId") Or Not item.Exists("stableKey") Or Not item.Exists("year") Then Exit Function
+    If item.Exists("identityIssue") Then
+        If CBool(item("identityIssue")) Then Exit Function
+    End If
+    rowId = CStr(item("rowId"))
+    stableKey = CStr(item("stableKey"))
+    yearValue = CLng(item("year"))
+    If yearValue <= 0 Or Len(Trim$(rowId)) = 0 Or Len(Trim$(stableKey)) = 0 Then Exit Function
+    ERecordSelectionKey = CStr(yearValue) & ":" & CStr(Len(rowId)) & ":" & rowId & ":" & _
+                           CStr(Len(stableKey)) & ":" & stableKey
     Exit Function
 InvalidIdentity:
     Err.Clear

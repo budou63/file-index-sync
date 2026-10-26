@@ -213,7 +213,7 @@ class NormalDisplayTests(unittest.TestCase):
         show = procedure("ShowECategory")
         for token in (
             "If preserveFileSelection Then",
-            "selectedRecordKeys(ERecordBucketKey(record)) = True",
+            "recordKey = ERecordSelectionKey(record)",
             "selectedRecordKeys.Exists(recordKey)",
             "mLstCases.Selected(rowIndex) = True",
             'priorCaseKey = CStr(priorCase("key"))',
@@ -221,9 +221,29 @@ class NormalDisplayTests(unittest.TestCase):
             "mLstRows.ListIndex = i - 1",
         ):
             self.assertIn(token, show)
+        identity = procedure("ERecordSelectionKey", "Function")
+        self.assertIn('item("identityIssue")', identity)
+        self.assertIn('item("rowId")', identity)
+        self.assertIn('item("stableKey")', identity)
+        self.assertIn('item("year")', identity)
+        self.assertNotIn('item("sourceRow")', identity)
+        self.assertNotIn('item("destinationRow")', identity)
         self.assertIn('mLstRows.ListIndex = -1', procedure("ShowECurrent"))
         self.assertNotIn("BidirectionalSyncResolveConflict", show)
         self.assertNotIn("WriteStep2", show)
+
+    def test_mode_rerender_preserves_clamped_top_index_under_event_guard(self):
+        show = procedure("ShowECategory")
+        self.assertIn("priorTopIndex = mLstCases.TopIndex", show)
+        self.assertLess(show.index("priorTopIndex = mLstCases.TopIndex"), show.index("mLstCases.Clear"))
+        self.assertIn("If priorTopIndex > mLstCases.ListCount - 1 Then", show)
+        self.assertIn("mLstCases.TopIndex = priorTopIndex", show)
+        self.assertLess(show.index("mLstCases.TopIndex = priorTopIndex"), show.index("rendering = False"))
+        self.assertIn("If Not rendering Then ShowCurrent", procedure("mLstCases_Click"))
+        self.assertIn("If Not rendering And mCboCategory.ListIndex = 4 Then ShowCurrent", procedure("mLstCases_Change"))
+        selection = procedure("UpdateESelection")
+        for token in ("n = 1 And Not item Is Nothing", "n > 1", "mCmdApprove.Enabled", "mCmdOther.Enabled", "mCmdHold.Enabled"):
+            self.assertIn(token, selection)
 
     def test_hidden_members_make_normal_mode_actions_fail_closed(self):
         selection = procedure("UpdateESelection")
