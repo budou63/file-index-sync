@@ -371,6 +371,11 @@ Private Sub UpdateESelection()
                 excelSafe = ESelectedDecisionIsSafe("Excel採用", excelReason)
                 holdSafe = Module1.BidirectionalSyncClassification1DecisionSafe(item, "保留", pairReason, pairPreview)
                 If Not holdSafe And Len(holdReason) = 0 Then holdReason = pairReason
+            ElseIf EIsRetentionGroup(item) Then
+                systemSafe = ESelectedDecisionIsSafe("システム採用", systemReason)
+                excelSafe = ESelectedDecisionIsSafe("Excel採用", excelReason)
+                holdSafe = Module1.BidirectionalSyncRetentionDecisionSafe(item, "保留", pairReason, pairPreview)
+                If Not holdSafe And Len(holdReason) = 0 Then holdReason = pairReason
             Else
                 groupSafe = (EIsAllDisplayMode() Or Not ECaseHasOutOfScopeFields(item))
                 systemSafe = groupSafe: excelSafe = groupSafe: holdSafe = groupSafe
@@ -393,6 +398,15 @@ Private Sub UpdateESelection()
         End If
         If Len(pairPreview) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & pairPreview
         If Len(pairReason) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & "連動確認: " & pairReason
+        If Not systemSafe And Len(systemReason) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & "文書管理を採用できません: " & systemReason
+        If Not excelSafe And Len(excelReason) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & "Excel基準表を採用できません: " & excelReason
+        If Not holdSafe And Len(holdReason) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & "保留できません: " & holdReason
+    ElseIf n = 1 And Not item Is Nothing And EIsRetentionGroup(item) Then
+        mLblStatus.Caption = "保存期間と保存期間IDは連動した判断単位です。採用前に現在の目録CSV・コード管理CSVで両側の対応を一意検証します。"
+        If Not selectedField Is Nothing And Not record Is Nothing Then
+            mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & EConflictFieldDetails(item, selectedField)
+        End If
+        If Len(pairPreview) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & pairPreview
         If Not systemSafe And Len(systemReason) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & "文書管理を採用できません: " & systemReason
         If Not excelSafe And Len(excelReason) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & "Excel基準表を採用できません: " & excelReason
         If Not holdSafe And Len(holdReason) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & "保留できません: " & holdReason
@@ -1094,6 +1108,11 @@ Private Sub mCmdApprove_Click()
                 If Len(reasonText) > 0 Then mLblStatus.Caption = reasonText
                 Exit Sub
             End If
+        ElseIf EIsRetentionGroup(item) Then
+            If Not EConfirmRetentionDecision(item, SelectedRecord(), "システム採用", reasonText) Then
+                If Len(reasonText) > 0 Then mLblStatus.Caption = reasonText
+                Exit Sub
+            End If
         ElseIf MsgBox("文書管理システムの値をExcel基準表へ反映します。選択した関連項目グループ全体が対象です。続けますか？", _
                       vbQuestion + vbYesNo, "競合解決の確認") <> vbYes Then
             Exit Sub
@@ -1124,6 +1143,11 @@ Private Sub RecordChoice(ByVal decision As String)
         End If
         If EIsClassification1Group(item) Then
             If Not EConfirmClassification1Decision(item, SelectedRecord(), decision, reasonText) Then
+                If Len(reasonText) > 0 Then mLblStatus.Caption = reasonText
+                Exit Sub
+            End If
+        ElseIf EIsRetentionGroup(item) Then
+            If Not EConfirmRetentionDecision(item, SelectedRecord(), decision, reasonText) Then
                 If Len(reasonText) > 0 Then mLblStatus.Caption = reasonText
                 Exit Sub
             End If
@@ -1972,6 +1996,10 @@ Private Function ESelectedDecisionIsSafe(ByVal decision As String, ByRef reasonT
         ESelectedDecisionIsSafe = Module1.BidirectionalSyncClassification1DecisionSafe(item, decision, reasonText, previewText)
         Exit Function
     End If
+    If EIsRetentionGroup(item) Then
+        ESelectedDecisionIsSafe = Module1.BidirectionalSyncRetentionDecisionSafe(item, decision, reasonText, previewText)
+        Exit Function
+    End If
     If Not EIsAllDisplayMode() And ECaseHasOutOfScopeFields(item) Then
         reasonText = "この判断グループには入力項目のみの表示対象外の関連項目があります。全項目（管理コード含む）に切り替えてください。"
         Exit Function
@@ -1982,6 +2010,11 @@ End Function
 Private Function EIsClassification1Group(ByVal item As Object) As Boolean
     If item Is Nothing Then Exit Function
     EIsClassification1Group = (StrComp(CStr(item("groupName")), "分類名１・分類コード１", vbBinaryCompare) = 0)
+End Function
+
+Private Function EIsRetentionGroup(ByVal item As Object) As Boolean
+    If item Is Nothing Then Exit Function
+    EIsRetentionGroup = (StrComp(CStr(item("groupName")), "保存期間・保存期間ID", vbBinaryCompare) = 0)
 End Function
 
 Private Function EConfirmClassification1Decision( _
@@ -2042,6 +2075,77 @@ Failed:
     reasonText = "採用前の確認画面を完了できなかったため、連動判断を停止しました。" & failureText
     Err.Clear
 End Function
+
+Private Function EConfirmRetentionDecision( _
+    ByVal item As Object, ByVal record As Object, ByVal decision As String, ByRef reasonText As String) As Boolean
+
+    Dim previewText As String, sourceLabel As String, stateLabel As String
+    Dim guide2Value As String, folderValue As String, creationYearValue As String
+    Dim confirmationText As String, failureText As String
+
+    On Error GoTo Failed
+    reasonText = ""
+    If item Is Nothing Or record Is Nothing Then
+        reasonText = "対象ファイルまたは保存期間の判断単位を確認できません。"
+        EClearRetentionPreviewSignature item
+        Exit Function
+    End If
+    If Not EIsRetentionGroup(item) Or CBool(record("identityIssue")) Then
+        reasonText = "識別情報または保存期間・保存期間IDの判断単位を確認できないため、処理を停止しました。"
+        EClearRetentionPreviewSignature item
+        Exit Function
+    End If
+    EClearRetentionPreviewSignature item
+    If Not Module1.BidirectionalSyncRetentionDecisionSafe(item, decision, reasonText, previewText, True, False) Then
+        EClearRetentionPreviewSignature item
+        Exit Function
+    End If
+    ERecordDisplayValues record, guide2Value, folderValue, creationYearValue
+    If Len(folderValue) = 0 Or folderValue = "―" Or folderValue = "（空欄）" Then
+        reasonText = "確認画面に対象ファイル名を表示できないため、連動判断を停止しました。"
+        EClearRetentionPreviewSignature item
+        Exit Function
+    End If
+    Select Case decision
+        Case "システム採用"
+            sourceLabel = "文書管理システム"
+            stateLabel = "文書管理を採用（保存期間・保存期間IDのグループ全体）"
+        Case "Excel採用"
+            sourceLabel = "Excel基準表"
+            stateLabel = "Excel基準表を採用（保存期間・保存期間IDのグループ全体）"
+        Case "保留"
+            sourceLabel = "なし（値は変更しません）"
+            stateLabel = "保留（保存期間・保存期間IDのグループ全体）"
+        Case Else
+            reasonText = "保存期間・保存期間IDの判断方法が不正です。"
+            EClearRetentionPreviewSignature item
+            Exit Function
+    End Select
+    confirmationText = "対象ファイル（個別フォルダー）: " & folderValue & vbCrLf & _
+        ERecordIdentityDetails(record) & vbCrLf & "採用元: " & sourceLabel & vbCrLf & _
+        previewText & vbCrLf & "採用後の判断状態: " & stateLabel & vbCrLf & _
+        "この内容で、このファイル・年度の保存期間関連項目だけを確定します。続けますか？"
+    If MsgBox(confirmationText, vbQuestion + vbYesNo, "保存期間・保存期間IDの連動判断確認") <> vbYes Then
+        EClearRetentionPreviewSignature item
+        Exit Function
+    End If
+    EConfirmRetentionDecision = True
+    Exit Function
+
+Failed:
+    failureText = Err.Description
+    EClearRetentionPreviewSignature item
+    reasonText = "採用前の確認画面を完了できなかったため、連動判断を停止しました。" & failureText
+    Err.Clear
+End Function
+
+Private Sub EClearRetentionPreviewSignature(ByVal item As Object)
+    On Error Resume Next
+    If Not item Is Nothing Then
+        If item.Exists("linkedRetentionSignature") Then item.Remove "linkedRetentionSignature"
+    End If
+    Err.Clear
+End Sub
 
 Private Sub EClearClassification1PreviewSignature(ByVal item As Object)
     On Error Resume Next
@@ -2157,7 +2261,8 @@ Private Sub ShowECurrent()
     Dim record As Object, item As Object, fieldItem As Object
     Dim recordCases As Collection, fieldItems As Collection
     Dim rowIndex As Long, decision As String, displayCaption As String, allMode As Boolean
-    Dim normalTargetItems As Long, outOfTargetItems As Long, mixedGroups As Long, linkedGroups As Long
+    Dim normalTargetItems As Long, outOfTargetItems As Long, mixedGroups As Long
+    Dim linkedGroups As Long, retentionLinkedGroups As Long
     rendering = True
     Set eFieldCases = New Collection
     Set eFieldItems = New Collection
@@ -2190,6 +2295,8 @@ Private Sub ShowECurrent()
             If ECaseHasOutOfScopeFields(item) Then
                 If EIsClassification1Group(item) Then
                     linkedGroups = linkedGroups + 1
+                ElseIf EIsRetentionGroup(item) Then
+                    retentionLinkedGroups = retentionLinkedGroups + 1
                 Else
                     mixedGroups = mixedGroups + 1
                 End If
@@ -2239,6 +2346,9 @@ Private Sub ShowECurrent()
         If linkedGroups > 0 Then mLblStatus.Caption = mLblStatus.Caption & _
             "。分類名１・分類コード１の連動グループ" & CStr(linkedGroups) & _
             "件は、対応関係を検証し、採用前の確認画面で両方の値を確認します。"
+        If retentionLinkedGroups > 0 Then mLblStatus.Caption = mLblStatus.Caption & _
+            "。保存期間・保存期間IDの連動グループ" & CStr(retentionLinkedGroups) & _
+            "件は、対応関係を検証し、採用前の確認画面で両方の値を確認します。"
         If mLstRows.ListCount = 0 Then
             mTxtDetails.Text = mTxtDetails.Text & vbCrLf & _
                 "［入力項目のみ］の対象項目に不一致はありません。その他の項目に" & CStr(outOfTargetItems) & _
@@ -2276,6 +2386,8 @@ Private Sub UpdateEFieldSelection()
     mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & EConflictFieldDetails(item, fieldItem)
     If EIsClassification1Group(item) Then
             mLblStatus.Caption = "分類名１と分類コード１は同じ判断単位です。採用前の確認画面で両方の値と採用元を確認します。"
+        ElseIf EIsRetentionGroup(item) Then
+            mLblStatus.Caption = "保存期間と保存期間IDは同じ判断単位です。採用前に対応関係を検証し、確認画面で両方の値を確認します。"
         ElseIf Not EIsAllDisplayMode() And ECaseHasOutOfScopeFields(item) Then
             mLblStatus.Caption = "この判断単位には［入力項目のみ］の表示対象外の関連項目が含まれます。「全項目（管理コード含む）」に切り替えてください。"
         ElseIf EIsAllDisplayMode() Then
@@ -2367,6 +2479,9 @@ Private Function EConflictFieldDetails(ByVal item As Object, ByVal selectedField
         If EIsClassification1Group(item) Then
             EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
                 "非表示の分類コード１も同じ判断単位に含まれます。対応関係を検証できた場合のみ、採用前の確認画面に両方の値を表示します。"
+        ElseIf EIsRetentionGroup(item) Then
+            EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
+                "非表示の保存期間IDも同じ判断単位に含まれます。現在の目録CSVとコード管理CSVの両方で対応が一意な場合だけ採用を許可し、確認画面にIDを表示します。"
         Else
             EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
                 "安全のため、この項目グループの採用・保留は無効です。「全項目（管理コード含む）」で関連項目を確認してください。"
@@ -2437,7 +2552,8 @@ Private Sub SelectNextECase()
             If Len(SyncReviewDecision(item)) = 0 Then
                 If Not EIsAllDisplayMode() And _
                    (Not ECaseHasNormalDisplayFields(item) Or _
-                    (ECaseHasOutOfScopeFields(item) And Not EIsClassification1Group(item))) Then
+                    (ECaseHasOutOfScopeFields(item) And Not EIsClassification1Group(item) And _
+                     Not EIsRetentionGroup(item))) Then
                     foundOutOfTarget = True
                 Else
                     SelectSingleECase recordIndex - 1

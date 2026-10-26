@@ -19513,6 +19513,375 @@ Failed:
     Err.Clear
 End Function
 
+Public Function BidirectionalSyncRetentionDecisionSafe( _
+    ByVal item As Object, ByVal decision As String, ByRef reasonText As String, ByRef previewText As String, _
+    Optional ByVal captureSignature As Boolean = False, Optional ByVal requireSignature As Boolean = False) As Boolean
+
+    Dim wsSrc As Worksheet, wsDst As Worksheet, wsConflict As Worksheet
+    Dim fieldItems As Collection, fieldItem As Object
+    Dim sourceRow As Long, destinationRow As Long, stateRow As Long
+    Dim sourceLastCol As Long, destinationLastCol As Long
+    Dim sourcePeriodCol As Long, sourceIdCol As Long, destinationPeriodCol As Long, destinationIdCol As Long
+    Dim sourcePeriodValue As Variant, sourceIdValue As Variant, excelPeriodValue As Variant, excelIdValue As Variant
+    Dim sourcePeriod As String, sourceId As String, excelPeriod As String, excelId As String
+    Dim canonicalSource As String, canonicalDestination As String, extraFields As String
+    Dim hasPeriod As Boolean, hasId As Boolean, currentDecision As String
+    Dim systemMapOk As Boolean, excelMapOk As Boolean, selectedMapOk As Boolean
+    Dim systemMapReason As String, excelMapReason As String, selectedMapReason As String
+    Dim selectedSide As String, selectedValue As String, pairSignature As String
+    Dim previewSystemMap As String, previewExcelMap As String
+    Dim mapRequired As Boolean
+
+    On Error GoTo Failed
+    reasonText = "": previewText = ""
+    If item Is Nothing Then
+        reasonText = "選択された判断単位を確認できません。"
+        Exit Function
+    End If
+    If CStr(item("category")) <> "E" Or CStr(item("groupName")) <> "保存期間・保存期間ID" Then
+        reasonText = "保存期間と保存期間IDの既存判断グループではありません。"
+        Exit Function
+    End If
+    If decision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM And _
+       decision <> BIDIRECTIONAL_SYNC_CONFLICT_EXCEL And decision <> BIDIRECTIONAL_SYNC_CONFLICT_HOLD Then
+        reasonText = "判断方法を確認できません。"
+        Exit Function
+    End If
+    mapRequired = (decision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or decision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL)
+    If Not BidirectionalSyncConflictLiveMatches(item, reasonText) Then
+        reasonText = "対象行・識別情報・比較値を再確認できません。" & reasonText
+        Exit Function
+    End If
+    If item.Exists("decision") Then
+        currentDecision = CStr(item("decision"))
+        If currentDecision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or _
+           currentDecision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL Then
+            reasonText = "この判断単位には確定済みの採用判断があります。既存判断を上書きしません。"
+            Exit Function
+        End If
+    End If
+    If Not BidirectionalSyncFindConflictStateRow(item, stateRow) Then
+        reasonText = "保存済みの競合判断行を一意に特定できません。"
+        Exit Function
+    End If
+    Set wsConflict = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_CONFLICT_SHEET)
+    If IsError(wsConflict.Cells(stateRow, 6).Value2) Then
+        reasonText = "保存済みの判断状態にエラー値があり、上書きの有無を確認できません。"
+        Exit Function
+    End If
+    currentDecision = CStr(wsConflict.Cells(stateRow, 6).Value2)
+    If currentDecision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or _
+       currentDecision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL Then
+        reasonText = "この判断単位には確定済みの採用判断があります。既存判断を上書きしません。"
+        Exit Function
+    End If
+
+    Set fieldItems = BidirectionalSyncUnpackConflictHeaders(CStr(item("snapshot")))
+    If fieldItems Is Nothing Then
+        reasonText = "保存期間・保存期間IDの判断項目を読み取れません。"
+        Exit Function
+    End If
+    If fieldItems.Count < 1 Or fieldItems.Count > 2 Or (mapRequired And fieldItems.Count <> 2) Then
+        For Each fieldItem In fieldItems
+            If Len(extraFields) > 0 Then extraFields = extraFields & "、"
+            extraFields = extraFields & CStr(fieldItem("sourceHeader"))
+        Next fieldItem
+        previewText = "関連項目: 保存期間、保存期間ID" & IIf(Len(extraFields) > 0, "、" & extraFields, "")
+        reasonText = "保存期間・保存期間IDの判断項目が完全でないため、一部採用を防止しました。"
+        Exit Function
+    End If
+    For Each fieldItem In fieldItems
+        canonicalSource = CanonicalHeaderName(CStr(fieldItem("sourceHeader")))
+        canonicalDestination = CanonicalHeaderName(CStr(fieldItem("destinationHeader")))
+        If StrComp(canonicalSource, canonicalDestination, vbTextCompare) <> 0 Then
+            If Len(extraFields) > 0 Then extraFields = extraFields & "、"
+            extraFields = extraFields & CStr(fieldItem("sourceHeader")) & "（対応見出し不一致）"
+        ElseIf StrComp(canonicalSource, CanonicalHeaderName("保存期間"), vbTextCompare) = 0 Then
+            If hasPeriod Then
+                If Len(extraFields) > 0 Then extraFields = extraFields & "、"
+                extraFields = extraFields & "保存期間（重複）"
+            End If
+            hasPeriod = True
+        ElseIf StrComp(canonicalSource, CanonicalHeaderName("保存期間ID"), vbTextCompare) = 0 Then
+            If hasId Then
+                If Len(extraFields) > 0 Then extraFields = extraFields & "、"
+                extraFields = extraFields & "保存期間ID（重複）"
+            End If
+            hasId = True
+        Else
+            If Len(extraFields) > 0 Then extraFields = extraFields & "、"
+            extraFields = extraFields & CStr(fieldItem("sourceHeader"))
+        End If
+    Next fieldItem
+    If Len(extraFields) > 0 Or (Not hasPeriod And Not hasId) Or _
+       (mapRequired And (Not hasPeriod Or Not hasId)) Then
+        previewText = "関連項目: 保存期間、保存期間ID" & IIf(Len(extraFields) > 0, "、" & extraFields, "")
+        reasonText = "判断グループに未対応・不足・重複した関連項目があります（" & extraFields & "）。一部だけの判断を防ぐため停止しました。"
+        Exit Function
+    End If
+
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    sourceRow = CLng(item("sourceRow")): destinationRow = CLng(item("destinationRow"))
+    sourceLastCol = GetLastHeaderCol(wsSrc): destinationLastCol = GetLastHeaderCol(wsDst)
+    sourcePeriodCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, sourceLastCol, GetStep2HeaderCandidates("保存期間"))
+    sourceIdCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, sourceLastCol, Array("保存期間ID"))
+    destinationPeriodCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, destinationLastCol, GetStep2HeaderCandidates("保存期間"))
+    destinationIdCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, destinationLastCol, Array("保存期間ID"))
+    If sourcePeriodCol <= 0 Or sourceIdCol <= 0 Or destinationPeriodCol <= 0 Or destinationIdCol <= 0 Then
+        reasonText = "文書管理システムとExcel基準表の保存期間・保存期間ID見出しを一意に特定できません。"
+        Exit Function
+    End If
+    If sourceRow < 2 Or sourceRow > wsSrc.Rows.Count Or destinationRow < 2 Or destinationRow > wsDst.Rows.Count Then
+        reasonText = "保存期間判断の対象行が範囲外です。"
+        Exit Function
+    End If
+    sourcePeriodValue = wsSrc.Cells(sourceRow, sourcePeriodCol).Value2
+    sourceIdValue = wsSrc.Cells(sourceRow, sourceIdCol).Value2
+    excelPeriodValue = wsDst.Cells(destinationRow, destinationPeriodCol).Value2
+    excelIdValue = wsDst.Cells(destinationRow, destinationIdCol).Value2
+    If IsError(sourcePeriodValue) Or IsError(sourceIdValue) Or IsError(excelPeriodValue) Or IsError(excelIdValue) Then
+        reasonText = "保存期間または保存期間IDにエラー値があり、連動採用値を確認できません。"
+        Exit Function
+    End If
+    sourcePeriod = CStr(sourcePeriodValue): sourceId = CStr(sourceIdValue)
+    excelPeriod = CStr(excelPeriodValue): excelId = CStr(excelIdValue)
+    If mapRequired Then
+        systemMapOk = BidirectionalSyncRetentionPairIsUnique(sourceId, sourcePeriod, systemMapReason)
+        excelMapOk = BidirectionalSyncRetentionPairIsUnique(excelId, excelPeriod, excelMapReason)
+        previewSystemMap = BidirectionalSyncRetentionMapDisplay(systemMapOk, systemMapReason)
+        previewExcelMap = BidirectionalSyncRetentionMapDisplay(excelMapOk, excelMapReason)
+        If decision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then
+            selectedSide = "文書管理システム": selectedMapOk = systemMapOk: selectedMapReason = systemMapReason
+            selectedValue = "保存期間=" & BidirectionalSyncClassification1DisplayValue(sourcePeriod) & _
+                "、保存期間ID=" & BidirectionalSyncClassification1DisplayValue(sourceId)
+        Else
+            selectedSide = "Excel基準表": selectedMapOk = excelMapOk: selectedMapReason = excelMapReason
+            selectedValue = "保存期間=" & BidirectionalSyncClassification1DisplayValue(excelPeriod) & _
+                "、保存期間ID=" & BidirectionalSyncClassification1DisplayValue(excelId)
+        End If
+        If Not systemMapOk Or Not excelMapOk Then
+            reasonText = "現在値の保存期間・保存期間IDの対応を双方で一意に確認できないため、採用を禁止します。" & _
+                " 文書管理側: " & systemMapReason & " Excel側: " & excelMapReason
+            previewSystemMap = BidirectionalSyncRetentionMapDisplay(systemMapOk, systemMapReason)
+            previewExcelMap = BidirectionalSyncRetentionMapDisplay(excelMapOk, excelMapReason)
+        ElseIf Not selectedMapOk Then
+            reasonText = selectedSide & "側の保存期間・保存期間ID対応を確認できないため、採用を禁止します。" & selectedMapReason
+        End If
+    ElseIf decision = BIDIRECTIONAL_SYNC_CONFLICT_HOLD Then
+        selectedSide = "採用元なし（値は変更せず保留）"
+        selectedValue = "値は変更しません"
+        previewSystemMap = "保留のため対応検証は行いません"
+        previewExcelMap = "保留のため対応検証は行いません"
+    End If
+    previewText = "同時に判断する関連項目: 保存期間、保存期間ID" & vbCrLf & _
+        "保存期間: 文書管理システム＝" & BidirectionalSyncClassification1DisplayValue(sourcePeriod) & _
+        " ／ Excel基準表＝" & BidirectionalSyncClassification1DisplayValue(excelPeriod) & vbCrLf & _
+        "保存期間ID: 文書管理システム＝" & BidirectionalSyncClassification1DisplayValue(sourceId) & _
+        " ／ Excel基準表＝" & BidirectionalSyncClassification1DisplayValue(excelId) & vbCrLf & _
+        "文書管理システム側の対応: " & previewSystemMap & vbCrLf & _
+        "Excel基準表側の対応: " & previewExcelMap & vbCrLf & _
+        "採用値: " & selectedValue & vbCrLf & "採用後の判断状態: " & decision
+    If mapRequired And (Not systemMapOk Or Not excelMapOk) Then Exit Function
+
+    pairSignature = BidirectionalSyncRetentionSignaturePart(decision) & _
+        BidirectionalSyncRetentionSignaturePart(CStr(item("year"))) & _
+        BidirectionalSyncRetentionSignaturePart(CStr(item("rowId"))) & _
+        BidirectionalSyncRetentionSignaturePart(CStr(item("stableKey"))) & _
+        BidirectionalSyncRetentionSignaturePart(CStr(item("sourceRow"))) & _
+        BidirectionalSyncRetentionSignaturePart(CStr(item("destinationRow"))) & _
+        BidirectionalSyncRetentionSignaturePart(sourcePeriod) & _
+        BidirectionalSyncRetentionSignaturePart(sourceId) & _
+        BidirectionalSyncRetentionSignaturePart(excelPeriod) & _
+        BidirectionalSyncRetentionSignaturePart(excelId)
+    If captureSignature Then
+        If item.Exists("linkedRetentionSignature") Then
+            item("linkedRetentionSignature") = pairSignature
+        Else
+            item.Add "linkedRetentionSignature", pairSignature
+        End If
+    End If
+    If requireSignature Then
+        If Not item.Exists("linkedRetentionSignature") Then
+            reasonText = "採用前の確認画面を経ていないため、保存期間の連動判断を停止しました。"
+            Exit Function
+        End If
+        If StrComp(CStr(item("linkedRetentionSignature")), pairSignature, vbBinaryCompare) <> 0 Then
+            reasonText = "確認画面の表示後に保存期間または保存期間IDが変わりました。再読込して確認してください。"
+            Exit Function
+        End If
+    End If
+    BidirectionalSyncRetentionDecisionSafe = True
+    Exit Function
+
+Failed:
+    reasonText = "保存期間・保存期間IDの安全確認に失敗しました。" & Err.Description
+    Err.Clear
+End Function
+
+Private Function BidirectionalSyncRetentionPairIsUnique( _
+    ByVal idValue As String, ByVal periodValue As String, ByRef reasonText As String) As Boolean
+
+    Dim wsSource As Worksheet, wsMaster As Worksheet
+    Dim sourceLastCol As Long, sourcePeriodCol As Long, sourceIdCol As Long, sourceLastRow As Long
+    Dim lastRow As Long, values As Variant, rowNo As Long, colNo As Long, exactCount As Long
+    Dim sourcePeriodValue As Variant, sourceIdValue As Variant
+    Dim targetId As String, targetPeriod As String, rowId As String, rowPeriod As String
+    Dim itemName As String, stateValue As String, parentCode As String, sourcePairFound As Boolean
+    Dim periodLastRow As Long, idLastRow As Long
+
+    On Error GoTo Failed
+    reasonText = ""
+    targetId = Trim$(idValue): targetPeriod = Trim$(periodValue)
+    If Len(targetId) = 0 Or Len(targetPeriod) = 0 Then
+        reasonText = "保存期間または保存期間IDが空欄です。"
+        Exit Function
+    End If
+    Set wsSource = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    sourceLastCol = GetLastHeaderCol(wsSource)
+    sourcePeriodCol = BidirectionalSyncFindUniqueHeaderColumn(wsSource, sourceLastCol, GetStep2HeaderCandidates("保存期間"))
+    sourceIdCol = BidirectionalSyncFindUniqueHeaderColumn(wsSource, sourceLastCol, Array("保存期間ID"))
+    If sourcePeriodCol <= 0 Or sourceIdCol <= 0 Then
+        reasonText = "現在の目録CSVから保存期間・保存期間IDの列を一意に特定できません。"
+        Exit Function
+    End If
+    periodLastRow = wsSource.Cells(wsSource.Rows.Count, sourcePeriodCol).End(xlUp).Row
+    idLastRow = wsSource.Cells(wsSource.Rows.Count, sourceIdCol).End(xlUp).Row
+    sourceLastRow = periodLastRow
+    If idLastRow > sourceLastRow Then sourceLastRow = idLastRow
+    If sourceLastRow < 2 Then
+        reasonText = "現在の目録CSVに保存期間のデータがありません。"
+        Exit Function
+    End If
+    For rowNo = 2 To sourceLastRow
+        sourcePeriodValue = wsSource.Cells(rowNo, sourcePeriodCol).Value2
+        sourceIdValue = wsSource.Cells(rowNo, sourceIdCol).Value2
+        If IsError(sourcePeriodValue) Or IsError(sourceIdValue) Then
+            reasonText = "現在の目録CSVの保存期間または保存期間IDにエラー値があります（行 " & CStr(rowNo) & "）。"
+            Exit Function
+        End If
+        rowPeriod = Trim$(CStr(sourcePeriodValue))
+        rowId = Trim$(CStr(sourceIdValue))
+        If Len(rowPeriod) > 0 Or Len(rowId) > 0 Then
+            If Len(rowPeriod) = 0 Or Len(rowId) = 0 Then
+                If StrComp(rowId, targetId, vbBinaryCompare) = 0 Or _
+                   StrComp(rowPeriod, targetPeriod, vbBinaryCompare) = 0 Then
+                    reasonText = "現在の目録CSVに対象と同名または同IDの未完成対応があります（行 " & CStr(rowNo) & "）。"
+                    Exit Function
+                End If
+            ElseIf StrComp(rowId, targetId, vbBinaryCompare) = 0 And _
+                   StrComp(rowPeriod, targetPeriod, vbBinaryCompare) <> 0 Then
+                reasonText = "現在の目録CSVで保存期間ID「" & targetId & "」が別の保存期間にも対応しています。"
+                Exit Function
+            ElseIf StrComp(rowPeriod, targetPeriod, vbBinaryCompare) = 0 And _
+                   StrComp(rowId, targetId, vbBinaryCompare) <> 0 Then
+                reasonText = "現在の目録CSVで保存期間「" & periodValue & "」に複数のID候補があります。"
+                Exit Function
+            ElseIf StrComp(rowId, targetId, vbBinaryCompare) = 0 And _
+                   StrComp(rowPeriod, targetPeriod, vbBinaryCompare) = 0 Then
+                sourcePairFound = True
+            End If
+        End If
+    Next rowNo
+    If Not sourcePairFound Then
+        reasonText = "現在の目録CSVにこの保存期間・保存期間IDの組合せがありません。"
+        Exit Function
+    End If
+
+    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    lastRow = GetLastStep3DataRow(wsMaster)
+    If lastRow < 2 Then
+        reasonText = "コード管理CSVに保存期間の対応データがありません。"
+        Exit Function
+    End If
+    values = wsMaster.Range(wsMaster.Cells(1, 1), wsMaster.Cells(lastRow, 5)).Value2
+    For colNo = 1 To 5
+        If IsError(values(1, colNo)) Then
+            reasonText = "コード管理CSVの見出しにエラー値があり、保存期間の対応を確認できません。"
+            Exit Function
+        End If
+    Next colNo
+    If StrComp(Trim$(CStr(values(1, 1))), "項目名", vbBinaryCompare) <> 0 Or _
+       StrComp(Trim$(CStr(values(1, 2))), "コード", vbBinaryCompare) <> 0 Or _
+       StrComp(Trim$(CStr(values(1, 3))), "表示名", vbBinaryCompare) <> 0 Or _
+       StrComp(Trim$(CStr(values(1, 4))), "状態", vbBinaryCompare) <> 0 Or _
+       StrComp(Trim$(CStr(values(1, 5))), "親分類コード", vbBinaryCompare) <> 0 Then
+        reasonText = "コード管理CSVの見出し構成を確認できません。"
+        Exit Function
+    End If
+    For rowNo = 2 To UBound(values, 1)
+        If IsError(values(rowNo, 1)) Then
+            reasonText = "コード管理CSVの項目名にエラー値があり、保存期間行を特定できません。"
+            Exit Function
+        End If
+        itemName = CanonicalHeaderName(Trim$(CStr(values(rowNo, 1))))
+        If StrComp(itemName, CanonicalHeaderName("保存期間"), vbTextCompare) = 0 Then
+            For colNo = 2 To 5
+                If IsError(values(rowNo, colNo)) Then
+                    reasonText = "コード管理CSVの保存期間行にエラー値があります（行 " & CStr(rowNo) & "）。"
+                    Exit Function
+                End If
+            Next colNo
+            rowId = Trim$(CStr(values(rowNo, 2)))
+            rowPeriod = Trim$(CStr(values(rowNo, 3)))
+            stateValue = Trim$(CStr(values(rowNo, 4)))
+            parentCode = Trim$(CStr(values(rowNo, 5)))
+            If Len(rowId) = 0 Or Len(rowPeriod) = 0 Then
+                reasonText = "コード管理CSVに未完成の保存期間対応があります（行 " & CStr(rowNo) & "）。"
+                Exit Function
+            End If
+            If StrComp(rowId, targetId, vbBinaryCompare) = 0 And _
+               StrComp(rowPeriod, targetPeriod, vbBinaryCompare) <> 0 Then
+                reasonText = "コード管理CSVで保存期間ID「" & targetId & "」が別の保存期間にも対応しています。"
+                Exit Function
+            End If
+            If StrComp(rowPeriod, targetPeriod, vbBinaryCompare) = 0 And _
+               StrComp(rowId, targetId, vbBinaryCompare) <> 0 Then
+                reasonText = "コード管理CSVで保存期間「" & periodValue & "」に複数のID候補があります。"
+                Exit Function
+            End If
+            If StrComp(rowId, targetId, vbBinaryCompare) = 0 And _
+               StrComp(rowPeriod, targetPeriod, vbBinaryCompare) = 0 Then
+                exactCount = exactCount + 1
+                If Len(stateValue) > 0 And StrComp(stateValue, "システム", vbTextCompare) <> 0 Then
+                    reasonText = "対応行の状態が確定値ではありません（" & stateValue & "）。"
+                    Exit Function
+                End If
+                If Len(parentCode) > 0 Then
+                    reasonText = "保存期間の対応行に予期しない親分類コードがあります。"
+                    Exit Function
+                End If
+            End If
+        End If
+    Next rowNo
+    If exactCount <> 1 Then
+        If exactCount = 0 Then
+            reasonText = "コード管理CSVにこの保存期間・保存期間IDの組合せがありません。"
+        Else
+            reasonText = "コード管理CSVに同一の保存期間・保存期間IDが複数あります。"
+        End If
+        Exit Function
+    End If
+    BidirectionalSyncRetentionPairIsUnique = True
+    Exit Function
+
+Failed:
+    reasonText = "保存期間・保存期間IDの対応表を読み取れません。" & Err.Description
+    Err.Clear
+End Function
+
+Private Function BidirectionalSyncRetentionMapDisplay(ByVal isValid As Boolean, ByVal reasonText As String) As String
+    If isValid Then
+        BidirectionalSyncRetentionMapDisplay = "現在の目録CSV・コード管理CSVで一意な対応を確認"
+    Else
+        BidirectionalSyncRetentionMapDisplay = "未確認: " & reasonText
+    End If
+End Function
+
+Private Function BidirectionalSyncRetentionSignaturePart(ByVal valueText As String) As String
+    BidirectionalSyncRetentionSignaturePart = CStr(Len(valueText)) & ":" & valueText & ";"
+End Function
+
 Private Function BidirectionalSyncFindUniqueHeaderColumn( _
     ByVal ws As Worksheet, ByVal lastCol As Long, ByVal candidates As Variant) As Long
 
@@ -19567,7 +19936,7 @@ Public Function BidirectionalSyncResolveConflict(ByVal item As Object, ByVal dec
     Dim srcCol As Long, dstCol As Long, targetCell As Range, oldDecision As Variant, oldUpdated As Variant
     Dim oldEvents As Boolean, eventsCaptured As Boolean, changing As Boolean, restoreOk As Boolean
     Dim reason As String, failureText As String, systemValue As Variant, i As Long
-    Dim classificationPreview As String, previousDecision As String
+    Dim classificationPreview As String, retentionPreview As String, previousDecision As String
 
     On Error GoTo Failed
     If decision <> BIDIRECTIONAL_SYNC_CONFLICT_EXCEL And _
@@ -19577,6 +19946,10 @@ Public Function BidirectionalSyncResolveConflict(ByVal item As Object, ByVal dec
         If Not BidirectionalSyncClassification1DecisionSafe(item, decision, reason, classificationPreview, False, True) Then _
             Err.Raise vbObjectError + 2849, , "分類名１・分類コード１の連動判断を中止しました。" & reason
         If item.Exists("linkedPairSignature") Then item.Remove "linkedPairSignature"
+    ElseIf CStr(item("groupName")) = "保存期間・保存期間ID" Then
+        If Not BidirectionalSyncRetentionDecisionSafe(item, decision, reason, retentionPreview, False, True) Then _
+            Err.Raise vbObjectError + 2851, , "保存期間・保存期間IDの連動判断を中止しました。" & reason
+        If item.Exists("linkedRetentionSignature") Then item.Remove "linkedRetentionSignature"
     End If
     If Not BidirectionalSyncConflictLiveMatches(item, reason) Then _
         Err.Raise vbObjectError + 2841, , "競合解決を中止しました。" & reason & " Step2を再実行してください。"
@@ -19589,7 +19962,8 @@ Public Function BidirectionalSyncResolveConflict(ByVal item As Object, ByVal dec
         Err.Raise vbObjectError + 2843, , "保存済み競合が見つからないため変更できません。"
     oldDecision = wsConflict.Cells(stateRow, 6).Value2: oldUpdated = wsConflict.Cells(stateRow, 7).Value2
     previousDecision = CStr(oldDecision)
-    If CStr(item("groupName")) = "分類名１・分類コード１" And _
+    If (CStr(item("groupName")) = "分類名１・分類コード１" Or _
+        CStr(item("groupName")) = "保存期間・保存期間ID") And _
        (previousDecision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or previousDecision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL) Then _
         Err.Raise vbObjectError + 2850, , "この判断単位には確定済みの採用判断があります。既存判断を上書きしません。"
     End If
