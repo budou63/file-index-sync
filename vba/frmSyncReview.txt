@@ -43,6 +43,10 @@ Private eFieldItems As Collection
 Private deletionSelection As Object
 Private targetYear As Long
 Private rendering As Boolean
+' Display-only caches live for one synchronous render; never used by adoption validators.
+Private eDisplayHeaderMaps As Object
+Private eDisplayNormalizedKeys As Object
+Private eRenderedSelection As String
 Private mDUnavailableReason As String
 Private Const COMPARE_FIELD_COUNT As Long = 9
 Private Const CSV_SHEET As String = "目録CSV"
@@ -271,6 +275,8 @@ End Sub
 
 Public Sub LoadCases(ByVal loaded As Collection, ByVal yearValue As Long, _
                      Optional ByVal unavailableReason As String = "")
+    EndEDisplayRead
+    eRenderedSelection = ""
     Set cases = loaded
     targetYear = yearValue
     mDUnavailableReason = unavailableReason
@@ -422,6 +428,7 @@ End Sub
 
 Private Sub mCmdEClear_Click()
     Dim i As Long
+    eRenderedSelection = ""
     If mCboCategory.ListIndex <> 4 Then Exit Sub
     rendering = True
     For i = 0 To mLstCases.ListCount - 1: mLstCases.Selected(i) = False: Next i
@@ -557,33 +564,108 @@ Private Sub CompareFieldSpec(ByVal fieldIndex As Long, ByRef fieldCaption As Str
 End Sub
 
 Private Function CompareHeaderKey(ByVal rawHeader As String) As String
+    Dim originalHeader As String
+    originalHeader = rawHeader
+    If Not eDisplayNormalizedKeys Is Nothing Then
+        If eDisplayNormalizedKeys.Exists(originalHeader) Then
+            CompareHeaderKey = CStr(eDisplayNormalizedKeys(originalHeader))
+            Exit Function
+        End If
+    End If
     rawHeader = Replace(Trim$(rawHeader), "　", "")
     rawHeader = Replace(rawHeader, " ", "")
     On Error Resume Next
     rawHeader = StrConv(rawHeader, vbNarrow)
     On Error GoTo 0
     CompareHeaderKey = LCase$(rawHeader)
+    If Not eDisplayNormalizedKeys Is Nothing Then eDisplayNormalizedKeys(originalHeader) = CompareHeaderKey
 End Function
 
 Private Function FindCompareColumn(ByVal ws As Worksheet, ByVal aliases As Variant) As Long
-    Dim lastCol As Long, colNo As Long, foundCol As Long, foundCount As Long
-    Dim headerText As String, alias As Variant
+    Dim headerMap As Object, matchedColumns As Object, alias As Variant, headerKey As String
+    Dim colNo As Long, columnKey As Variant
     If ws Is Nothing Or IsEmpty(aliases) Then Exit Function
+    Set headerMap = EDisplayHeaderMap(ws)
+    Set matchedColumns = CreateObject("Scripting.Dictionary")
+    For Each alias In aliases
+        headerKey = CompareHeaderKey(CStr(alias))
+        If headerMap.Exists(headerKey) Then
+            colNo = CLng(headerMap(headerKey))
+            ' Zero denotes duplicate normalized headers: keep the original fail-closed behavior.
+            If colNo = 0 Then Exit Function
+            matchedColumns(CStr(colNo)) = True
+        End If
+    Next alias
+    If matchedColumns.Count = 1 Then
+        For Each columnKey In matchedColumns.Keys
+            FindCompareColumn = CLng(columnKey)
+        Next columnKey
+    End If
+End Function
+
+Private Sub BeginEDisplayRead()
+    Set eDisplayHeaderMaps = CreateObject("Scripting.Dictionary")
+    Set eDisplayNormalizedKeys = CreateObject("Scripting.Dictionary")
+    eDisplayHeaderMaps.CompareMode = vbBinaryCompare
+    eDisplayNormalizedKeys.CompareMode = vbBinaryCompare
+End Sub
+
+Private Sub EndEDisplayRead()
+    Set eDisplayHeaderMaps = Nothing
+    Set eDisplayNormalizedKeys = Nothing
+End Sub
+
+Private Function EDisplayHeaderMap(ByVal ws As Worksheet) As Object
+    Dim headerMap As Object, values As Variant, rawValue As Variant
+    Dim lastCol As Long, colNo As Long, headerKey As String
+    If Not eDisplayHeaderMaps Is Nothing Then
+        If eDisplayHeaderMaps.Exists(ws.Name) Then
+            Set EDisplayHeaderMap = eDisplayHeaderMaps(ws.Name)
+            Exit Function
+        End If
+    End If
+    Set headerMap = CreateObject("Scripting.Dictionary")
+    headerMap.CompareMode = vbBinaryCompare
     lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    values = ws.Range(ws.Cells(1, 1), ws.Cells(1, lastCol)).Value2
     For colNo = 1 To lastCol
-        If Not IsError(ws.Cells(1, colNo).Value2) Then
-            headerText = CompareHeaderKey(CStr(ws.Cells(1, colNo).Value2))
-            For Each alias In aliases
-                If headerText = CompareHeaderKey(CStr(alias)) Then
-                    foundCount = foundCount + 1
-                    foundCol = colNo
-                    Exit For
-                End If
-            Next alias
+        If lastCol = 1 Then
+            rawValue = values
+        Else
+            rawValue = values(1, colNo)
+        End If
+        If Not IsError(rawValue) Then
+            headerKey = CompareHeaderKey(CStr(rawValue))
+            If headerMap.Exists(headerKey) Then
+                headerMap(headerKey) = 0
+            Else
+                headerMap.Add headerKey, colNo
+            End If
         End If
     Next colNo
-    If foundCount = 1 Then FindCompareColumn = foundCol
+    If Not eDisplayHeaderMaps Is Nothing Then eDisplayHeaderMaps.Add ws.Name, headerMap
+    Set EDisplayHeaderMap = headerMap
 End Function
+
+Private Function ESelectionRenderKey() As String
+    Dim i As Long, result As String
+    result = CStr(mCboEVisibility.ListIndex) & ":" & CStr(mLstCases.ListIndex) & ":"
+    For i = 0 To mLstCases.ListCount - 1
+        If mLstCases.Selected(i) Then result = result & CStr(i) & ";"
+    Next i
+    ESelectionRenderKey = result
+End Function
+
+Private Sub EDisplayFailed(ByVal failureText As String)
+    EndEDisplayRead
+    eRenderedSelection = ""
+    rendering = False
+    mCmdApprove.Enabled = False
+    mCmdOther.Enabled = False
+    mCmdHold.Enabled = False
+    mLblStatus.Caption = "表示の更新に失敗しました。採用せず、再判定またはフォームの再読込を行ってください。"
+    mTxtDetails.Text = failureText
+End Sub
 
 Private Function CompareCellText(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal aliases As Variant, _
                                  ByRef headerFound As Boolean) As String
@@ -930,6 +1012,15 @@ Private Sub mCboCategory_Change()
     End If
     ShowCategory
 End Sub
+Private Sub mLstCases_MouseDown(ByVal Button As Integer, ByVal Shift As Integer, _
+                                ByVal X As Single, ByVal Y As Single)
+    If Not rendering Then eRenderedSelection = ""
+End Sub
+
+Private Sub mLstCases_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
+    If Not rendering Then eRenderedSelection = ""
+End Sub
+
 Private Sub mLstCases_Click()
     If Not rendering Then ShowCurrent
 End Sub
@@ -1169,6 +1260,7 @@ Private Sub RecordChoice(ByVal decision As String)
 End Sub
 Private Sub SelectSingleECase(ByVal newIndex As Long)
     Dim n As Long
+    eRenderedSelection = ""
     rendering = True
     For n = 0 To mLstCases.ListCount - 1: mLstCases.Selected(n) = False: Next n
     mLstCases.Selected(newIndex) = True
@@ -1286,6 +1378,7 @@ Private Sub mCmdRefresh_Click()
     Dim detectorDescription As String, detectorSource As String, newSelection As Object
     Dim previousSelection As Object, previousReason As String, failureText As String
     Dim previousCategory As Long, committed As Boolean
+    eRenderedSelection = ""
     On Error GoTo Failed
     Set refreshed = SyncReviewCandidates(targetYear)
     Err.Clear
@@ -1562,7 +1655,10 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
     Dim unresolvedInternalCount As Long, safeNoReviewCount As Long
     Dim internalOnlyFileCount As Long, identityIssueFileCount As Long
     Dim inputFileKeys As Object
+    On Error GoTo DisplayFailed
+    eRenderedSelection = ""
     If cases Is Nothing Then Exit Sub
+    BeginEDisplayRead
     If preserveFileSelection Then
         If mLstCases.ListCount > 0 Then priorTopIndex = mLstCases.TopIndex
         Set selectedRecordKeys = CreateObject("Scripting.Dictionary")
@@ -1679,6 +1775,7 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
         If priorTopIndex > mLstCases.ListCount - 1 Then priorTopIndex = mLstCases.ListCount - 1
         mLstCases.TopIndex = priorTopIndex
     End If
+    EndEDisplayRead
     rendering = False
     If preserveFileSelection Then
         ShowCurrent
@@ -1702,6 +1799,9 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
     Else
         UpdateESelection
     End If
+    Exit Sub
+DisplayFailed:
+    EDisplayFailed Err.Description
 End Sub
 
 Private Sub ECountInternalCase(ByVal caseItem As Object, ByRef internalMismatchCount As Long, _
@@ -2248,6 +2348,12 @@ Private Sub ShowECurrent()
     Dim rowIndex As Long, decision As String, displayCaption As String, allMode As Boolean
     Dim normalTargetItems As Long, outOfTargetItems As Long, mixedGroups As Long
     Dim linkedGroups As Long, retentionLinkedGroups As Long
+    Dim selectionKey As String
+    If rendering Then Exit Sub
+    On Error GoTo DisplayFailed
+    selectionKey = ESelectionRenderKey()
+    If selectionKey = eRenderedSelection Then Exit Sub
+    BeginEDisplayRead
     rendering = True
     Set eFieldCases = New Collection
     Set eFieldItems = New Collection
@@ -2268,6 +2374,8 @@ Private Sub ShowECurrent()
         mChkDelete.Visible = False
         rendering = False
         UpdateESelection
+        EndEDisplayRead
+        eRenderedSelection = selectionKey
         Exit Sub
     End If
     Set recordCases = record("cases")
@@ -2349,6 +2457,11 @@ Private Sub ShowECurrent()
     mChkDelete.Visible = False
     rendering = False
     UpdateESelection
+    EndEDisplayRead
+    eRenderedSelection = selectionKey
+    Exit Sub
+DisplayFailed:
+    EDisplayFailed Err.Description
 End Sub
 
 Private Sub UpdateEFieldSelection()
@@ -2356,6 +2469,8 @@ Private Sub UpdateEFieldSelection()
     If rendering Or mCboCategory.ListIndex <> 4 Then Exit Sub
     Set record = SelectedRecord()
     If record Is Nothing Then Exit Sub
+    On Error GoTo DisplayFailed
+    BeginEDisplayRead
     Set item = SelectedCase()
     Set fieldItem = SelectedEField()
     If item Is Nothing Or fieldItem Is Nothing Then
@@ -2366,6 +2481,7 @@ Private Sub UpdateEFieldSelection()
             mLblStatus.Caption = "判断する不一致項目を1件選択してください。"
         End If
         UpdateESelection
+        EndEDisplayRead
         Exit Sub
     End If
     mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & EConflictFieldDetails(item, fieldItem)
@@ -2381,6 +2497,10 @@ Private Sub UpdateEFieldSelection()
             mLblStatus.Caption = "［入力項目のみ］の項目を1件選択しています。判断は表示中の判断単位に適用されます。"
         End If
     UpdateESelection
+    EndEDisplayRead
+    Exit Sub
+DisplayFailed:
+    EDisplayFailed Err.Description
 End Sub
 
 Private Function ERecordIdentityDetails(ByVal record As Object) As String
