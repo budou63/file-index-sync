@@ -16,7 +16,7 @@ CONTROLS = {
     "cboEGroup": "ComboBox", "lblEVisibility": "Label", "cboEVisibility": "ComboBox",
     "lblEWindowSize": "Label", "cboEWindowSize": "ComboBox",
     "lblEPaneSize": "Label", "cboEPaneSize": "ComboBox",
-    "lblESelection": "Label", "cmdEClear": "CommandButton",
+    "lblESelection": "Label", "cmdEClear": "CommandButton", "cmdEBulk": "CommandButton",
     "lstCases": "ListBox", "lblRows": "Label", "lstRows": "ListBox",
     "lblCompareRows": "Label", "fraCompare": "Frame", "txtDetails": "TextBox",
     "chkDelete": "CheckBox", "lblStatus": "Label",

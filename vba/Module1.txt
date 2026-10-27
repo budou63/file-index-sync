@@ -19929,6 +19929,647 @@ Private Function BidirectionalSyncClassification1SignaturePart(ByVal valueText A
     BidirectionalSyncClassification1SignaturePart = CStr(Len(valueText)) & ":" & valueText & ";"
 End Function
 
+' File-wide transaction code is kept separate from the single-group resolver.
+Private Function BidirectionalSyncBatchPairUnique( _
+    ByVal groupName As String, ByVal nameValue As String, ByVal codeValue As String, _
+    ByVal parentCode As String, ByRef reason As String) As Boolean
+    Dim wsSrc As Worksheet, wsMaster As Worksheet, sourceName As String, sourceCode As String
+    Dim parentHeader As String, nameKey As String, codeKey As String, category As String
+    Dim nameCol As Long, codeCol As Long, parentCol As Long, lastCol As Long
+    Dim r As Long, lastRow As Long, exactCount As Long, sourcePairFound As Boolean
+    Dim sourceNameRaw As Variant, sourceCodeRaw As Variant, sourceParentRaw As Variant, masterValues As Variant
+    Dim masterName As String, masterCode As String, masterParent As String, stateValue As String, isGuide As Boolean
+    On Error GoTo Invalid
+    Select Case groupName
+        Case "第1ガイド・分類コード２"
+            sourceName = "分類名２": sourceCode = "分類コード２": parentHeader = "分類コード１": isGuide = True
+        Case "第2ガイド・分類コード３"
+            sourceName = "分類名３": sourceCode = "分類コード３": parentHeader = "分類コード２": isGuide = True
+        Case "媒体種別・媒体種別ID"
+            sourceName = "媒体種別": sourceCode = "媒体種別ID"
+        Case "原課・原課ID"
+            sourceName = "原課": sourceCode = "原課ID"
+        Case Else
+            reason = "未対応の管理コードグループです。": Exit Function
+    End Select
+    category = sourceName
+    nameKey = NormalizeClassificationGuideKey(nameValue): codeKey = Trim$(codeValue)
+    If Len(nameKey) = 0 Or Len(codeKey) = 0 Then reason = "名称または管理コードが空欄です。": Exit Function
+    If isGuide And Len(Trim$(parentCode)) = 0 Then reason = "親分類コードが空欄です。": Exit Function
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsMaster = ThisWorkbook.Worksheets(SHEET_CODE_MANAGEMENT)
+    lastCol = GetLastHeaderCol(wsSrc)
+    nameCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, lastCol, GetStep2HeaderCandidates(sourceName))
+    codeCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, lastCol, Array(sourceCode))
+    If isGuide Then parentCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, lastCol, Array(parentHeader))
+    If nameCol < 1 Or codeCol < 1 Or (isGuide And parentCol < 1) Then
+        reason = "目録CSVの管理コード見出しが一意でありません。": Exit Function
+    End If
+    lastRow = GetLastUsedRow(wsSrc)
+    For r = 2 To lastRow
+        sourceNameRaw = wsSrc.Cells(r, nameCol).Value2: sourceCodeRaw = wsSrc.Cells(r, codeCol).Value2
+        If IsError(sourceNameRaw) Or IsError(sourceCodeRaw) Then reason = "目録CSVにエラー値があります。": Exit Function
+        If isGuide Then
+            sourceParentRaw = wsSrc.Cells(r, parentCol).Value2
+            If IsError(sourceParentRaw) Then reason = "目録CSVの親分類にエラー値があります。": Exit Function
+            If StrComp(Trim$(CStr(sourceParentRaw)), Trim$(parentCode), vbBinaryCompare) <> 0 Then GoTo NextSource
+        End If
+        If StrComp(NormalizeClassificationGuideKey(CStr(sourceNameRaw)), nameKey, vbBinaryCompare) = 0 Or _
+           StrComp(Trim$(CStr(sourceCodeRaw)), codeKey, vbBinaryCompare) = 0 Then
+            If Len(Trim$(CStr(sourceNameRaw))) = 0 Or Len(Trim$(CStr(sourceCodeRaw))) = 0 Then
+                reason = "目録CSVに未完成の対応があります。": Exit Function
+            End If
+            If StrComp(NormalizeClassificationGuideKey(CStr(sourceNameRaw)), nameKey, vbBinaryCompare) <> 0 Or _
+               StrComp(Trim$(CStr(sourceCodeRaw)), codeKey, vbBinaryCompare) <> 0 Then
+                reason = "目録CSVの名称とコードが一意に対応しません。": Exit Function
+            End If
+            sourcePairFound = True
+        End If
+NextSource:
+    Next r
+    If Not sourcePairFound Then reason = "目録CSVに対応がありません。": Exit Function
+    lastRow = GetLastStep3DataRow(wsMaster)
+    If lastRow < 2 Then reason = "コード管理CSVが空です。": Exit Function
+    masterValues = wsMaster.Range(wsMaster.Cells(1, 1), wsMaster.Cells(lastRow, 5)).Value2
+    If CStr(masterValues(1, 1)) <> "項目名" Or CStr(masterValues(1, 2)) <> "コード" Or _
+       CStr(masterValues(1, 3)) <> "表示名" Or CStr(masterValues(1, 4)) <> "状態" Or _
+       CStr(masterValues(1, 5)) <> "親分類コード" Then
+        reason = "コード管理CSVの見出し構成が不正です。": Exit Function
+    End If
+    For r = 2 To UBound(masterValues, 1)
+        If IsError(masterValues(r, 1)) Then reason = "コード管理CSVの項目名が不正です。": Exit Function
+        If StrComp(CanonicalHeaderName(CStr(masterValues(r, 1))), CanonicalHeaderName(category), vbTextCompare) = 0 Then
+            If IsError(masterValues(r, 2)) Or IsError(masterValues(r, 3)) Or _
+               IsError(masterValues(r, 4)) Or IsError(masterValues(r, 5)) Then
+                reason = "コード管理CSVの対応行が不正です。": Exit Function
+            End If
+            masterParent = Trim$(CStr(masterValues(r, 5)))
+            If groupName = "第1ガイド・分類コード２" Then
+                ' 目録CSVは分類コード１の文脈で照合。コード管理CSVの第1ガイドは親分類を持たない。
+                If Len(masterParent) > 0 Then
+                    reason = "第1ガイドのコード管理行に予期しない親分類があります。": Exit Function
+                End If
+            ElseIf groupName = "第2ガイド・分類コード３" Then
+                If StrComp(masterParent, Trim$(parentCode), vbBinaryCompare) <> 0 Then GoTo NextMaster
+            ElseIf Len(masterParent) > 0 Then
+                reason = "コード管理CSVに予期しない親分類があります。": Exit Function
+            End If
+            masterName = NormalizeClassificationGuideKey(CStr(masterValues(r, 3)))
+            masterCode = Trim$(CStr(masterValues(r, 2)))
+            If StrComp(masterName, nameKey, vbBinaryCompare) = 0 Or _
+               StrComp(masterCode, codeKey, vbBinaryCompare) = 0 Then
+                If Len(masterName) = 0 Or Len(masterCode) = 0 Or _
+                   StrComp(masterName, nameKey, vbBinaryCompare) <> 0 Or _
+                   StrComp(masterCode, codeKey, vbBinaryCompare) <> 0 Then
+                    reason = "コード管理CSVの名称とコードが一意に対応しません。": Exit Function
+                End If
+                stateValue = Trim$(CStr(masterValues(r, 4)))
+                If isGuide Then
+                    If stateValue <> "システム" Then reason = "分類コードが未確定です。": Exit Function
+                ElseIf Len(stateValue) > 0 And stateValue <> "システム" Then
+                    reason = "管理コードが未確定です。": Exit Function
+                End If
+                exactCount = exactCount + 1
+            End If
+        End If
+NextMaster:
+    Next r
+    If exactCount <> 1 Then reason = "コード管理CSVの対応行を一意に確認できません。": Exit Function
+    BidirectionalSyncBatchPairUnique = True
+    Exit Function
+Invalid:
+    reason = "管理コードの検証に失敗しました。" & Err.Description
+End Function
+
+Private Function BidirectionalSyncBatchEffectiveParent( _
+    ByVal parentGroup As String, ByVal parentHeader As String, ByVal cases As Collection, _
+    ByVal choices As Object, ByVal sourceRow As Long, ByVal destinationRow As Long) As String
+    Dim wsSrc As Worksheet, wsDst As Worksheet, item As Object, decision As String
+    Dim parentCol As Long, chosenSource As Boolean, rawValue As Variant
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    For Each item In cases
+        If CStr(item("groupName")) = parentGroup Then
+            If choices.Exists(parentGroup) Then decision = CStr(choices(parentGroup))
+            If decision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then chosenSource = True
+            Exit For
+        End If
+    Next item
+    If chosenSource Then
+        parentCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, GetLastHeaderCol(wsSrc), Array(parentHeader))
+        If parentCol < 1 Then Err.Raise vbObjectError + 2870, , "親分類コードの目録CSV見出しが一意でありません。"
+        rawValue = wsSrc.Cells(sourceRow, parentCol).Value2
+    Else
+        parentCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array(parentHeader))
+        If parentCol < 1 Then Err.Raise vbObjectError + 2870, , "親分類コードのExcel見出しが一意でありません。"
+        rawValue = wsDst.Cells(destinationRow, parentCol).Value2
+    End If
+    If IsError(rawValue) Or IsNull(rawValue) Then Err.Raise vbObjectError + 2870, , "親分類コードにエラー値があります。"
+    BidirectionalSyncBatchEffectiveParent = Trim$(CStr(rawValue))
+End Function
+
+Private Function BidirectionalSyncBatchLinkedPairSafe( _
+    ByVal item As Object, ByVal decision As String, ByVal cases As Collection, _
+    ByVal choices As Object, ByRef reason As String) As Boolean
+    Dim groupName As String, nameHeader As String, codeHeader As String, parentHeader As String
+    Dim parentGroup As String, fieldItems As Collection, fieldItem As Object
+    Dim wsSrc As Worksheet, wsDst As Worksheet, srcRow As Long, dstRow As Long
+    Dim nameCount As Long, codeCount As Long, nameCol As Long, codeCol As Long
+    Dim sourceName As String, sourceCode As String, excelName As String, excelCode As String
+    Dim sourceParent As String, excelParent As String, effectiveParent As String
+    Dim sourceParentCol As Long, excelParentCol As Long, rawValue As Variant, previewText As String
+    On Error GoTo Invalid
+    groupName = CStr(item("groupName"))
+    Select Case groupName
+        Case "分類名１・分類コード１"
+            If Not BidirectionalSyncClassification1DecisionSafe(item, decision, reason, previewText) Then Exit Function
+            BidirectionalSyncBatchLinkedPairSafe = True: Exit Function
+        Case "保存期間・保存期間ID"
+            If Not BidirectionalSyncRetentionDecisionSafe(item, decision, reason, previewText) Then Exit Function
+            BidirectionalSyncBatchLinkedPairSafe = True: Exit Function
+        Case "第1ガイド・分類コード２"
+            nameHeader = "分類名２": codeHeader = "分類コード２"
+            parentHeader = "分類コード１": parentGroup = "分類名１・分類コード１"
+        Case "第2ガイド・分類コード３"
+            nameHeader = "分類名３": codeHeader = "分類コード３"
+            parentHeader = "分類コード２": parentGroup = "第1ガイド・分類コード２"
+        Case "媒体種別・媒体種別ID"
+            nameHeader = "媒体種別": codeHeader = "媒体種別ID"
+        Case "原課・原課ID"
+            nameHeader = "原課": codeHeader = "原課ID"
+        Case Else
+            BidirectionalSyncBatchLinkedPairSafe = True: Exit Function
+    End Select
+    Set fieldItems = BidirectionalSyncUnpackConflictHeaders(CStr(item("snapshot")))
+    If fieldItems.Count <> 2 Then reason = "連動判断グループの項目数が2ではありません。": Exit Function
+    For Each fieldItem In fieldItems
+        If StrComp(CanonicalHeaderName(CStr(fieldItem("sourceHeader"))), _
+            CanonicalHeaderName(CStr(fieldItem("destinationHeader"))), vbTextCompare) <> 0 Then
+            reason = "管理コードの見出しが一致しません。": Exit Function
+        End If
+        If StrComp(CanonicalHeaderName(CStr(fieldItem("sourceHeader"))), CanonicalHeaderName(codeHeader), vbTextCompare) = 0 Then
+            codeCount = codeCount + 1
+        ElseIf StrComp(CanonicalHeaderName(CStr(fieldItem("sourceHeader"))), CanonicalHeaderName(nameHeader), vbTextCompare) = 0 Or _
+               (groupName = "第1ガイド・分類コード２" And _
+                StrComp(CanonicalHeaderName(CStr(fieldItem("sourceHeader"))), CanonicalHeaderName("第1ガイド"), vbTextCompare) = 0) Or _
+               (groupName = "第2ガイド・分類コード３" And _
+                StrComp(CanonicalHeaderName(CStr(fieldItem("sourceHeader"))), CanonicalHeaderName("第2ガイド"), vbTextCompare) = 0) Then
+            nameCount = nameCount + 1
+        Else
+            reason = "未確認の管理コード項目があります。": Exit Function
+        End If
+    Next fieldItem
+    If nameCount <> 1 Or codeCount <> 1 Then reason = "管理コードの関連項目が不足または重複しています。": Exit Function
+    ' 保留でも対応を証明できない管理コードがある場合は全体を拒否する。
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    srcRow = CLng(item("sourceRow")): dstRow = CLng(item("destinationRow"))
+    nameCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, GetLastHeaderCol(wsSrc), GetStep2HeaderCandidates(nameHeader))
+    codeCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, GetLastHeaderCol(wsSrc), Array(codeHeader))
+    If nameCol < 1 Or codeCol < 1 Then reason = "目録CSVの対応見出しがありません。": Exit Function
+    rawValue = wsSrc.Cells(srcRow, nameCol).Value2
+    If IsError(rawValue) Then reason = "目録CSVにエラー値があります。": Exit Function
+    sourceName = CStr(rawValue)
+    rawValue = wsSrc.Cells(srcRow, codeCol).Value2
+    If IsError(rawValue) Then reason = "目録CSVのコードにエラー値があります。": Exit Function
+    sourceCode = CStr(rawValue)
+    nameCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, GetLastHeaderCol(wsDst), GetStep2HeaderCandidates(nameHeader))
+    codeCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array(codeHeader))
+    If nameCol < 1 Or codeCol < 1 Then reason = "Excelの対応見出しがありません。": Exit Function
+    rawValue = wsDst.Cells(dstRow, nameCol).Value2
+    If IsError(rawValue) Then reason = "Excelの表示名にエラー値があります。": Exit Function
+    excelName = CStr(rawValue)
+    rawValue = wsDst.Cells(dstRow, codeCol).Value2
+    If IsError(rawValue) Then reason = "Excelのコードにエラー値があります。": Exit Function
+    excelCode = CStr(rawValue)
+    If Len(parentHeader) > 0 Then
+        sourceParentCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, GetLastHeaderCol(wsSrc), Array(parentHeader))
+        excelParentCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array(parentHeader))
+        If sourceParentCol < 1 Or excelParentCol < 1 Then reason = "親分類コード列がありません。": Exit Function
+        rawValue = wsSrc.Cells(srcRow, sourceParentCol).Value2
+        If IsError(rawValue) Then reason = "目録CSVの親分類コードが不正です。": Exit Function
+        sourceParent = Trim$(CStr(rawValue))
+        rawValue = wsDst.Cells(dstRow, excelParentCol).Value2
+        If IsError(rawValue) Then reason = "Excelの親分類コードが不正です。": Exit Function
+        excelParent = Trim$(CStr(rawValue))
+        effectiveParent = BidirectionalSyncBatchEffectiveParent(parentGroup, parentHeader, cases, choices, srcRow, dstRow)
+        If (decision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM And sourceParent <> effectiveParent) Or _
+           (decision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL And excelParent <> effectiveParent) Then
+            reason = "選択した子分類と一括適用後の親分類コードが一致しません。": Exit Function
+        End If
+    End If
+    If Not BidirectionalSyncBatchPairUnique(groupName, sourceName, sourceCode, sourceParent, reason) Then Exit Function
+    If Not BidirectionalSyncBatchPairUnique(groupName, excelName, excelCode, excelParent, reason) Then Exit Function
+    BidirectionalSyncBatchLinkedPairSafe = True
+    Exit Function
+Invalid:
+    reason = "管理コードの事前検証に失敗しました。" & Err.Description
+End Function
+
+Private Function BidirectionalSyncBatchPlainFieldSafe( _
+    ByVal groupName As String, ByVal sourceHeader As String, ByVal destinationHeader As String) As Boolean
+    Dim groupKey As String, sourceKey As String, destinationKey As String
+    groupKey = CanonicalHeaderName(groupName)
+    sourceKey = CanonicalHeaderName(sourceHeader)
+    destinationKey = CanonicalHeaderName(destinationHeader)
+    If groupKey = CanonicalHeaderName("タイトル") Or groupKey = CanonicalHeaderName("個別フォルダー") Then
+        BidirectionalSyncBatchPlainFieldSafe = _
+            ((sourceKey = CanonicalHeaderName("タイトル") Or sourceKey = CanonicalHeaderName("個別フォルダー")) And _
+             (destinationKey = CanonicalHeaderName("タイトル") Or destinationKey = CanonicalHeaderName("個別フォルダー")))
+        Exit Function
+    End If
+    If sourceKey <> destinationKey Or sourceKey <> groupKey Then Exit Function
+    Select Case groupKey
+        Case CanonicalHeaderName("内容・取扱い"), CanonicalHeaderName("備考"), _
+             CanonicalHeaderName("毎年度利用区分1:毎年作成 2:単年のみ")
+            BidirectionalSyncBatchPlainFieldSafe = True
+    End Select
+End Function
+
+Private Function BidirectionalSyncBatchHierarchySafe( _
+    ByVal cases As Collection, ByVal choices As Object, ByRef reason As String) As Boolean
+    Dim wsSrc As Worksheet, wsDst As Worksheet, parentGroup As String, childGroup As String
+    Dim header As String, oldCol As Long, newCol As Long, index As Long
+    Dim oldValue As Variant, newValue As Variant, effectiveValue As String
+    Dim srcRow As Long, dstRow As Long
+    On Error GoTo Invalid
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    srcRow = CLng(cases(1)("sourceRow")): dstRow = CLng(cases(1)("destinationRow"))
+    For index = 1 To 2
+        If index = 1 Then
+            parentGroup = "分類名１・分類コード１": childGroup = "第1ガイド・分類コード２"
+            header = "分類コード１"
+        Else
+            parentGroup = "第1ガイド・分類コード２": childGroup = "第2ガイド・分類コード３"
+            header = "分類コード２"
+        End If
+        If choices.Exists(parentGroup) Then
+            If CStr(choices(parentGroup)) = "システム採用" Then
+                newCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, GetLastHeaderCol(wsSrc), Array(header))
+                oldCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, GetLastHeaderCol(wsDst), Array(header))
+                If newCol < 1 Or oldCol < 1 Then reason = "親分類コードを一意に確認できません。": Exit Function
+                newValue = wsSrc.Cells(srcRow, newCol).Value2
+                oldValue = wsDst.Cells(dstRow, oldCol).Value2
+                If IsError(newValue) Or IsError(oldValue) Then reason = "親分類コードにエラー値があります。": Exit Function
+                effectiveValue = BidirectionalSyncBatchEffectiveParent(parentGroup, header, cases, choices, srcRow, dstRow)
+                If StrComp(effectiveValue, Trim$(CStr(oldValue)), vbBinaryCompare) <> 0 And _
+                   Not choices.Exists(childGroup) Then
+                    reason = "親分類が変わるため、子分類の連動採用も必要です: " & childGroup: Exit Function
+                End If
+                If StrComp(effectiveValue, Trim$(CStr(oldValue)), vbBinaryCompare) <> 0 Then
+                    If CStr(choices(childGroup)) <> "システム採用" Then
+                        reason = "子分類を元の親分類のまま保持できません: " & childGroup: Exit Function
+                    End If
+                End If
+            End If
+        End If
+    Next index
+    BidirectionalSyncBatchHierarchySafe = True
+    Exit Function
+Invalid:
+    reason = "分類階層の事前検証に失敗しました。" & Err.Description
+End Function
+
+Private Function BidirectionalSyncBatchSourceKeyIsUnique( _
+    ByVal wsSrc As Worksheet, ByVal sourceRow As Long, ByVal stableKey As String) As Boolean
+    Dim headerMap As Object, rowNo As Long, currentKey As String, matches As Long
+    On Error GoTo Invalid
+    If sourceRow < 2 Or Len(stableKey) = 0 Then Exit Function
+    Set headerMap = CreateObject("Scripting.Dictionary")
+    BuildHeaderMap wsSrc, GetLastHeaderCol(wsSrc), headerMap
+    For rowNo = 2 To GetLastUsedRow(wsSrc)
+        currentKey = BuildFileKeyFromSheetRow(wsSrc, rowNo, headerMap)
+        If Len(currentKey) = 0 Then currentKey = BuildFolderNameSyncKeyFromSheetRow(wsSrc, rowNo, GetLastHeaderCol(wsSrc))
+        If StrComp(currentKey, stableKey, vbBinaryCompare) = 0 Then
+            matches = matches + 1
+            If rowNo <> sourceRow Or matches > 1 Then Exit Function
+        End If
+    Next rowNo
+    BidirectionalSyncBatchSourceKeyIsUnique = (matches = 1)
+    Exit Function
+Invalid:
+    Err.Clear
+End Function
+
+Public Function BidirectionalSyncPlanFileDecisions( _
+    ByVal cases As Collection, ByVal choices As Object, ByRef plan As Collection, _
+    ByRef preview As String, ByRef reason As String) As Boolean
+    Dim wsSrc As Worksheet, wsDst As Worksheet, wsConflict As Worksheet
+    Dim item As Object, fieldItem As Object, entry As Object, cellState As Object
+    Dim fields As Collection, cells As Collection, proposed As Collection
+    Dim seenGroups As Object, seenCells As Object, key As Variant
+    Dim groupName As String, decision As String, stateDecision As String, failureReason As String
+    Dim firstYear As Long, firstRowId As String, firstStableKey As String
+    Dim firstSrcRow As Long, firstDstRow As Long, stateRow As Long, srcCol As Long, dstCol As Long
+    Dim targetCell As Range, sourceCell As Range, sourceValue As Variant, excelValue As Variant
+    Dim changedCount As Long, srcLastCol As Long, dstLastCol As Long
+    On Error GoTo Invalid
+    Set plan = Nothing: preview = "": reason = ""
+    If cases Is Nothing Or choices Is Nothing Then reason = "判断対象がありません。": Exit Function
+    If cases.Count = 0 Then reason = "ファイルの判断項目がありません。": Exit Function
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    Set wsConflict = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_CONFLICT_SHEET)
+    If ThisWorkbook.ReadOnly Or wsSrc.ProtectContents Or wsDst.ProtectContents Or wsConflict.ProtectContents Then
+        reason = "ブックまたは対象シートが保護・読み取り専用です。": Exit Function
+    End If
+    Set seenGroups = CreateObject("Scripting.Dictionary")
+    Set seenCells = CreateObject("Scripting.Dictionary")
+    Set proposed = New Collection
+    firstYear = CLng(cases(1)("year")): firstRowId = CStr(cases(1)("rowId"))
+    firstStableKey = CStr(cases(1)("stableKey"))
+    firstSrcRow = CLng(cases(1)("sourceRow")): firstDstRow = CLng(cases(1)("destinationRow"))
+    If Len(firstRowId) = 0 Or Len(firstStableKey) = 0 Or firstSrcRow < 2 Or firstDstRow < 2 Then
+        reason = "ファイルの固定識別情報を確認できません。": Exit Function
+    End If
+    If Not BidirectionalSyncDestinationRowIdIsUnique(wsDst, firstRowId, firstDstRow) Or _
+       Not BidirectionalSyncBatchSourceKeyIsUnique(wsSrc, firstSrcRow, firstStableKey) Then
+        reason = "同じExcel管理行IDまたはCSV識別キーが別ファイルにもあります。": Exit Function
+    End If
+    If Not BidirectionalSyncBatchHierarchySafe(cases, choices, reason) Then Exit Function
+    preview = "年度=" & firstYear & " / Excel管理行ID=" & firstRowId & _
+        " / CSV識別キー=" & firstStableKey & vbCrLf
+    srcLastCol = GetLastHeaderCol(wsSrc): dstLastCol = GetLastHeaderCol(wsDst)
+    For Each item In cases
+        If CStr(item("category")) <> "E" Or CLng(item("year")) <> firstYear Or _
+           CStr(item("rowId")) <> firstRowId Or CStr(item("stableKey")) <> firstStableKey Or _
+           CLng(item("sourceRow")) <> firstSrcRow Or CLng(item("destinationRow")) <> firstDstRow Then
+            reason = "別年度・別ファイルまたは別の行が混在しています。": Exit Function
+        End If
+        groupName = CStr(item("groupName"))
+        If Len(groupName) = 0 Or seenGroups.Exists(groupName) Then
+            reason = "判断グループが空欄または重複しています。": Exit Function
+        End If
+        seenGroups.Add groupName, True
+        If Not BidirectionalSyncConflictLiveMatches(item, failureReason) Then
+            reason = groupName & " の現在値を再確認できません。" & failureReason: Exit Function
+        End If
+        If Not BidirectionalSyncFindConflictStateRow(item, stateRow) Then
+            reason = "競合判断行が一意でありません。": Exit Function
+        End If
+        If IsError(wsConflict.Cells(stateRow, 6).Value2) Or IsError(wsConflict.Cells(stateRow, 7).Value2) Then
+            reason = "保存済み判断にエラー値があります。": Exit Function
+        End If
+        If wsConflict.Cells(stateRow, 6).HasFormula Or wsConflict.Cells(stateRow, 7).HasFormula Then
+            reason = "判断履歴の数式セルは変更・復元できません。": Exit Function
+        End If
+        stateDecision = CStr(wsConflict.Cells(stateRow, 6).Value2)
+        If stateDecision <> BIDIRECTIONAL_SYNC_CONFLICT_UNRESOLVED And _
+           stateDecision <> BIDIRECTIONAL_SYNC_CONFLICT_HOLD And _
+           stateDecision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM And _
+           stateDecision <> BIDIRECTIONAL_SYNC_CONFLICT_EXCEL Then
+            reason = "保存された判断状態が不正です。": Exit Function
+        End If
+        If stateDecision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or stateDecision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL Then
+            If choices.Exists(groupName) Then reason = "確定済み判断を変更できません。": Exit Function
+            If groupName = "第1ガイド・分類コード２" Or groupName = "第2ガイド・分類コード３" Or _
+               groupName = "媒体種別・媒体種別ID" Or groupName = "原課・原課ID" Then
+                If Not BidirectionalSyncBatchLinkedPairSafe(item, BIDIRECTIONAL_SYNC_CONFLICT_HOLD, _
+                    cases, choices, failureReason) Then
+                    reason = "確定済みの管理コード対応を証明できません。" & failureReason: Exit Function
+                End If
+            End If
+            preview = preview & "確定済み（対象外）: " & groupName & " [" & stateDecision & "]" & vbCrLf
+            Set fields = BidirectionalSyncUnpackConflictHeaders(CStr(item("snapshot")))
+            For Each fieldItem In fields
+                dstCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, dstLastCol, _
+                    GetStep2HeaderCandidates(CStr(fieldItem("destinationHeader"))))
+                If dstCol < 1 Then reason = "確定済み項目の見出しを確認できません。": Exit Function
+                excelValue = wsDst.Cells(firstDstRow, dstCol).Value2
+                If IsError(excelValue) Or IsNull(excelValue) Then
+                    reason = "確定済み項目の現在値を表示できません。": Exit Function
+                End If
+                preview = preview & "  " & CStr(fieldItem("destinationHeader")) & _
+                    " = " & CStr(excelValue) & "（変更対象外）" & vbCrLf
+            Next fieldItem
+        Else
+            If Not choices.Exists(groupName) Then reason = "未確定項目の判断指定が不足しています: " & groupName: Exit Function
+            decision = CStr(choices(groupName))
+            If decision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM And _
+               decision <> BIDIRECTIONAL_SYNC_CONFLICT_EXCEL And _
+               decision <> BIDIRECTIONAL_SYNC_CONFLICT_HOLD Then
+                reason = "不正な判断方法です: " & groupName: Exit Function
+            End If
+            If Not BidirectionalSyncBatchLinkedPairSafe(item, decision, cases, choices, failureReason) Then
+                reason = groupName & " の連動項目を確認できません。" & failureReason: Exit Function
+            End If
+            Set fields = BidirectionalSyncUnpackConflictHeaders(CStr(item("snapshot")))
+            If fields.Count = 0 Then reason = "判断グループに項目がありません。": Exit Function
+            Set cells = New Collection
+            Set entry = CreateObject("Scripting.Dictionary")
+            entry.Add "item", item: entry.Add "decision", decision
+            entry.Add "stateRow", stateRow: entry.Add "oldDecision", wsConflict.Cells(stateRow, 6).Value2
+            entry.Add "oldUpdated", wsConflict.Cells(stateRow, 7).Value2
+            entry.Add "cells", cells
+            preview = preview & "判断: " & groupName & " -> " & decision & vbCrLf
+            For Each fieldItem In fields
+                If BidirectionalSyncIsIdentityHeader(CStr(fieldItem("sourceHeader"))) Or _
+                   BidirectionalSyncIsIdentityHeader(CStr(fieldItem("destinationHeader"))) Then
+                    reason = "識別情報は一括採用できません。": Exit Function
+                End If
+                If groupName <> "分類名１・分類コード１" And groupName <> "保存期間・保存期間ID" And _
+                   groupName <> "第1ガイド・分類コード２" And groupName <> "第2ガイド・分類コード３" And _
+                   groupName <> "媒体種別・媒体種別ID" And groupName <> "原課・原課ID" Then
+                    If Not BidirectionalSyncBatchPlainFieldSafe(groupName, _
+                        CStr(fieldItem("sourceHeader")), CStr(fieldItem("destinationHeader"))) Then
+                        reason = "安全な一括採用を確認できない項目です: " & groupName: Exit Function
+                    End If
+                End If
+                If (InStr(CStr(fieldItem("sourceHeader")), "ID") > 0 Or _
+                    InStr(CStr(fieldItem("sourceHeader")), "コード") > 0) And _
+                    groupName <> "分類名１・分類コード１" And groupName <> "保存期間・保存期間ID" And _
+                    groupName <> "第1ガイド・分類コード２" And groupName <> "第2ガイド・分類コード３" And _
+                    groupName <> "媒体種別・媒体種別ID" And groupName <> "原課・原課ID" Then
+                    reason = "未対応の管理コードを自動採用できません。": Exit Function
+                End If
+                srcCol = BidirectionalSyncFindUniqueHeaderColumn(wsSrc, srcLastCol, _
+                    GetStep2HeaderCandidates(CStr(fieldItem("sourceHeader"))))
+                dstCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, dstLastCol, _
+                    GetStep2HeaderCandidates(CStr(fieldItem("destinationHeader"))))
+                If srcCol < 1 Or dstCol < 1 Then reason = "更新先の見出しが一意でありません。": Exit Function
+                Set sourceCell = wsSrc.Cells(firstSrcRow, srcCol)
+                Set targetCell = wsDst.Cells(firstDstRow, dstCol)
+                sourceValue = sourceCell.Value2: excelValue = targetCell.Value2
+                If sourceCell.HasFormula Or IsError(sourceValue) Or IsError(excelValue) Or _
+                   IsNull(sourceValue) Or IsNull(excelValue) Then
+                    reason = "数式の参照元またはエラー値を採用できません。": Exit Function
+                End If
+                If seenCells.Exists(targetCell.Address(False, False)) Then
+                    reason = "複数の判断グループが同じセルを変更します。": Exit Function
+                End If
+                seenCells.Add targetCell.Address(False, False), True
+                If decision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM And targetCell.HasFormula Then
+                    reason = "数式セルは上書きしません。": Exit Function
+                End If
+                Set cellState = CreateObject("Scripting.Dictionary")
+                cellState.Add "address", targetCell.Address(False, False)
+                cellState.Add "sourceHeader", CStr(fieldItem("sourceHeader"))
+                cellState.Add "sourceValue", sourceValue
+                cellState.Add "value", excelValue
+                cellState.Add "hasFormula", CBool(targetCell.HasFormula)
+                cellState.Add "formula", CStr(targetCell.Formula)
+                cellState.Add "format", CStr(targetCell.NumberFormat)
+                cells.Add cellState
+                preview = preview & "  " & CStr(fieldItem("sourceHeader")) & _
+                    ": 現在=" & CStr(excelValue) & " / 採用予定=" & _
+                    IIf(decision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM, CStr(sourceValue), CStr(excelValue)) & _
+                    " / 元=" & decision & vbCrLf
+            Next fieldItem
+            proposed.Add entry: changedCount = changedCount + 1
+        End If
+    Next item
+    For Each key In choices.Keys
+        If Not seenGroups.Exists(CStr(key)) Then reason = "別ファイルの判断指定があります。": Exit Function
+    Next key
+    If changedCount = 0 Then reason = "未確定の判断対象がありません。": Exit Function
+    Set plan = proposed
+    BidirectionalSyncPlanFileDecisions = True
+    Exit Function
+Invalid:
+    reason = "ファイル単位の事前検証に失敗しました。" & Err.Description
+    Set plan = Nothing
+End Function
+
+Private Function BidirectionalSyncRestoreFileDecisions( _
+    ByVal plan As Collection, ByVal wsDst As Worksheet, ByVal wsConflict As Worksheet) As Boolean
+    Dim entry As Object, cellState As Object, item As Object, cells As Collection, targetCell As Range
+    Dim restored As Boolean, oldValue As Variant, currentValue As Variant
+    Dim oldDecision As Variant, oldUpdated As Variant, stateRow As Long
+    restored = True
+    On Error Resume Next
+    For Each entry In plan
+        Set item = entry("item"): Set cells = entry("cells")
+        If CStr(entry("decision")) = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then
+            For Each cellState In cells
+                Err.Clear
+                Set targetCell = wsDst.Range(CStr(cellState("address")))
+                oldValue = cellState("value")
+                If CBool(cellState("hasFormula")) Then
+                    targetCell.Formula = CStr(cellState("formula"))
+                Else
+                    targetCell.Value2 = oldValue
+                End If
+                targetCell.NumberFormat = CStr(cellState("format"))
+                If Err.Number <> 0 Then restored = False
+                Err.Clear
+                currentValue = targetCell.Value2
+                If Err.Number <> 0 Then restored = False
+                If targetCell.HasFormula <> CBool(cellState("hasFormula")) Then restored = False
+                If CBool(cellState("hasFormula")) Then
+                    If CStr(targetCell.Formula) <> CStr(cellState("formula")) Then restored = False
+                ElseIf VarType(currentValue) <> VarType(oldValue) Then
+                    restored = False
+                ElseIf Not IsEmpty(oldValue) Then
+                    If CStr(currentValue) <> CStr(oldValue) Then restored = False
+                End If
+                If CStr(targetCell.NumberFormat) <> CStr(cellState("format")) Then restored = False
+                If Err.Number <> 0 Then restored = False
+            Next cellState
+        End If
+        stateRow = CLng(entry("stateRow"))
+        oldDecision = entry("oldDecision"): oldUpdated = entry("oldUpdated")
+        Err.Clear
+        wsConflict.Cells(stateRow, 6).Value2 = oldDecision
+        wsConflict.Cells(stateRow, 7).Value2 = oldUpdated
+        If Err.Number <> 0 Then restored = False
+        Err.Clear
+        If CStr(wsConflict.Cells(stateRow, 6).Value2) <> CStr(oldDecision) Then restored = False
+        If VarType(wsConflict.Cells(stateRow, 7).Value2) <> VarType(oldUpdated) Then restored = False
+        If Not IsEmpty(oldUpdated) Then
+            If CStr(wsConflict.Cells(stateRow, 7).Value2) <> CStr(oldUpdated) Then restored = False
+        End If
+        If Err.Number <> 0 Then restored = False
+        Err.Clear
+        item("decision") = oldDecision
+        If Err.Number <> 0 Then restored = False
+        Err.Clear
+        If CStr(item("decision")) <> CStr(oldDecision) Then restored = False
+        If Err.Number <> 0 Then restored = False
+    Next entry
+    On Error GoTo 0
+    BidirectionalSyncRestoreFileDecisions = restored
+End Function
+
+' Private failure injection is only a disposable Excel test hook; normal UI always uses zero.
+Private Function BidirectionalSyncCommitFilePlan( _
+    ByVal plan As Collection, ByVal wsDst As Worksheet, ByVal wsConflict As Worksheet, _
+    ByVal failAfterGroup As Long) As Boolean
+    Dim entry As Object, cellState As Object, cells As Collection, item As Object
+    Dim targetCell As Range, groupIndex As Long
+    For Each entry In plan
+        groupIndex = groupIndex + 1
+        Set cells = entry("cells")
+        If CStr(entry("decision")) = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then
+            For Each cellState In cells
+                Set targetCell = wsDst.Range(CStr(cellState("address")))
+                WriteStep2SourceValue targetCell, CStr(cellState("sourceHeader")), cellState("sourceValue")
+                If NormalizeValueForUpdateCompare(CStr(cellState("sourceHeader")), targetCell.Value2) <> _
+                   NormalizeValueForUpdateCompare(CStr(cellState("sourceHeader")), cellState("sourceValue")) Then _
+                    Err.Raise vbObjectError + 2871, , "セル更新後の値を検証できません。"
+            Next cellState
+        End If
+        If failAfterGroup > 0 And groupIndex = failAfterGroup Then _
+            Err.Raise vbObjectError + 2872, , "検証用の失敗注入です。"
+    Next entry
+    For Each entry In plan
+        wsConflict.Cells(CLng(entry("stateRow")), 6).Value2 = CStr(entry("decision"))
+        wsConflict.Cells(CLng(entry("stateRow")), 7).Value2 = Format$(Now, "yyyy/mm/dd hh:nn:ss")
+        If CStr(wsConflict.Cells(CLng(entry("stateRow")), 6).Value2) <> CStr(entry("decision")) Then _
+            Err.Raise vbObjectError + 2873, , "判断履歴の書き込みを検証できません。"
+    Next entry
+    For Each entry In plan
+        Set item = entry("item")
+        item("decision") = CStr(entry("decision"))
+    Next entry
+    BidirectionalSyncCommitFilePlan = True
+End Function
+
+Public Function BidirectionalSyncResolveFileDecisions( _
+    ByVal cases As Collection, ByVal choices As Object, ByVal expectedPreview As String) As Boolean
+    Dim plan As Collection, wsDst As Worksheet, wsConflict As Worksheet
+    Dim preview As String, reason As String, failureText As String
+    Dim oldEvents As Boolean, eventsCaptured As Boolean, changing As Boolean, restoreOk As Boolean
+    On Error GoTo Failed
+    If Not BidirectionalSyncPlanFileDecisions(cases, choices, plan, preview, reason) Then _
+        Err.Raise vbObjectError + 2874, , reason
+    If Len(expectedPreview) = 0 Or StrComp(expectedPreview, preview, vbBinaryCompare) <> 0 Then _
+        Err.Raise vbObjectError + 2875, , "確認画面の後に判断対象が変わりました。再読込してください。"
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    Set wsConflict = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_CONFLICT_SHEET)
+    oldEvents = Application.EnableEvents: eventsCaptured = True
+    Application.EnableEvents = False: changing = True
+    If Not BidirectionalSyncCommitFilePlan(plan, wsDst, wsConflict, 0) Then _
+        Err.Raise vbObjectError + 2876, , "一括更新が完了しませんでした。"
+    Application.EnableEvents = oldEvents: changing = False
+    BidirectionalSyncResolveFileDecisions = True
+    Exit Function
+Failed:
+    failureText = Err.Description
+    On Error Resume Next
+    restoreOk = True
+    If changing Then
+        Err.Clear
+        Application.EnableEvents = False
+        If Err.Number <> 0 Then restoreOk = False
+        Err.Clear
+        If Not BidirectionalSyncRestoreFileDecisions(plan, wsDst, wsConflict) Then restoreOk = False
+        If Err.Number <> 0 Then restoreOk = False
+    End If
+    If eventsCaptured Then
+        Err.Clear
+        Application.EnableEvents = oldEvents
+        If Err.Number <> 0 Then restoreOk = False
+    End If
+    On Error GoTo 0
+    If Not restoreOk Then
+        MsgBox "一括採用に失敗し、全項目を完全には復元できませんでした。ブックを保存せず終了してください。" & _
+            vbCrLf & failureText, vbCritical
+    Else
+        MsgBox "一括採用を中止しました。変更は適用していません。" & vbCrLf & failureText, vbExclamation
+    End If
+End Function
+
 Public Function BidirectionalSyncResolveConflict(ByVal item As Object, ByVal decision As String) As Boolean
     Dim wsSrc As Worksheet, wsDst As Worksheet, wsConflict As Worksheet
     Dim fieldItems As Collection, fieldItem As Object, snapshots As Collection, snapshot As Object
