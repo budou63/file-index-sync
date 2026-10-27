@@ -2411,7 +2411,7 @@ Private Sub EApplyFileDecision(ByVal decision As String)
     Dim choices As Object, plan As Collection, entry As Object, plannedCells As Collection
     Dim groupName As String, savedDecision As String, preview As String, reason As String
     Dim confirmationText As String, confirmedPreview As String, sourceLabel As String, affectedFieldCount As Long
-    Dim fieldItems As Collection, fieldItem As Object
+    Dim fieldItems As Collection, fieldItem As Object, deferredGroupNames As String, deferredPreview As String
     On Error GoTo Failed
     If mCboCategory.ListIndex <> 4 Or ESelectedCount() <> 1 Then
         mLblStatus.Caption = "ファイル単位の採用にはファイルを1件だけ選択してください。"
@@ -2430,11 +2430,20 @@ Private Sub EApplyFileDecision(ByVal decision As String)
         groupName = CStr(item("groupName"))
         savedDecision = CStr(item("decision"))
         If savedDecision <> "システム採用" And savedDecision <> "Excel採用" Then
-            choices.Add groupName, decision
+            If Module1.BidirectionalSyncBatchGroupCanRemainUnresolved(item) Then
+                deferredGroupNames = deferredGroupNames & "  " & groupName & vbCrLf
+            Else
+                choices.Add groupName, decision
+            End If
         End If
     Next item
     If choices.Count = 0 Then
-        mLblStatus.Caption = "このファイルに未確定の不一致項目はありません。"
+        If Len(deferredGroupNames) > 0 Then
+            mLblStatus.Caption = "一括採用対象の項目がありません。対象外項目の値・判断状態・判断履歴は変更しません。"
+            MsgBox mLblStatus.Caption & vbCrLf & deferredGroupNames, vbInformation
+        Else
+            mLblStatus.Caption = "このファイルに未確定の不一致項目はありません。"
+        End If
         Exit Sub
     End If
     If Not Module1.BidirectionalSyncPlanFileDecisions(recordCases, choices, plan, preview, reason) Then
@@ -2466,10 +2475,13 @@ Private Sub EApplyFileDecision(ByVal decision As String)
     Else
         sourceLabel = "Excel基準表"
     End If
+    If Len(deferredGroupNames) > 0 Then
+        deferredPreview = "今回の一括対象外（値・判断状態・判断履歴を維持）:" & vbCrLf & deferredGroupNames & vbCrLf
+    End If
     confirmationText = ERecordIdentityDetails(record) & vbCrLf & _
         "採用元: " & sourceLabel & vbCrLf & _
         "採用対象項目数: " & CStr(affectedFieldCount) & vbCrLf & _
-        confirmedPreview & vbCrLf & preview
+        deferredPreview & confirmedPreview & vbCrLf & preview
     If Len(confirmationText) > 900 Then
         mLblStatus.Caption = "確認内容が長く、確認ダイアログに全て表示できません。省略せず確認できるよう、安全のため中止しました。"
         MsgBox mLblStatus.Caption, vbExclamation

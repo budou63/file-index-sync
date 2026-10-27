@@ -221,5 +221,93 @@ class BulkTransactionModelTests(unittest.TestCase):
         self.assertEqual((rows, history, decisions), before)
 
 
+class DeferredInternalFieldContracts(unittest.TestCase):
+    def test_only_exact_single_field_internal_groups_can_be_deferred(self):
+        helper = body("BidirectionalSyncBatchGroupCanRemainUnresolved")
+        for header in (
+            "完結区分-1：未完結 1：完結", "分類内ファイルソート順", "廃棄予定年",
+            "廃棄予定年（和暦）", "作成所属名", "更新日時",
+        ):
+            self.assertIn(header, helper)
+        for token in ("fields.Count <> 1", "sourceHeader", "destinationHeader", "groupName",
+                      "CanonicalHeaderName"):
+            self.assertIn(token, helper)
+        for protected in ("保存期間ID", "ファイルID", "ファイル番号", "バーコード番号",
+                          "分類コード", "原課ID", "媒体種別ID"):
+            self.assertNotIn(protected, helper)
+
+    def test_planner_defers_only_allowlisted_groups_and_keeps_them_pending(self):
+        plan = body("BidirectionalSyncPlanFileDecisions")
+        self.assertIn("BidirectionalSyncConflictLiveMatches", plan)
+        self.assertIn("BidirectionalSyncFindConflictStateRow", plan)
+        self.assertIn("BidirectionalSyncBatchGroupCanRemainUnresolved(item)", plan)
+        self.assertIn("対象外（判断状態維持）", plan)
+        self.assertIn('fieldItem("systemValue")', plan)
+        self.assertIn('fieldItem("excelValue")', plan)
+        self.assertIn("stateDecision", plan)
+        deferred = plan.index("対象外（判断状態維持）")
+        missing_choice = plan.index("未確定項目の判断指定が不足しています")
+        self.assertLess(deferred, missing_choice)
+        self.assertLess(plan.index("BidirectionalSyncBatchGroupCanRemainUnresolved(item)"),
+                        plan.index("proposed.Add entry"))
+        self.assertIn("未確定項目の判断指定が不足しています", plan)  # unknown groups still fail closed
+
+    def test_form_does_not_submit_deferred_groups_and_shows_pending_groups(self):
+        file_apply = body("EApplyFileDecision", FORM, "Sub")
+        self.assertIn("BidirectionalSyncBatchGroupCanRemainUnresolved(item)", file_apply)
+        self.assertIn("choices.Add groupName, decision", file_apply)
+        self.assertIn("値・判断状態・判断履歴を維持", file_apply)
+        self.assertIn("deferredGroupNames", file_apply)
+        self.assertIn("choices.Count = 0", file_apply)
+
+    def test_unresolved_and_held_groups_still_block_step4(self):
+        gate = body("BidirectionalSyncConflictBlocksStep4")
+        self.assertIn("BIDIRECTIONAL_SYNC_CONFLICT_UNRESOLVED", gate)
+        self.assertIn("BIDIRECTIONAL_SYNC_CONFLICT_HOLD", gate)
+        self.assertIn("BidirectionalSyncConflictLiveMatches", gate)
+
+    def test_selective_model_preserves_values_history_and_pending_count(self):
+        """Synthetic policy model only; NOT VBA/Excel execution."""
+        cells = {
+            "note": "before", "completion": "", "sort": "",
+            "disposal_year": "", "creator_org": "", "updated_at": "",
+        }
+        source_values = {
+            "completion": "-1", "sort": "5", "disposal_year": "2030",
+            "creator_org": "土木課", "updated_at": "123456",
+        }
+        states = {
+            "note": "未確定", "completion": "未確定", "sort": "保留",
+            "disposal_year": "未確定", "creator_org": "未確定", "updated_at": "未確定",
+        }
+        history = []
+        deferred = {"completion", "sort", "disposal_year", "creator_org", "updated_at"}
+        before_deferred = {key: cells[key] for key in deferred}
+        before_states = {key: states[key] for key in deferred}
+        plan = [("note", "after", "システム採用")]
+        for field, value, decision in plan:
+            cells[field] = value
+            states[field] = decision
+            history.append((field, decision))
+        self.assertEqual(cells["note"], "after")
+        self.assertEqual({key: cells[key] for key in deferred}, before_deferred)
+        self.assertEqual({key: states[key] for key in deferred}, before_states)
+        self.assertEqual(source_values["completion"], "-1")
+        self.assertEqual(source_values["sort"], "5")
+        self.assertEqual(source_values["disposal_year"], "2030")
+        self.assertEqual(source_values["creator_org"], "土木課")
+        self.assertEqual(source_values["updated_at"], "123456")
+        self.assertEqual(history, [("note", "システム採用")])
+        self.assertEqual(sum(state in ("未確定", "保留") for state in states.values()), 5)
+
+    def test_created_year_is_a_targetable_input_but_row_year_is_not(self):
+        plain = body("BidirectionalSyncBatchPlainFieldSafe")
+        self.assertIn('CanonicalHeaderName("作成年度（和暦）")', plain)
+        self.assertNotIn('CanonicalHeaderName("年度（和暦）")', plain)
+        plan = body("BidirectionalSyncPlanFileDecisions")
+        self.assertIn("BidirectionalSyncBatchPlainFieldSafe", plan)
+        self.assertIn('CLng(item("year")) <> firstYear', plan)
+
+
 if __name__ == "__main__":
     unittest.main()

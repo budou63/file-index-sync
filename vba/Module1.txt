@@ -20166,6 +20166,35 @@ Invalid:
     reason = "管理コードの事前検証に失敗しました。" & Err.Description
 End Function
 
+Public Function BidirectionalSyncBatchGroupCanRemainUnresolved(ByVal item As Object) As Boolean
+    Dim fields As Collection, fieldItem As Object
+    Dim groupKey As String, sourceKey As String, destinationKey As String
+    On Error GoTo Invalid
+    If item Is Nothing Then Exit Function
+    If Not item.Exists("groupName") Or Not item.Exists("snapshot") Then Exit Function
+    groupKey = CanonicalHeaderName(CStr(item("groupName")))
+    Set fields = BidirectionalSyncUnpackConflictHeaders(CStr(item("snapshot")))
+    If fields Is Nothing Then Exit Function
+    If fields.Count <> 1 Then Exit Function
+    Set fieldItem = fields(1)
+    sourceKey = CanonicalHeaderName(CStr(fieldItem("sourceHeader")))
+    destinationKey = CanonicalHeaderName(CStr(fieldItem("destinationHeader")))
+    If sourceKey <> groupKey Or destinationKey <> groupKey Then Exit Function
+    Select Case groupKey
+        Case CanonicalHeaderName("完結区分-1：未完結 1：完結"), _
+             CanonicalHeaderName("分類内ファイルソート順"), _
+             CanonicalHeaderName("廃棄予定年"), _
+             CanonicalHeaderName("廃棄予定年（和暦）"), _
+             CanonicalHeaderName("廃棄予定年(和暦)"), _
+             CanonicalHeaderName("作成所属名"), _
+             CanonicalHeaderName("更新日時")
+            BidirectionalSyncBatchGroupCanRemainUnresolved = True
+    End Select
+    Exit Function
+Invalid:
+    Err.Clear
+End Function
+
 Private Function BidirectionalSyncBatchPlainFieldSafe( _
     ByVal groupName As String, ByVal sourceHeader As String, ByVal destinationHeader As String) As Boolean
     Dim groupKey As String, sourceKey As String, destinationKey As String
@@ -20181,7 +20210,8 @@ Private Function BidirectionalSyncBatchPlainFieldSafe( _
     If sourceKey <> destinationKey Or sourceKey <> groupKey Then Exit Function
     Select Case groupKey
         Case CanonicalHeaderName("内容・取扱い"), CanonicalHeaderName("備考"), _
-             CanonicalHeaderName("毎年度利用区分1:毎年作成 2:単年のみ")
+             CanonicalHeaderName("毎年度利用区分1:毎年作成 2:単年のみ"), _
+             CanonicalHeaderName("作成年度（和暦）")
             BidirectionalSyncBatchPlainFieldSafe = True
     End Select
 End Function
@@ -20344,7 +20374,22 @@ Public Function BidirectionalSyncPlanFileDecisions( _
                     " = " & CStr(excelValue) & "（変更対象外）" & vbCrLf
             Next fieldItem
         Else
-            If Not choices.Exists(groupName) Then reason = "未確定項目の判断指定が不足しています: " & groupName: Exit Function
+            If Not choices.Exists(groupName) Then
+                If BidirectionalSyncBatchGroupCanRemainUnresolved(item) Then
+                    Set fields = BidirectionalSyncUnpackConflictHeaders(CStr(item("snapshot")))
+                    If fields.Count <> 1 Then reason = "対象外項目の内容を確認できません。": Exit Function
+                    preview = preview & "対象外（判断状態維持）: " & _
+                        groupName & " [" & stateDecision & "]" & vbCrLf
+                    For Each fieldItem In fields
+                        preview = preview & "  " & CStr(fieldItem("sourceHeader")) & _
+                            ": 文書管理=" & CStr(fieldItem("systemValue")) & _
+                            " / Excel=" & CStr(fieldItem("excelValue")) & _
+                            " / 判断状態=" & stateDecision & " / 値・判断履歴は変更しません" & vbCrLf
+                    Next fieldItem
+                    GoTo ContinueNextCase
+                End If
+                reason = "未確定項目の判断指定が不足しています: " & groupName: Exit Function
+            End If
             decision = CStr(choices(groupName))
             If decision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM And _
                decision <> BIDIRECTIONAL_SYNC_CONFLICT_EXCEL And _
@@ -20419,6 +20464,7 @@ Public Function BidirectionalSyncPlanFileDecisions( _
             Next fieldItem
             proposed.Add entry: changedCount = changedCount + 1
         End If
+ContinueNextCase:
     Next item
     For Each key In choices.Keys
         If Not seenGroups.Exists(CStr(key)) Then reason = "別ファイルの判断指定があります。": Exit Function
