@@ -20412,9 +20412,10 @@ Public Function BidirectionalSyncPlanFileDecisions( _
                 cellState.Add "format", CStr(targetCell.NumberFormat)
                 cells.Add cellState
                 preview = preview & "  " & CStr(fieldItem("sourceHeader")) & _
-                    ": 現在=" & CStr(excelValue) & " / 採用予定=" & _
+                    ": 現在値=" & CStr(excelValue) & " / 文書管理値=" & CStr(sourceValue) & _
+                    " / 採用予定値=" & _
                     IIf(decision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM, CStr(sourceValue), CStr(excelValue)) & _
-                    " / 元=" & decision & vbCrLf
+                    " / 採用元=" & decision & vbCrLf
             Next fieldItem
             proposed.Add entry: changedCount = changedCount + 1
         End If

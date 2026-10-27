@@ -1,4 +1,4 @@
-VERSION 5.00
+﻿VERSION 5.00
 Begin VB.UserForm frmSyncReview
    Caption = "同期候補の確認"
    ClientHeight = 8200
@@ -139,7 +139,6 @@ Private mLblEPaneSize As MSForms.Label
 Private WithEvents mCboEPaneSize As MSForms.ComboBox
 Private mLblESelection As MSForms.Label
 Private WithEvents mCmdEClear As MSForms.CommandButton
-Private WithEvents mCmdEBulk As MSForms.CommandButton
 Private mLblCase As MSForms.Label
 Private WithEvents mLstCases As MSForms.ListBox
 Private mLblRows As MSForms.Label
@@ -178,9 +177,6 @@ Private eDisplayNormalizedKeys As Object
 Private eRenderedSelection As String
 Private eRenderedFieldSelection As String
 Private mDUnavailableReason As String
-Private eBulkPreview As String
-Private eBulkChoices As Object
-Private eBulkRecord As Object
 Private Const COMPARE_FIELD_COUNT As Long = 9
 Private Const CSV_SHEET As String = "目録CSV"
 Private Const DEST_SHEET As String = "新ファイル基準表"
@@ -377,10 +373,7 @@ Private Sub BuildControls()
     Set mCmdFinish = EnsureControl("cmdFinish", "Forms.CommandButton.1")
     PlaceControl mCmdFinish, 508, 407, 82, 21
     mCmdFinish.Caption = "確認終了"
-    Set mCmdEBulk = EnsureControl("cmdEBulk", "Forms.CommandButton.1")
-    PlaceControl mCmdEBulk, 590, 407, 140, 21
-    mCmdEBulk.Caption = "ファイル単位で採用..."
-    mCmdEBulk.Visible = False
+
     mTxtDetails.MultiLine = True
     mTxtDetails.ScrollBars = fmScrollBarsVertical
     mTxtDetails.Locked = True
@@ -412,7 +405,6 @@ End Sub
 
 Public Sub LoadCases(ByVal loaded As Collection, ByVal yearValue As Long, _
                      Optional ByVal unavailableReason As String = "")
-    EClearBulkPreview
     EndEDisplayRead
     eRenderedSelection = ""
     eRenderedFieldSelection = ""
@@ -513,15 +505,23 @@ Private Sub UpdateESelection()
         End If
     End If
     mLblESelection.Caption = CStr(n) & "件選択中"
-    mCmdApprove.Enabled = (n = 1 And Not item Is Nothing And identitySafe And systemSafe)
-    mCmdOther.Enabled = (n = 1 And Not item Is Nothing And identitySafe And excelSafe)
+    If n = 1 And Not record Is Nothing And identitySafe And selectedField Is Nothing Then
+        systemSafe = True: excelSafe = True
+    End If
+    mCmdApprove.Enabled = (n = 1 And Not record Is Nothing And identitySafe And _
+        (Not item Is Nothing Or selectedField Is Nothing) And systemSafe)
+    mCmdOther.Enabled = (n = 1 And Not record Is Nothing And identitySafe And _
+        (Not item Is Nothing Or selectedField Is Nothing) And excelSafe)
     mCmdHold.Enabled = (n = 1 And Not item Is Nothing And identitySafe And holdSafe)
-    mCmdEBulk.Enabled = (n = 1 And Not record Is Nothing And identitySafe)
     mCmdEClear.Enabled = (n > 0)
     If n > 1 Then
         mLblStatus.Caption = "複数選択は表示専用です。判断は1件だけ選び直してください。"
     ElseIf n = 1 And Not record Is Nothing And Not identitySafe Then
         mLblStatus.Caption = "識別情報の一貫性を確認できないため、採用・保留はできません。正式ID等を確認してください。"
+    ElseIf n = 1 And Not record Is Nothing And item Is Nothing Then
+        mLblStatus.Caption = "ファイル全体の未確定項目を採用します。右側の項目を選ぶと、その判断単位だけを採用できます。採用前に全項目の確認画面が表示されます。"
+        mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & _
+            "右側の不一致項目を選択していないため、既存の採用ボタンはこのファイルの未確定項目すべてを対象にします。"
     ElseIf n = 1 And Not item Is Nothing And EIsClassification1Group(item) Then
         mLblStatus.Caption = "分類名１と分類コード１は連動した判断単位です。採用前の確認画面で両方の値と採用元を確認してください。"
         If Not selectedField Is Nothing And Not record Is Nothing Then
@@ -1324,11 +1324,17 @@ Failed:
     MsgBox Err.Description, vbExclamation
 End Sub
 Private Sub mCmdApprove_Click()
-    Dim item As Object, reasonText As String
-    Set item = SelectedCase()
-    If item Is Nothing Then Exit Sub
-    If CStr(item("category")) = "E" Then
+    Dim item As Object, record As Object, fieldItem As Object, reasonText As String
+    If mCboCategory.ListIndex = 4 Then
         If ESelectedCount() <> 1 Then Exit Sub
+        Set record = SelectedRecord()
+        Set fieldItem = SelectedEField()
+        If fieldItem Is Nothing Then
+            EApplyFileDecision "システム採用"
+            Exit Sub
+        End If
+        Set item = SelectedCase()
+        If item Is Nothing Then Exit Sub
         If Not ESelectedDecisionIsSafe("システム採用", reasonText) Then
             If Len(reasonText) > 0 Then mLblStatus.Caption = reasonText
             Exit Sub
@@ -1350,6 +1356,8 @@ Private Sub mCmdApprove_Click()
         If Module1.BidirectionalSyncResolveConflict(item, "システム採用") Then mCmdRefresh_Click
         Exit Sub
     End If
+    Set item = SelectedCase()
+    If item Is Nothing Then Exit Sub
     If CStr(item("category")) = "D" Then Exit Sub
     If SyncReviewApprove(item, SelectedRow()) Then mCmdRefresh_Click
 End Sub
@@ -1360,7 +1368,19 @@ Private Sub mCmdHold_Click()
     RecordChoice "保留"
 End Sub
 Private Sub RecordChoice(ByVal decision As String)
-    Dim item As Object, rowNo As Long, nextRow As Long, reasonText As String
+    Dim item As Object, fieldItem As Object, rowNo As Long, nextRow As Long, reasonText As String
+    If mCboCategory.ListIndex = 4 Then
+        If ESelectedCount() <> 1 Then Exit Sub
+        Set fieldItem = SelectedEField()
+        If fieldItem Is Nothing Then
+            If decision = "別物" Then
+                EApplyFileDecision "Excel採用"
+            ElseIf decision = "保留" Then
+                mLblStatus.Caption = "保留はファイル全体には適用できません。不一致項目を選択してください。"
+            End If
+            Exit Sub
+        End If
+    End If
     Set item = SelectedCase()
     If item Is Nothing Then Exit Sub
     If CStr(item("category")) = "E" Then
@@ -1731,8 +1751,7 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         mCmdNext.Caption = "次の未解決項目"
         PlaceControl mCmdRefresh, 419, footerTop + 23.5, 75, 21
         PlaceControl mCmdFinish, 499, footerTop + 23.5, 82, 21
-        PlaceControl mCmdEBulk, 586, footerTop + 23.5, 155, 21
-        mCmdEBulk.Visible = True
+
     Else
         Me.Width = 760
         Me.Height = Me.Height + (440 - Me.InsideHeight)
@@ -1793,7 +1812,7 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         mCmdClear.Caption = "選択行の番号をクリア"
         PlaceControl mCmdRefresh, 9, 407, 70, 21
         PlaceControl mCmdFinish, 508, 407, 82, 21
-        mCmdEBulk.Visible = False
+
         For i = 0 To 4
             mEColumnHeaders(i).Visible = False
         Next i
@@ -2515,105 +2534,83 @@ Private Function SelectedRecord() As Object
     Next i
 End Function
 
-Private Sub EClearBulkPreview()
-    eBulkPreview = ""
-    Set eBulkChoices = Nothing
-    Set eBulkRecord = Nothing
-    If Not mCmdEBulk Is Nothing Then mCmdEBulk.Caption = "ファイル単位で採用..."
-End Sub
-
-Private Sub mCmdEBulk_Click()
+Private Sub EApplyFileDecision(ByVal decision As String)
     Dim record As Object, recordCases As Collection, item As Object
-    Dim choices As Object, plan As Collection, mode As String, selectedChoice As String
-    Dim groupName As String, decision As String, preview As String, reason As String
+    Dim choices As Object, plan As Collection, entry As Object, plannedCells As Collection
+    Dim groupName As String, savedDecision As String, preview As String, reason As String
+    Dim confirmationText As String, confirmedPreview As String, sourceLabel As String, affectedFieldCount As Long
+    Dim fieldItems As Collection, fieldItem As Object
     On Error GoTo Failed
-    If mCboCategory.ListIndex <> 4 Or ESelectedCount() <> 1 Then Exit Sub
+    If mCboCategory.ListIndex <> 4 Or ESelectedCount() <> 1 Then
+        mLblStatus.Caption = "ファイル単位の採用にはファイルを1件だけ選択してください。"
+        Exit Sub
+    End If
+    If decision <> "システム採用" And decision <> "Excel採用" Then Exit Sub
     Set record = SelectedRecord()
     If record Is Nothing Then Exit Sub
     If CBool(record("identityIssue")) Then
-        MsgBox "識別情報を確認できないファイルは一括採用できません。", vbExclamation
+        mLblStatus.Caption = "識別情報を確認できないため、ファイル単位の採用はできません。"
         Exit Sub
     End If
     Set recordCases = record("cases")
-    If Not eBulkRecord Is Nothing Then
-        If eBulkRecord Is record And Not eBulkChoices Is Nothing And Len(eBulkPreview) > 0 Then
-            If Not Module1.BidirectionalSyncPlanFileDecisions(recordCases, eBulkChoices, plan, preview, reason) Then
-                EClearBulkPreview
-                eRenderedSelection = "": ShowCurrent
-                MsgBox "判断前の再確認に失敗しました: " & reason, vbExclamation
-                Exit Sub
-            End If
-            If StrComp(preview, eBulkPreview, vbBinaryCompare) <> 0 Then
-                EClearBulkPreview
-                eRenderedSelection = "": ShowCurrent
-                MsgBox "プレビューから値が変わりました。最初から確認してください。", vbExclamation
-                Exit Sub
-            End If
-            If MsgBox("下欄の全項目プレビューを確認しましたか？" & vbCrLf & _
-                      "Excel・判断履歴を、この1ファイルの指定内容で一括確定します。", _
-                      vbYesNo + vbQuestion, "ファイル単位の最終確認") <> vbYes Then
-                EClearBulkPreview
-                eRenderedSelection = "": ShowCurrent
-                Exit Sub
-            End If
-            If Module1.BidirectionalSyncResolveFileDecisions(recordCases, eBulkChoices, eBulkPreview) Then
-                EClearBulkPreview
-                eRenderedSelection = "": eRenderedFieldSelection = ""
-                ShowCurrent
-                mLblStatus.Caption = "ファイル単位の判断を確定しました。"
-            Else
-                EClearBulkPreview
-                eRenderedSelection = "": ShowCurrent
-            End If
-            Exit Sub
-        End If
-    End If
-    EClearBulkPreview
-    mode = Trim$(InputBox("選択した1ファイルの未確定項目のみ対象です。" & vbCrLf & _
-        "1=全部Excel基準表、2=全部文書管理システム、3=項目別混合（保留可）。" & vbCrLf & _
-        "キャンセルは変更なし。", "ファイル単位の採用元", ""))
-    If Len(mode) = 0 Then Exit Sub
-    If mode <> "1" And mode <> "2" And mode <> "3" Then
-        MsgBox "1、2、3のいずれかを入力してください。", vbExclamation: Exit Sub
-    End If
     Set choices = CreateObject("Scripting.Dictionary")
     For Each item In recordCases
         groupName = CStr(item("groupName"))
-        decision = CStr(item("decision"))
-        If decision <> "システム採用" And decision <> "Excel採用" Then
-            Select Case mode
-                Case "1": selectedChoice = "1"
-                Case "2": selectedChoice = "2"
-                Case Else
-                    selectedChoice = Trim$(InputBox("判断単位: " & groupName & vbCrLf & _
-                        "1=Excel基準表を採用、2=文書管理を採用、3=保留。" & vbCrLf & _
-                        "未入力・キャンセルで全体を中止します。", "項目別の採用元", ""))
-                    If Len(selectedChoice) = 0 Then Exit Sub
-                    If selectedChoice <> "1" And selectedChoice <> "2" And selectedChoice <> "3" Then
-                        MsgBox "無効な判断方法です。一括採用は中止しました。", vbExclamation: Exit Sub
-                    End If
-            End Select
-            Select Case selectedChoice
-                Case "1": choices.Add groupName, "Excel採用"
-                Case "2": choices.Add groupName, "システム採用"
-                Case "3": choices.Add groupName, "保留"
-            End Select
+        savedDecision = CStr(item("decision"))
+        If savedDecision <> "システム採用" And savedDecision <> "Excel採用" Then
+            choices.Add groupName, decision
         End If
     Next item
-    If Not Module1.BidirectionalSyncPlanFileDecisions(recordCases, choices, plan, preview, reason) Then
-        MsgBox "一括採用はできません。" & vbCrLf & reason, vbExclamation: Exit Sub
+    If choices.Count = 0 Then
+        mLblStatus.Caption = "このファイルに未確定の不一致項目はありません。"
+        Exit Sub
     End If
-    Set eBulkRecord = record
-    Set eBulkChoices = choices
-    eBulkPreview = preview
-    mTxtDetails.Text = "ファイル単位の確定前プレビュー（スクロールして全項目を確認）" & vbCrLf & preview
-    mTxtDetails.SelStart = 0
-    mCmdEBulk.Caption = "プレビュー確認後に確定..."
-    mLblStatus.Caption = "まだ変更していません。下欄の全内容を確認後、同じボタンをもう一度押してください。"
+    If Not Module1.BidirectionalSyncPlanFileDecisions(recordCases, choices, plan, preview, reason) Then
+        mLblStatus.Caption = "ファイル単位の採用を中止しました: " & reason
+        MsgBox mLblStatus.Caption, vbExclamation
+        Exit Sub
+    End If
+    For Each entry In plan
+        Set plannedCells = entry("cells")
+        affectedFieldCount = affectedFieldCount + plannedCells.Count
+    Next entry
+    confirmedPreview = "確定済みで変更対象外となる項目:" & vbCrLf
+    For Each item In recordCases
+        savedDecision = CStr(item("decision"))
+        If savedDecision = "システム採用" Or savedDecision = "Excel採用" Then
+            Set fieldItems = item("headers")
+            For Each fieldItem In fieldItems
+                confirmedPreview = confirmedPreview & "  " & CStr(fieldItem("sourceHeader")) & _
+                    ": 文書管理=" & CStr(fieldItem("systemValue")) & _
+                    " / Excel=" & CStr(fieldItem("excelValue")) & _
+                    " / 確定判断=" & savedDecision & vbCrLf
+            Next fieldItem
+        End If
+    Next item
+    If confirmedPreview = "確定済みで変更対象外となる項目:" & vbCrLf Then _
+        confirmedPreview = confirmedPreview & "  （なし）" & vbCrLf
+    If decision = "システム採用" Then
+        sourceLabel = "文書管理システム"
+    Else
+        sourceLabel = "Excel基準表"
+    End If
+    confirmationText = ERecordIdentityDetails(record) & vbCrLf & _
+        "採用元: " & sourceLabel & vbCrLf & _
+        "採用対象項目数: " & CStr(affectedFieldCount) & vbCrLf & _
+        confirmedPreview & vbCrLf & preview
+    If Len(confirmationText) > 900 Then
+        mLblStatus.Caption = "確認内容が長く、確認ダイアログに全て表示できません。省略せず確認できるよう、安全のため中止しました。"
+        MsgBox mLblStatus.Caption, vbExclamation
+        Exit Sub
+    End If
+    If MsgBox(confirmationText, vbYesNo + vbQuestion, "ファイル単位の採用確認") <> vbYes Then Exit Sub
+    If Module1.BidirectionalSyncResolveFileDecisions(recordCases, choices, preview) Then
+        eRenderedSelection = "": eRenderedFieldSelection = ""
+        mCmdRefresh_Click
+    End If
     Exit Sub
 Failed:
-    EClearBulkPreview
-    MsgBox "一括採用の準備を中止しました: " & Err.Description, vbExclamation
+    MsgBox "ファイル単位の採用を中止しました: " & Err.Description, vbExclamation
 End Sub
 
 Private Function SelectedEField() As Object
@@ -2634,7 +2631,6 @@ Private Sub ShowECurrent()
     On Error GoTo DisplayFailed
     selectionKey = ESelectionRenderKey()
     If selectionKey = eRenderedSelection Then Exit Sub
-    EClearBulkPreview
     eRenderedFieldSelection = ""
     BeginEDisplayRead
     rendering = True

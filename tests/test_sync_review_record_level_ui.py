@@ -205,8 +205,10 @@ class RecordLevelConflictUiTests(unittest.TestCase):
     def test_selection_actions_remain_item_level_and_multi_select_is_read_only(self):
         selection = procedure(FORM, "UpdateESelection")
         self.assertIn('identitySafe = Not CBool(record("identityIssue"))', selection)
-        self.assertIn('mCmdApprove.Enabled = (n = 1 And Not item Is Nothing And identitySafe And systemSafe)', selection)
-        self.assertIn('mCmdOther.Enabled = (n = 1 And Not item Is Nothing And identitySafe And excelSafe)', selection)
+        self.assertIn('mCmdApprove.Enabled = (n = 1 And Not record Is Nothing And identitySafe And _', selection)
+        self.assertIn('(Not item Is Nothing Or selectedField Is Nothing) And systemSafe)', selection)
+        self.assertIn('mCmdOther.Enabled = (n = 1 And Not record Is Nothing And identitySafe And _', selection)
+        self.assertIn('(Not item Is Nothing Or selectedField Is Nothing) And excelSafe)', selection)
         self.assertIn('mCmdHold.Enabled = (n = 1 And Not item Is Nothing And identitySafe And holdSafe)', selection)
         pending = procedure(FORM, "ERecordNeedsConfirmation", "Function")
         self.assertIn('If CBool(record("identityIssue")) Then', pending)

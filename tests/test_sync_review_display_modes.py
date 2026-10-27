@@ -260,8 +260,9 @@ class NormalDisplayTests(unittest.TestCase):
         out_of_scope = procedure("ECaseHasOutOfScopeFields", "Function")
         self.assertIn("If Len(EFieldNormalDisplayCaption(caseItem, fieldItem)) = 0 Then", out_of_scope)
         self.assertIn("ECaseHasOutOfScopeFields = True", out_of_scope)
-        self.assertIn("identitySafe And systemSafe", selection)
-        self.assertIn("identitySafe And excelSafe", selection)
+        self.assertIn("identitySafe And _", selection)
+        self.assertIn("And systemSafe)", selection)
+        self.assertIn("And excelSafe)", selection)
         self.assertIn("identitySafe And holdSafe", selection)
         self.assertIn("「全項目（管理コード含む）」に切り替えてください", selection)
 

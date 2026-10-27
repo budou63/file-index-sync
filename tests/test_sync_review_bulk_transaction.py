@@ -92,17 +92,56 @@ class BulkTransactionContracts(unittest.TestCase):
         self.assertFalse(proven("分類名２", "甲", "999", "101"))
         self.assertFalse(proven("分類名３", "乙", "305", "999"))
 
-    def test_ui_requires_one_file_and_confirmation(self):
-        ui = body("mCmdEBulk_Click", FORM, "Sub")
-        self.assertIn("ESelectedCount() <> 1", ui)
-        self.assertIn("SelectedRecord()", ui)
-        self.assertIn('record("cases")', ui)
-        self.assertIn("BidirectionalSyncPlanFileDecisions", ui)
-        self.assertIn("vbYesNo", ui)
-        self.assertIn("BidirectionalSyncResolveFileDecisions", ui)
-        self.assertLess(ui.index("vbYesNo"), ui.index("BidirectionalSyncResolveFileDecisions"))
-        self.assertIn("mCmdEBulk", FORM)
+    def test_existing_accept_buttons_choose_file_or_selected_field_without_numeric_prompts(self):
+        approve = body("mCmdApprove_Click", FORM, "Sub")
+        other = body("RecordChoice", FORM, "Sub")
+        file_apply = body("EApplyFileDecision", FORM, "Sub")
+        self.assertIn('EApplyFileDecision "システム採用"', approve)
+        self.assertLess(approve.index("If fieldItem Is Nothing Then"), approve.index("Set item = SelectedCase()"))
+        self.assertIn('EApplyFileDecision "Excel採用"', other)
+        self.assertLess(other.index("If fieldItem Is Nothing Then"), other.index("Set item = SelectedCase()"))
+        self.assertIn("BidirectionalSyncPlanFileDecisions", file_apply)
+        self.assertIn("BidirectionalSyncResolveFileDecisions", file_apply)
+        self.assertIn("vbYesNo", file_apply)
+        self.assertIn('ESelectedCount() <> 1', file_apply)
+        self.assertIn('record("identityIssue")', file_apply)
+        self.assertIn('savedDecision <> "システム採用" And savedDecision <> "Excel採用"', file_apply)
+        self.assertIn("choices.Add groupName, decision", file_apply)
+        self.assertIn('entry("cells")', file_apply)
+        self.assertIn("confirmationText", file_apply)
+        self.assertNotIn("InputBox", FORM)
+        self.assertNotIn("mCmdEBulk", FORM)
+        self.assertNotIn("eBulkChoices", FORM)
         self.assertIn("BidirectionalSyncResolveConflict(item,", FORM)
+
+    def test_file_level_confirmation_is_cancel_safe_and_shows_identity_and_values(self):
+        file_apply = body("EApplyFileDecision", FORM, "Sub")
+        identity = body("ERecordIdentityDetails", FORM)
+        preview = body("BidirectionalSyncPlanFileDecisions")
+        for token in ("ERecordIdentityDetails(record)", '"採用対象項目数: "',
+                      "採用元: ", "確定済みで変更対象外となる項目:",
+                      '" / 確定判断=" & savedDecision', '": 文書管理=" & CStr(fieldItem("systemValue"))',
+                      '" / Excel=" & CStr(fieldItem("excelValue"))', "Len(confirmationText)",
+                      "If MsgBox(confirmationText", "<> vbYes Then Exit Sub"):
+            self.assertIn(token, file_apply)
+        self.assertIn('"同期対象年度: "', identity)
+        self.assertIn("現在値=", preview)
+        self.assertIn("採用予定値=", preview)
+        self.assertIn('" ／ 個別フォルダー: "', identity)
+        self.assertIn('": 現在値="', preview)
+        self.assertIn('" / 採用予定値="', preview)
+        self.assertLess(file_apply.index("BidirectionalSyncPlanFileDecisions"),
+                        file_apply.index("If MsgBox(confirmationText"))
+        self.assertLess(file_apply.index("If MsgBox(confirmationText"),
+                        file_apply.index("BidirectionalSyncResolveFileDecisions"))
+
+    def test_file_selection_clears_right_field_before_button_can_route(self):
+        render = body("ShowECurrent", FORM, "Sub")
+        selection = body("UpdateESelection", FORM, "Sub")
+        self.assertIn("mLstRows.ListIndex = -1", render)
+        self.assertIn("Not selectedField Is Nothing", selection)
+        self.assertIn("selectedField Is Nothing", selection)
+        self.assertIn("n = 1 And Not record Is Nothing And identitySafe", selection)
 
     def test_parent_changes_cannot_leave_unselected_or_held_child_code_stale(self):
         hierarchy = body("BidirectionalSyncBatchHierarchySafe")
