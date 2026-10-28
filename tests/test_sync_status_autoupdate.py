@@ -40,6 +40,11 @@ class TestSyncStatusAutoupdate(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.source = MODULE.read_text(encoding="utf-8")
 
+    def test_start_context_stores_boolean_as_dictionary_value(self) -> None:
+        start = procedure(self.source, "BidirectionalSyncStartContext")
+        self.assertIn("context.Add \"BaselineSheetCreated\", CBool(baselineSheetCreated)", start)
+        self.assertNotIn("Set context(\"BaselineSheetCreated\") = CBool(baselineSheetCreated)", start)
+
     def test_yoshida_case_state_transitions(self) -> None:
         self.assertEqual(file_status(is_new=False, unresolved=True, excel_adopted_pending=False, all_synced=False), "要確認")
         self.assertEqual(file_status(is_new=False, unresolved=False, excel_adopted_pending=True, all_synced=False), "反映待")

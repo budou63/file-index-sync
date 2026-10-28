@@ -17675,7 +17675,7 @@ Private Sub BidirectionalSyncStartContext( _
     context.Add "MatchedSyncRows", Empty
     Set context("MatchedSyncRows") = CreateObject("Scripting.Dictionary")
     context.Add "SyncTransferMap", Empty
-    Set context("BaselineSheetCreated") = CBool(baselineSheetCreated)
+    context.Add "BaselineSheetCreated", CBool(baselineSheetCreated)
     context.Add "Lines", Empty
     Set context("Lines") = lines
 
