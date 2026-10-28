@@ -35,6 +35,8 @@ Private Const BIDIRECTIONAL_SYNC_CONFLICT_EXCEL As String = "Excel採用"
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM As String = "システム採用"
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_HOLD As String = "保留"
 Private mBidirectionalSyncContext As Object
+Private mSyncRecoveryRequired As Boolean
+Private mSyncRecoveryCopyPath As String
 
 '========================================================
 ' 新ファイル基準表: 行移動モード（▲/▼で挿入予定位置のみ移動）
@@ -5614,6 +5616,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
     Dim bidirectionalOutputPath As String
     Dim bidirectionalSummary As String
     Dim bidirectionalManualCount As Long
+    Dim syncRecoveryPath As String
 
     mStep2Result = STEP2_RESULT_CANCELLED
     On Error GoTo ErrorHandler
@@ -5711,6 +5714,8 @@ Public Sub 手順2_新ファイル基準表を作成する()
             "フィルター適用中は列順変更を安全に実行できません。フィルターを手動で解除してからCSV整形を再実行してください。"
     End If
 
+    syncRecoveryPath = SyncRecoveryCreateCopy()
+
     ' 利用者の確認を、列追加やコメント付与などの書込みより前に行う。
     dstLastRow = Step2GetLastDataRow(wsDst)
     If dstLastRow < 1 Then dstLastRow = 1
@@ -5724,6 +5729,7 @@ Public Sub 手順2_新ファイル基準表を作成する()
         If Not Step2ConfirmMissingSyncStatus(wsDst, dstLastRow, syncCol, targetYearValue) Then GoTo SafeExit
         If Not Step2PrepareRegistrationIdentifierCleanup(wsDst, dstLastRow, dstLastCol, _
             targetYearValue, targetYearRaw, registrationIdentifierValues) Then GoTo SafeExit
+        step2WriteStarted = True
         Step2ApplyRegistrationIdentifierCleanup wsDst, targetYearValue, registrationIdentifierValues
     Else
         ' 既存の空欄状態確認が列追加後になる構成では、識別番号の確認だけ先に済ませ、消去は両確認後に行う。
@@ -6430,6 +6436,7 @@ SafeExit:
         End If
     End If
     On Error GoTo 0
+    If Not step2Succeeded And (step2WriteStarted Or errNumber <> 0) Then SyncRecoveryFailureNotice syncRecoveryPath
     If step2Succeeded Then modSyncReview.SyncReviewAfterStep2Success targetYearValue
     Exit Sub
 
@@ -17294,6 +17301,7 @@ Public Function 双方向編集_3方向比較を実行( _
     Dim originalErrorDescription As String
     Dim cleanupErrorNumber As Long
     Dim cleanupErrorDescription As String
+    Dim syncRecoveryPath As String
 
     On Error GoTo ErrorHandler
     If targetYearValue <= 0 Then Err.Raise vbObjectError + 2781, , "比較対象年度が不正です。"
@@ -17302,6 +17310,7 @@ Public Function 双方向編集_3方向比較を実行( _
         "同名の出力ファイルが既に存在します。既存ファイルを保護するため、別名を指定してください。"
 
     Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    syncRecoveryPath = SyncRecoveryCreateCopy()
     BidirectionalSyncStartContext wsDst, targetYearValue, outputPath
     BidirectionalSyncRunForYear targetYearValue
     manualCount = BidirectionalSyncFinishContext(reportSummary)
@@ -17317,6 +17326,7 @@ ErrorHandler:
     cleanupErrorNumber = Err.Number
     cleanupErrorDescription = Err.Description
     On Error GoTo 0
+    SyncRecoveryFailureNotice syncRecoveryPath
     If cleanupErrorNumber <> 0 Then GoTo CleanupError
     Err.Raise originalErrorNumber, "双方向編集_3方向比較を実行", originalErrorDescription
 
@@ -17429,6 +17439,7 @@ Private Sub BidirectionalSyncStartContext( _
     Dim pendingBaselines As Object
     Dim conflictCases As Collection
     Dim guideCodeSnapshots As Object
+    Dim internalSnapshots As Collection
     Dim baselineSheetCreated As Boolean
     Dim lines As Collection
     Dim errorNumber As Long
@@ -17441,6 +17452,7 @@ Private Sub BidirectionalSyncStartContext( _
     If wsDst Is Nothing Then Err.Raise vbObjectError + 2785, , "新ファイル基準表シートが見つかりません。"
     If Len(Trim$(outputPath)) = 0 Then Err.Raise vbObjectError + 2786, , "手動編集一覧の出力先がありません。"
 
+    Set internalSnapshots = SyncRecoveryCaptureInternalSheets()
     Set baselineSheet = BidirectionalSyncEnsureBaselineSheet(wsDst, baselineSheetCreated)
     Set baselineValues = CreateObject("Scripting.Dictionary")
     Set baselineRows = CreateObject("Scripting.Dictionary")
@@ -17481,6 +17493,8 @@ Private Sub BidirectionalSyncStartContext( _
     Set context("DestinationSheet") = wsDst
     context.Add "ConflictCases", Empty
     Set context("ConflictCases") = conflictCases
+    context.Add "InternalSnapshots", Empty
+    Set context("InternalSnapshots") = internalSnapshots
     context.Add "BaselineSheetCreated", CBool(baselineSheetCreated)
     context.Add "Lines", Empty
     Set context("Lines") = lines
@@ -17523,7 +17537,6 @@ Private Function BidirectionalSyncFinishContext(Optional ByRef reportSummary As 
     BidirectionalDiffWriteUtf8Csv outputPath, lines
     BidirectionalSyncRefreshConflictState CLng(mBidirectionalSyncContext("TargetYear")), conflictCases
     BidirectionalSyncCommitPendingBaselines
-    mBidirectionalSyncContext("BaselineSheetCreated") = False
 
     BidirectionalSyncFinishContext = CLng(mBidirectionalSyncContext("ManualCount"))
     reportSummary = "CSV反映: " & CStr(mBidirectionalSyncContext("CsvAppliedCount")) & " 項目" & vbCrLf & _
@@ -17569,6 +17582,7 @@ Private Sub BidirectionalSyncDiscardContext()
     On Error GoTo ErrorHandler
     If context.Exists("GuideCodeSnapshots") Then _
         rollbackDescription = BidirectionalSyncRollbackGuideCodeSnapshots(context)
+    If context.Exists("InternalSnapshots") Then SyncRecoveryRestoreInternalSheets context("InternalSnapshots")
     If context.Exists("BaselineSheetCreated") Then baselineSheetCreated = CBool(context("BaselineSheetCreated"))
     If baselineSheetCreated Then
         Set baselineSheet = context("BaselineSheet")
@@ -20598,6 +20612,7 @@ Public Function BidirectionalSyncResolveFileDecisions( _
     Dim preview As String, reason As String, failureText As String
     Dim oldEvents As Boolean, eventsCaptured As Boolean, changing As Boolean, restoreOk As Boolean
     On Error GoTo Failed
+    If mSyncRecoveryRequired Then Err.Raise vbObjectError + 2890, , "前回同期が失敗しています。復旧コピーから再開してください。"
     If Not BidirectionalSyncPlanFileDecisions(cases, choices, plan, preview, reason) Then _
         Err.Raise vbObjectError + 2874, , reason
     If Len(expectedPreview) = 0 Or StrComp(expectedPreview, preview, vbBinaryCompare) <> 0 Then _
@@ -20647,6 +20662,7 @@ Public Function BidirectionalSyncResolveConflict(ByVal item As Object, ByVal dec
     Dim classificationPreview As String, retentionPreview As String
 
     On Error GoTo Failed
+    If mSyncRecoveryRequired Then Err.Raise vbObjectError + 2890, , "前回同期が失敗しています。復旧コピーから再開してください。"
     If decision <> BIDIRECTIONAL_SYNC_CONFLICT_EXCEL And _
        decision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM And decision <> BIDIRECTIONAL_SYNC_CONFLICT_HOLD Then _
         Err.Raise vbObjectError + 2840, , "競合解決方法が不正です。"
@@ -21054,4 +21070,106 @@ ContinueNextHeader:
 
     If srcToDstMap.Count = 0 Then Err.Raise vbObjectError + 2803, , "目録CSVと新ファイル基準表に共通する更新対象見出しがありません。"
 
+End Sub
+' 元ブックを保存せず、現在の未保存入力を含む復旧コピーを作る。自動削除しない。
+Private Function SyncRecoveryCreateCopy() As String
+    Dim fso As Object, root As String, folder As String, candidate As String
+    Dim extension As String, dot As Long, sequence As Long
+    If mSyncRecoveryRequired Then Err.Raise vbObjectError + 2890, , _
+        "前回同期が失敗しています。保存せず終了し、復旧コピーから再開してください。" & vbCrLf & mSyncRecoveryCopyPath
+    If ThisWorkbook.ReadOnly Then Err.Raise vbObjectError + 2891, , "読み取り専用ブックでは同期できません。"
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    root = Environ$("LOCALAPPDATA")
+    If Len(root) = 0 Then Err.Raise vbObjectError + 2892, , "復旧コピー保存先を特定できません。"
+    folder = root & "\file-index-sync"
+    If Not fso.FolderExists(folder) Then fso.CreateFolder folder
+    folder = folder & "\SyncRecovery"
+    If Not fso.FolderExists(folder) Then fso.CreateFolder folder
+    dot = InStrRev(ThisWorkbook.Name, ".")
+    If dot = 0 Then Err.Raise vbObjectError + 2893, , "ブック形式を特定できません。元ブックを先に名前を付けて保存してください。"
+    extension = Mid$(ThisWorkbook.Name, dot)
+    Do
+        sequence = sequence + 1
+        candidate = folder & "\sync_" & Format$(Now, "yyyymmdd_hhnnss") & "_" & CStr(sequence) & extension
+    Loop While fso.FileExists(candidate)
+    ThisWorkbook.SaveCopyAs candidate
+    If Not fso.FileExists(candidate) Then Err.Raise vbObjectError + 2894, , "復旧コピーが作成されませんでした。同期を開始しません。"
+    If FileLen(candidate) <= 0 Then Err.Raise vbObjectError + 2894, , "復旧コピーが空です。同期を開始しません。"
+    mSyncRecoveryCopyPath = candidate
+    SyncRecoveryCreateCopy = candidate
+End Function
+
+Private Sub SyncRecoveryFailureNotice(ByVal recoveryPath As String)
+    If Len(recoveryPath) = 0 Then Exit Sub
+    mSyncRecoveryRequired = True
+    MsgBox "同期は完了していません。現在のブックは一部変更されている可能性があります。" & vbCrLf & _
+        "元ブックを保存せず終了し、次の実行前コピーを開いて内容を確認してください。" & vbCrLf & _
+        recoveryPath & vbCrLf & "コピーには同期開始前の未保存入力と判断履歴を含みます。自動で元ブックへ上書きしません。", vbCritical
+End Sub
+
+Private Function SyncRecoveryCaptureInternalSheets() As Collection
+    Dim result As New Collection, name As Variant, ws As Worksheet, item As Object
+    Dim hasFormula As Variant
+    For Each name In Array(BIDIRECTIONAL_SYNC_BASELINE_SHEET, BIDIRECTIONAL_SYNC_CONFLICT_SHEET)
+        Set ws = Nothing
+        On Error Resume Next
+        Set ws = ThisWorkbook.Worksheets(CStr(name))
+        On Error GoTo 0
+        Set item = CreateObject("Scripting.Dictionary")
+        item.Add "name", CStr(name)
+        item.Add "existed", Not ws Is Nothing
+        If Not ws Is Nothing Then
+            If ws.ProtectContents Then Err.Raise vbObjectError + 2895, , "同期内部シートが保護されています。"
+            hasFormula = ws.UsedRange.HasFormula
+            If IsNull(hasFormula) Then Err.Raise vbObjectError + 2895, , "同期内部シートに数式が含まれています。"
+            If CBool(hasFormula) Then Err.Raise vbObjectError + 2895, , "同期内部シートに数式が含まれています。"
+            item.Add "address", ws.UsedRange.Address
+            item.Add "values", ws.UsedRange.Value2
+        End If
+        result.Add item
+    Next name
+    Set SyncRecoveryCaptureInternalSheets = result
+End Function
+
+Private Sub SyncRecoveryRestoreInternalSheets(ByVal saved As Collection)
+    Dim item As Object, ws As Worksheet, expected As Variant, actual As Variant
+    Dim r As Long, c As Long, oldEvents As Boolean, failure As Long, detail As String
+    oldEvents = Application.EnableEvents
+    On Error GoTo Failed
+    Application.EnableEvents = False
+    For Each item In saved
+        Set ws = Nothing
+        On Error Resume Next
+        Set ws = ThisWorkbook.Worksheets(CStr(item("name")))
+        On Error GoTo Failed
+        If CBool(item("existed")) Then
+            If ws Is Nothing Then Err.Raise vbObjectError + 2896, , "同期内部シートが消失しています。"
+            expected = item("values")
+            ws.UsedRange.ClearContents
+            ws.Range(CStr(item("address"))).Value2 = expected
+            actual = ws.Range(CStr(item("address"))).Value2
+            If IsArray(expected) Then
+                For r = 1 To UBound(expected, 1)
+                    For c = 1 To UBound(expected, 2)
+                        If VarType(actual(r, c)) <> VarType(expected(r, c)) Then Err.Raise vbObjectError + 2896
+                        If StrComp(CStr(actual(r, c)), CStr(expected(r, c)), vbBinaryCompare) <> 0 Then Err.Raise vbObjectError + 2896
+                    Next c
+                Next r
+            Else
+                If VarType(actual) <> VarType(expected) Then Err.Raise vbObjectError + 2896
+                If StrComp(CStr(actual), CStr(expected), vbBinaryCompare) <> 0 Then Err.Raise vbObjectError + 2896
+            End If
+        ElseIf Not ws Is Nothing Then
+            If CStr(item("name")) = BIDIRECTIONAL_SYNC_CONFLICT_SHEET Then BidirectionalSyncDeleteNewConflictSheet ws
+            ' 新規基準値シートは既存のDiscardContextが削除する。
+        End If
+    Next item
+    Application.EnableEvents = oldEvents
+    Exit Sub
+Failed:
+    failure = Err.Number: detail = Err.Description
+    On Error Resume Next
+    Application.EnableEvents = oldEvents
+    On Error GoTo 0
+    Err.Raise failure, "SyncRecoveryRestoreInternalSheets", detail
 End Sub
