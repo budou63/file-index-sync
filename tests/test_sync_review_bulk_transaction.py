@@ -264,7 +264,9 @@ class DeferredInternalFieldContracts(unittest.TestCase):
         gate = body("BidirectionalSyncConflictBlocksStep4")
         self.assertIn("BIDIRECTIONAL_SYNC_CONFLICT_UNRESOLVED", gate)
         self.assertIn("BIDIRECTIONAL_SYNC_CONFLICT_HOLD", gate)
-        self.assertIn("BidirectionalSyncConflictLiveMatches", gate)
+        self.assertIn("BidirectionalSyncConflictReviewCases", gate)
+        self.assertIn("BidirectionalSyncConflictCurrentValuesDiffer", gate)
+        self.assertIn("activeGroups.Exists(groupKey)", gate)
 
     def test_selective_model_preserves_values_history_and_pending_count(self):
         """Synthetic policy model only; NOT VBA/Excel execution."""

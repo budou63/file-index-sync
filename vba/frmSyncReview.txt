@@ -349,13 +349,15 @@ Private Function ESelectedCount() As Long
 End Function
 
 Private Sub UpdateESelection()
-    Dim n As Long, item As Object, record As Object, selectedField As Object
+    Dim n As Long, item As Object, record As Object, selectedField As Object, recordCases As Collection
     Dim identitySafe As Boolean, groupSafe As Boolean, systemSafe As Boolean, excelSafe As Boolean, holdSafe As Boolean
     Dim systemReason As String, excelReason As String, holdReason As String, pairPreview As String, pairReason As String
+    Dim savedDecision As String
     If mCboCategory.ListIndex <> 4 Then Exit Sub
     n = ESelectedCount()
     Set item = SelectedCase()
     Set record = SelectedRecord()
+    If Not record Is Nothing Then Set recordCases = record("cases")
     Set selectedField = SelectedEField()
     If n = 1 Then
         If Not record Is Nothing Then identitySafe = Not CBool(record("identityIssue"))
@@ -378,7 +380,11 @@ Private Sub UpdateESelection()
     End If
     mLblESelection.Caption = CStr(n) & "件選択中"
     If n = 1 And Not record Is Nothing And identitySafe And selectedField Is Nothing Then
-        systemSafe = True: excelSafe = True
+        If ERecordNeedsConfirmation(record) Then
+            systemSafe = True: excelSafe = True
+        Else
+            systemSafe = False: excelSafe = False
+        End If
     End If
     mCmdApprove.Enabled = (n = 1 And Not record Is Nothing And identitySafe And _
         (Not item Is Nothing Or selectedField Is Nothing) And systemSafe)
@@ -390,10 +396,16 @@ Private Sub UpdateESelection()
         mLblStatus.Caption = "複数選択は表示専用です。判断は1件だけ選び直してください。"
     ElseIf n = 1 And Not record Is Nothing And Not identitySafe Then
         mLblStatus.Caption = "識別情報の一貫性を確認できないため、採用・保留はできません。正式ID等を確認してください。"
-    ElseIf n = 1 And Not record Is Nothing And item Is Nothing Then
-        mLblStatus.Caption = "ファイル全体の未確定項目を採用します。右側の項目を選ぶと、その判断単位だけを採用できます。採用前に全項目の確認画面が表示されます。"
-        mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & _
-            "右側の不一致項目を選択していないため、既存の採用ボタンはこのファイルの未確定項目すべてを対象にします。"
+    ElseIf n = 1 And Not record Is Nothing And identitySafe And item Is Nothing Then
+        If ERecordNeedsConfirmation(record) Then
+            mLblStatus.Caption = "ファイル全体の未確定項目を採用します。右側の項目を選ぶと、その判断単位だけを採用できます。採用前に全項目の確認画面が表示されます。"
+            mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & EConflictStatusSummary(recordCases) & vbCrLf & _
+                "右側の不一致項目を選択していないため、既存の採用ボタンはこのファイルの新規・未判断または保留中の項目を対象にします。前回判断済み項目は変更されません。"
+        ElseIf ERecordHasPriorExcelDecision(record) Then
+            mLblStatus.Caption = "不一致は前回のExcel採用判断を引き継いでいます。再判断は不要です。変更する場合だけ、右側の項目を選択して採用元を変更してください。"
+            mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & EConflictStatusSummary(recordCases) & vbCrLf & _
+                "前回判断済み・未反映の項目は、同じ判断を繰り返す必要はありません。"
+        End If
     ElseIf n = 1 And Not item Is Nothing And EIsClassification1Group(item) Then
         mLblStatus.Caption = "分類名１と分類コード１は連動した判断単位です。採用前の確認画面で両方の値と採用元を確認してください。"
         If Not selectedField Is Nothing And Not record Is Nothing Then
@@ -415,6 +427,16 @@ Private Sub UpdateESelection()
         If Not holdSafe And Len(holdReason) > 0 Then mTxtDetails.Text = mTxtDetails.Text & vbCrLf & "保留できません: " & holdReason
     ElseIf n = 1 And Not item Is Nothing And Not groupSafe Then
         mLblStatus.Caption = "この判断グループには「入力項目のみ」の表示対象外の関連項目があります。「全項目（管理コード含む）」に切り替えてください。"
+    End If
+    If n = 1 And Not item Is Nothing Then
+        savedDecision = SyncReviewDecision(item)
+        If savedDecision = "Excel採用" Then
+            mLblStatus.Caption = mLblStatus.Caption & vbCrLf & _
+                "前回判断済み・未反映です。同じ判断の再操作は不要です。変更する場合だけ、採用元を選び直してください。"
+        ElseIf savedDecision = "保留" Then
+            mLblStatus.Caption = mLblStatus.Caption & vbCrLf & _
+                "保留中です。保留状態を維持して他の不一致を確認できます。判断する場合だけ採用元を選んでください。"
+        End If
     End If
 End Sub
 
@@ -1572,7 +1594,7 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         mLblEPaneSize.Visible = True
         mCboEPaneSize.Visible = True
         PlaceControl mLblCase, 9, 65, leftWidth, 14
-        mLblCase.Caption = "確認が必要な入力項目"
+        mLblCase.Caption = "不一致項目（新規・前回判断・保留）"
         PlaceControl mLstCases, 9, 79.5, leftWidth, 228
         mLstCases.ColumnCount = 3
         mLstCases.ColumnWidths = CStr(guideColumnWidth) & " pt;" & CStr(folderColumnWidth) & _
@@ -1703,9 +1725,12 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
     Dim totalItems As Long, inputItemCount As Long, internalMismatchCount As Long
     Dim unresolvedInternalCount As Long, safeNoReviewCount As Long
     Dim internalOnlyFileCount As Long, identityIssueFileCount As Long
+    Dim newVisibleItemCount As Long, previousDecisionItemCount As Long, heldItemCount As Long
+    Dim previousDecisionFileCount As Long, itemDecision As String
     Dim inputFileKeys As Object, pendingRows As Collection, displayRow As Variant
     Dim listData() As Variant
-    Dim needsConfirmation As Boolean, needsInternalInvestigation As Boolean, allMode As Boolean
+    Dim needsConfirmation As Boolean, needsPriorDecision As Boolean
+    Dim needsInternalInvestigation As Boolean, allMode As Boolean
     On Error GoTo DisplayFailed
     eRenderedSelection = ""
     eRenderedFieldSelection = ""
@@ -1751,11 +1776,11 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
     mLstRows.Clear
     mLstRows.ListIndex = -1
     mCboEGroup.Visible = True
-    mLblCase.Caption = "確認が必要な入力項目"
+    mLblCase.Caption = "不一致項目（新規・前回判断・保留）"
     mLblRows.Visible = True
     mLblESelection.Caption = "0件選択中"
     mLblCompareRows.Caption = "ファイルを選択してください。"
-    mTxtDetails.Text = "［入力項目のみ］では職員が確認する入力項目を表示します。内部項目だけの競合や識別不明は［全項目（管理コード含む）］で確認できます。"
+    mTxtDetails.Text = "［入力項目のみ］では、新規・未判断、前回判断済み・未反映、保留中の不一致を表示します。内部項目だけの競合や識別不明は［全項目（管理コード含む）］で確認できます。"
     mLblStatus.Caption = "複数ファイルの選択は表示専用です。判断時は識別情報が一意なファイル1件を選んでください。"
     mChkDelete.Visible = False
     mCmdApprove.Caption = "文書管理を採用"
@@ -1774,8 +1799,10 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
         Set recordCases = record("cases")
         totalItems = totalItems + recordCases.Count
         needsConfirmation = ERecordNeedsConfirmation(record)
+        needsPriorDecision = ERecordHasPriorExcelDecision(record)
+        If needsPriorDecision Then previousDecisionFileCount = previousDecisionFileCount + 1
         needsInternalInvestigation = False
-        If Not CBool(record("identityIssue")) And Not needsConfirmation Then _
+        If Not CBool(record("identityIssue")) And Not needsConfirmation And Not needsPriorDecision Then _
             needsInternalInvestigation = ERecordNeedsInternalInvestigation(record)
         If CBool(record("identityIssue")) Then
             identityIssueFileCount = identityIssueFileCount + 1
@@ -1786,13 +1813,23 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
             internalOnlyFileCount = internalOnlyFileCount + 1
         End If
         For Each item In recordCases
+            itemDecision = SyncReviewDecision(item)
+            If Not CBool(record("identityIssue")) And ECaseHasNormalDisplayFields(item) Then
+                If Len(itemDecision) = 0 Then
+                    newVisibleItemCount = newVisibleItemCount + 1
+                ElseIf itemDecision = "Excel採用" Then
+                    previousDecisionItemCount = previousDecisionItemCount + 1
+                ElseIf itemDecision = "保留" Then
+                    heldItemCount = heldItemCount + 1
+                End If
+            End If
             If ECaseNeedsHumanDecision(item) Then
                 If Not CBool(record("identityIssue")) And ECaseHasNormalDisplayFields(item) Then _
                     inputItemCount = inputItemCount + 1
                 ECountInternalCase item, internalMismatchCount, unresolvedInternalCount
             End If
         Next item
-        If (allMode Or needsConfirmation) And ERecordHasGroup(record, selectedGroup) Then
+        If (allMode Or needsConfirmation Or needsPriorDecision) And ERecordHasGroup(record, selectedGroup) Then
             shown.Add record
             ERecordDisplayValues record, guide2Value, folderValue, creationYearValue
             If Not CBool(record("identityIssue")) And Not needsConfirmation And _
@@ -1822,8 +1859,10 @@ Private Sub ShowECategory(Optional ByVal preserveFileSelection As Boolean = Fals
             Next i
         End If
     End If
-    mLblCounts.Caption = "確認が必要なファイル: " & CStr(inputFileKeys.Count) & "件 / 確認が必要な入力項目: " & _
-        CStr(inputItemCount) & "件" & vbCrLf & _
+    mLblCounts.Caption = "新規・未判断: " & CStr(newVisibleItemCount) & "件 / 前回判断済み・未反映: " & _
+        CStr(previousDecisionItemCount) & "件 / 保留中: " & CStr(heldItemCount) & "件" & vbCrLf & _
+        "確認が必要なファイル: " & CStr(inputFileKeys.Count) & "件 / 前回判断済みファイル: " & _
+        CStr(previousDecisionFileCount) & "件 / 確認が必要な入力項目: " & CStr(inputItemCount) & "件" & vbCrLf & _
         "内部項目の不一致: " & CStr(internalMismatchCount) & "件 / 安全に確認不要: " & _
         CStr(safeNoReviewCount) & "件 / 未確認・要調査: " & CStr(unresolvedInternalCount) & _
         "件 / 内部のみ: " & CStr(internalOnlyFileCount) & "ファイル / 識別要確認: " & _
@@ -2329,6 +2368,51 @@ Private Function ERecordNeedsConfirmation(ByVal record As Object) As Boolean
     Next item
 End Function
 
+Private Function ERecordHasPriorExcelDecision(ByVal record As Object) As Boolean
+    Dim item As Object, recordCases As Collection
+    If CBool(record("identityIssue")) Then Exit Function
+    Set recordCases = record("cases")
+    For Each item In recordCases
+        If SyncReviewDecision(item) = "Excel採用" Then
+            If ECaseHasNormalDisplayFields(item) Then
+                ERecordHasPriorExcelDecision = True
+                Exit Function
+            End If
+        End If
+    Next item
+End Function
+
+Private Function ERecordHasHoldDecision(ByVal record As Object) As Boolean
+    Dim item As Object, recordCases As Collection
+    If CBool(record("identityIssue")) Then Exit Function
+    Set recordCases = record("cases")
+    For Each item In recordCases
+        If SyncReviewDecision(item) = "保留" Then
+            If ECaseHasNormalDisplayFields(item) Then
+                ERecordHasHoldDecision = True
+                Exit Function
+            End If
+        End If
+    Next item
+End Function
+
+Private Function EConflictStatusSummary(ByVal recordCases As Collection) As String
+    Dim item As Object, decision As String
+    Dim newCount As Long, previousCount As Long, holdCount As Long
+    For Each item In recordCases
+        decision = SyncReviewDecision(item)
+        If Len(decision) = 0 Then
+            newCount = newCount + 1
+        ElseIf decision = "Excel採用" Or decision = "システム採用" Then
+            previousCount = previousCount + 1
+        ElseIf decision = "保留" Then
+            holdCount = holdCount + 1
+        End If
+    Next item
+    EConflictStatusSummary = "新規・未判断 " & CStr(newCount) & "件 / 前回判断済み・未反映 " & _
+        CStr(previousCount) & "件 / 保留中 " & CStr(holdCount) & "件"
+End Function
+
 Private Function ERecordNeedsInternalInvestigation(ByVal record As Object) As Boolean
     Dim item As Object, recordCases As Collection
     If CBool(record("identityIssue")) Then
@@ -2508,6 +2592,7 @@ Private Sub ShowECurrent()
     Dim record As Object, item As Object, fieldItem As Object
     Dim recordCases As Collection, fieldItems As Collection
     Dim rowIndex As Long, decision As String, displayCaption As String, allMode As Boolean
+    Dim statusSummary As String
     Dim normalTargetItems As Long, outOfTargetItems As Long, mixedGroups As Long
     Dim linkedGroups As Long, retentionLinkedGroups As Long
     Dim selectionKey As String
@@ -2543,6 +2628,7 @@ Private Sub ShowECurrent()
     End If
     Set recordCases = record("cases")
     allMode = EIsAllDisplayMode()
+    statusSummary = EConflictStatusSummary(recordCases)
     For Each item In recordCases
         Set fieldItems = item("headers")
         decision = EConflictDecisionDisplay(item)
@@ -2585,7 +2671,7 @@ Private Sub ShowECurrent()
     mLstRows.ListIndex = -1
     mLblCompareRows.Caption = "CSV行 " & CStr(record("sourceRow")) & " ／ Excel行 " & _
                               CStr(record("destinationRow")) & " ／ 判断単位 " & CStr(recordCases.Count) & "件"
-    mTxtDetails.Text = ERecordIdentityDetails(record)
+    mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & statusSummary
     If allMode Then
         If CBool(record("identityIssue")) Then
             mLblStatus.Caption = "識別情報が要確認のファイルです。採用・保留はできません。別のレコードを巻き込まないよう、識別情報を確認してください。"
@@ -2628,7 +2714,7 @@ DisplayFailed:
 End Sub
 
 Private Sub UpdateEFieldSelection()
-    Dim record As Object, item As Object, fieldItem As Object
+    Dim record As Object, item As Object, fieldItem As Object, recordCases As Collection
     Dim fieldSelectionKey As String
     If rendering Or mCboCategory.ListIndex <> 4 Then Exit Sub
     ' Left-file changes, reloads and display-mode changes invalidate this stamp.
@@ -2637,12 +2723,13 @@ Private Sub UpdateEFieldSelection()
     If fieldSelectionKey = eRenderedFieldSelection Then Exit Sub
     Set record = SelectedRecord()
     If record Is Nothing Then Exit Sub
+    Set recordCases = record("cases")
     On Error GoTo DisplayFailed
     BeginEDisplayRead
     Set item = SelectedCase()
     Set fieldItem = SelectedEField()
     If item Is Nothing Or fieldItem Is Nothing Then
-        mTxtDetails.Text = ERecordIdentityDetails(record)
+        mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & EConflictStatusSummary(recordCases)
         If ESelectedCount() > 1 Then
             mLblStatus.Caption = "複数ファイルの選択は表示専用です。判断にはファイル1件と項目1件を選んでください。"
         Else
@@ -2656,7 +2743,7 @@ Private Sub UpdateEFieldSelection()
     ' Linked-group details are built by UpdateESelection, including both live
     ' validation results. Do not read the same identity cells twice here.
     If Not EIsClassification1Group(item) And Not EIsRetentionGroup(item) Then _
-        mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & EConflictFieldDetails(item, fieldItem)
+        mTxtDetails.Text = ERecordIdentityDetails(record) & vbCrLf & EConflictStatusSummary(recordCases) & vbCrLf & EConflictFieldDetails(item, fieldItem)
     If EIsClassification1Group(item) Then
             mLblStatus.Caption = "分類名１と分類コード１は同じ判断単位です。採用前の確認画面で両方の値と採用元を確認します。"
         ElseIf EIsRetentionGroup(item) Then
@@ -2734,7 +2821,8 @@ Private Function EConflictFieldDetails(ByVal item As Object, ByVal selectedField
         groupCaption = fieldNames
     End If
     If Len(fieldNames) = 0 Then fieldNames = "（表示できる項目なし）"
-    EConflictFieldDetails = "判断単位: " & groupCaption & " ／ 関連項目: " & fieldNames
+    EConflictFieldDetails = "状態: " & EConflictDecisionDisplay(item) & " ／ 判断単位: " & groupCaption & _
+        " ／ 関連項目: " & fieldNames
     If Not allMode And hiddenFieldCount > 0 Then
         EConflictFieldDetails = EConflictFieldDetails & "（［入力項目のみ］の表示対象外の関連項目 " & _
             CStr(hiddenFieldCount) & "件は非表示）"
@@ -2753,6 +2841,19 @@ Private Function EConflictFieldDetails(ByVal item As Object, ByVal selectedField
     End If
     EConflictFieldDetails = EConflictFieldDetails & vbCrLf & "前回同期値: " & previousValue & _
         " ／ この判断は同じ判断単位の関連項目全体に適用されます。"
+    Select Case SyncReviewDecision(item)
+        Case "Excel採用"
+            EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
+                "前回判断: Excel基準表を採用。値の不一致が続いているため、同じ判断の再操作は不要です。"
+        Case "システム採用"
+            EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
+                "前回判断: 文書管理システムを採用。未反映のため、採用元を再確認できます。"
+        Case "保留"
+            EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
+                "状態: 保留中。保留のまま他の不一致を確認できます。"
+        Case Else
+            EConflictFieldDetails = EConflictFieldDetails & vbCrLf & "状態: 新規・未判断。"
+    End Select
     If Not allMode And hiddenFieldCount > 0 Then
         If EIsClassification1Group(item) Then
             EConflictFieldDetails = EConflictFieldDetails & vbCrLf & _
@@ -2783,11 +2884,9 @@ End Function
 Private Function EConflictDecisionDisplay(ByVal item As Object) As String
     Select Case SyncReviewDecision(item)
         Case ""
-            EConflictDecisionDisplay = "未判断"
-        Case "システム採用"
-            EConflictDecisionDisplay = "文書管理を採用"
-        Case "Excel採用"
-            EConflictDecisionDisplay = "Excel基準表を採用"
+            EConflictDecisionDisplay = "新規・未判断"
+        Case "システム採用", "Excel採用"
+            EConflictDecisionDisplay = "前回判断済み・未反映"
         Case "保留"
             EConflictDecisionDisplay = "保留中"
         Case Else

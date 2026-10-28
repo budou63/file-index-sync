@@ -83,19 +83,20 @@ class ClassificationLinkSafetyTests(unittest.TestCase):
             self.assertIn(decision, body)
         self.assertIn("item.Remove \"linkedPairSignature\"", procedure(MODULE, "BidirectionalSyncResolveConflict", "Function"))
 
-    def test_confirmed_decisions_are_not_overwritten_and_preview_values_are_rechecked(self):
+    def test_prior_decision_can_be_changed_after_live_revalidation(self):
         safety = procedure(MODULE, "BidirectionalSyncClassification1DecisionSafe", "Function")
         resolver = procedure(MODULE, "BidirectionalSyncResolveConflict", "Function")
-        self.assertIn("BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or _", safety)
-        self.assertIn("BIDIRECTIONAL_SYNC_CONFLICT_EXCEL Then", safety)
-        self.assertIn("currentDecision = CStr(wsConflict.Cells(stateRow, 6).Value2)", safety)
+        self.assertNotIn("currentDecision", safety)
+        self.assertNotIn("既存判断を上書きしません", safety)
         self.assertIn("requireSignature", safety)
         self.assertIn("linkedPairSignature", safety)
-        self.assertIn("previousDecision = CStr(oldDecision)", resolver)
-        self.assertIn("既存判断を上書きしません", resolver)
+        self.assertIn("oldDecision = wsConflict.Cells(stateRow, 6).Value2", resolver)
+        self.assertIn("BidirectionalSyncConflictLiveMatches(item, reason)", resolver)
+        self.assertIn("BidirectionalSyncFindConflictStateRow(item, stateRow)", resolver)
+        self.assertIn("wsConflict.Cells(stateRow, 6).Value2 = decision", resolver)
+        self.assertNotIn("previousDecision", resolver)
         self.assertIn("snapshots As Collection", resolver)
         self.assertIn("restoreOk", resolver)
-        self.assertIn("BidirectionalSyncConflictLiveMatches(item, reason)", resolver)
 
     def test_mapping_failure_blocks_adoption_but_hold_keeps_values_unchanged(self):
         safety = procedure(MODULE, "BidirectionalSyncClassification1DecisionSafe", "Function")
@@ -111,7 +112,8 @@ class ClassificationLinkSafetyTests(unittest.TestCase):
 
     def test_rejudge_keeps_the_prior_choice_only_for_the_same_key_and_snapshot(self):
         refresh_state = procedure(MODULE, "BidirectionalSyncRefreshConflictState", "Sub")
-        self.assertIn("If CStr(prior(0)) = stableKey And CStr(prior(1)) = snapshot Then decision = CStr(prior(2))", refresh_state)
+        self.assertIn("BidirectionalSyncConflictHistoryKey(targetYearValue, rowId, stableKey, groupName, snapshot)", refresh_state)
+        self.assertIn("If previousByKey.Exists(historyKey) Then decision = CStr(previousByKey(historyKey))", refresh_state)
 
 
 if __name__ == "__main__":

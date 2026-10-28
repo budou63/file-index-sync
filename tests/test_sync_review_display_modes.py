@@ -153,7 +153,7 @@ class NormalDisplayTests(unittest.TestCase):
         self.assertIn("mLstRows.ColumnWidths = CStr(CLng(columnWidths(0)))", layout)
         self.assertNotIn('mLstRows.ColumnWidths = "130 pt;145 pt;145 pt;145 pt;180 pt"', procedure("ShowECurrent"))
         self.assertIn('mLblRows.Caption = "項目群"', layout)
-        self.assertIn('mLblCase.Caption = "確認が必要な入力項目"', layout)
+        self.assertIn('mLblCase.Caption = "不一致項目（新規・前回判断・保留）"', layout)
         self.assertIn('ControlTipText = "項目グループで対象ファイルを絞り込みます。判断状態は変更しません。"', FORM)
         top_row = ((205, 42), (251, 160), (419, 42), (464, 112), (582, 35), (620, 88), (716, 28), (748, 112))
         for (left, width), (next_left, _) in zip(top_row, top_row[1:]):
@@ -195,7 +195,7 @@ class NormalDisplayTests(unittest.TestCase):
         show_records = procedure("ShowECategory")
         self.assertIn("needsConfirmation = ERecordNeedsConfirmation(record)", show_records)
         self.assertIn("allMode = EIsAllDisplayMode()", show_records)
-        self.assertIn("(allMode Or needsConfirmation) And ERecordHasGroup(record, selectedGroup)", show_records)
+        self.assertIn("(allMode Or needsConfirmation Or needsPriorDecision) And ERecordHasGroup(record, selectedGroup)", show_records)
         needs_input = procedure("ERecordNeedsConfirmation", "Function")
         self.assertIn("ECaseNeedsHumanDecision(item)", needs_input)
         self.assertIn("ECaseHasNormalDisplayFields(item)", needs_input)

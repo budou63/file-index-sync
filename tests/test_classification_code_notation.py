@@ -191,8 +191,11 @@ class ClassificationCodeNotationTests(unittest.TestCase):
         conflict_loader = procedure("BidirectionalSyncLoadSavedConflictKeys")
         self.assertIn("actualRow <> expectedRow", row_id_guard)
         self.assertIn("SavedConflictKeys", conflict_guard)
-        self.assertIn("False, created", conflict_loader)
-        self.assertIn("BidirectionalSyncConflictDecisionIsValid", conflict_loader)
+        review_start = SOURCE.index("Public Function BidirectionalSyncConflictReviewCases(")
+        review_cases = SOURCE[review_start:SOURCE.index("End Function", review_start)]
+        self.assertIn("BidirectionalSyncConflictReviewCases", conflict_loader)
+        self.assertIn("BidirectionalSyncConflictSheet(False, created)", review_cases)
+        self.assertIn("BidirectionalSyncConflictDecisionIsValid", review_cases)
         self.assertLess(discard.index("BidirectionalSyncRollbackGuideCodeSnapshots"), discard.index("BidirectionalSyncDeleteNewBaselineSheet"))
         self.assertIn("ブックを保存せず終了", SOURCE)
 

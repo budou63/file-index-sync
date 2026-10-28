@@ -241,8 +241,10 @@ class RecordLevelConflictUiTests(unittest.TestCase):
         reason = procedure(FORM, "EConflictReasonDisplay", "Function")
         details = procedure(FORM, "EConflictFieldDetails", "Function")
         self.assertIn('EConflictDecisionDisplay(item)', current)
-        for label in ('未判断', '文書管理を採用', 'Excel基準表を採用', '保留中'):
+        for label in ("新規・未判断", "前回判断済み・未反映", "保留中"):
             self.assertIn(label, decision)
+        self.assertIn("前回判断: Excel基準表を採用", details)
+        self.assertIn("同じ判断の再操作は不要", details)
         for explanation in ('前回の同期確認値がありません', '両方の値が変更されています',
                             'コード差を安全に判断できない', '保存済みの競合を再表示'):
             self.assertIn(explanation, reason)
@@ -269,8 +271,9 @@ class RecordLevelConflictUiTests(unittest.TestCase):
         load_cases = procedure(MODULE, "BidirectionalSyncConflictReviewCases", "Function")
         resolve = procedure(MODULE, "BidirectionalSyncResolveConflict", "Function")
         self.assertIn('Module1.BidirectionalSyncConflictReviewCases(targetYear)', reload_ui)
-        self.assertIn('CStr(values(1, 6)) <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM', load_cases)
-        self.assertIn('item.Add "decision", CStr(values(1, 6))', load_cases)
+        self.assertIn('If decision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then', load_cases)
+        self.assertIn('BidirectionalSyncConflictLiveMatches(item, liveReason)', load_cases)
+        self.assertIn('item.Add "decision", decision', load_cases)
         self.assertIn('wsConflict.Cells(stateRow, 6).Value2 = decision', resolve)
         self.assertIn('item("decision") = decision', resolve)
 

@@ -73,18 +73,20 @@ class TestBidirectionalThreeWaySync(unittest.TestCase):
         loop_start = body.index("For r = 2 To lastRow")
         loop_end = body.index("Next r", loop_start)
         year_check = body.index("If CLng(values(1, 1)) = yearValue Then", loop_start)
-        non_system_check = body.index('If CStr(values(1, 6)) <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then', year_check)
+        non_system_check = body.index('If decision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then', year_check)
         create_item = body.index('Set item = CreateObject("Scripting.Dictionary")', non_system_check)
         first_add = body.index('item.Add "category", "E"', non_system_check)
-        result_add = body.index("result.Add item", non_system_check)
+        live_check = body.index('If BidirectionalSyncConflictLiveMatches(item, liveReason) Then', first_add)
+        result_add = body.index("result.Add item", live_check)
         self.assertLess(loop_start, year_check)
         self.assertLess(year_check, non_system_check)
         self.assertLess(non_system_check, create_item)
         self.assertLess(create_item, first_add)
-        self.assertLess(first_add, result_add)
+        self.assertLess(first_add, live_check)
+        self.assertLess(live_check, result_add)
         self.assertLess(result_add, loop_end)
         closing_blocks = [line.strip() for line in body[result_add:loop_end].splitlines() if line.strip() == "End If"]
-        self.assertEqual(closing_blocks, ["End If", "End If"])
+        self.assertEqual(closing_blocks, ["End If", "End If", "End If"])
 
     def test_initial_mismatch_confirms_equal_members_only_and_holds_related_group_atomically(self) -> None:
         body = vba_block(self.source, "Private Sub BidirectionalSyncApplyManagedGroup")
@@ -138,11 +140,13 @@ class TestBidirectionalThreeWaySync(unittest.TestCase):
             self.assertIn(option_name, resolve)
 
         refresh = vba_block(self.source, "Private Sub BidirectionalSyncRefreshConflictState")
-        self.assertIn('If CStr(prior(0)) = stableKey And CStr(prior(1)) = snapshot Then decision = CStr(prior(2))', refresh)
+        self.assertIn('If previousByKey.Exists(historyKey) Then decision = CStr(previousByKey(historyKey))', refresh)
+        self.assertIn('If rowYear <> targetYearValue Or Not currentHistoryKeys.Exists(historyKey) Then', refresh)
         step4_approved = vba_block(self.source, "Private Function BidirectionalSyncConflictApprovedForStep4")
         step4_held = vba_block(self.source, "Private Function BidirectionalSyncConflictBlocksStep4")
         self.assertIn('CStr(ws.Cells(r, 6).Value2) = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL', step4_approved)
-        self.assertIn('decision = BIDIRECTIONAL_SYNC_CONFLICT_UNRESOLVED Or decision = BIDIRECTIONAL_SYNC_CONFLICT_HOLD', step4_held)
+        self.assertIn('decision = BIDIRECTIONAL_SYNC_CONFLICT_UNRESOLVED Or _', step4_held)
+        self.assertIn('BidirectionalSyncConflictCurrentValuesDiffer', step4_held)
 
     def test_partial_baseline_confirmation_does_not_rebase_a_saved_conflict(self) -> None:
         body = vba_block(self.source, "Private Sub BidirectionalSyncApplyManagedGroup")

@@ -107,7 +107,8 @@ class Generic10Tests(unittest.TestCase):
         self.assertIn('If excelEqualsCsv Then', group)
         self.assertIn('BidirectionalSyncStoreBaseline rowId, CStr(key), csvValue', group)
         self.assertIn('For Each item In currentCases', refresh)
-        self.assertIn('If CStr(prior(0)) = stableKey And CStr(prior(1)) = snapshot Then decision = CStr(prior(2))', refresh)
+        self.assertIn('historyKey = BidirectionalSyncConflictHistoryKey(targetYearValue, rowId, stableKey, groupName, snapshot)', refresh)
+        self.assertIn('If previousByKey.Exists(historyKey) Then decision = CStr(previousByKey(historyKey))', refresh)
         row = {'file_id': 'ID-A', 'row_id': 'ROW-A', 'other': 'untouched', 'item10': 90200}
         result = dict(row)
         result['item10'] = notation_model('090200', row['item10'])

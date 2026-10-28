@@ -53,7 +53,6 @@ class RetentionLinkSafetyTests(unittest.TestCase):
             'CStr(item("groupName")) <> "保存期間・保存期間ID"',
             "BidirectionalSyncConflictLiveMatches(item, reasonText)",
             "BidirectionalSyncFindConflictStateRow(item, stateRow)",
-            "既存判断を上書きしません",
             "BidirectionalSyncUnpackConflictHeaders",
             '"保存期間"', '"保存期間ID"',
             "systemMapOk", "excelMapOk", "selectedMapOk",
@@ -105,14 +104,13 @@ class RetentionLinkSafetyTests(unittest.TestCase):
         self.assertIn("WriteStep2SourceValue", resolver)
         self.assertIn("wsConflict.Cells(stateRow, 6).Value2 = decision", resolver)
 
-    def test_resolver_keeps_prior_decision_guard_as_a_block_if(self):
+    def test_resolver_allows_explicit_redecision_after_live_revalidation(self):
         resolver = procedure(MODULE, "BidirectionalSyncResolveConflict", "Function")
-        start = resolver.index('    If (CStr(item("groupName")) = "分類名１・分類コード１"')
-        end = resolver.index("    Set fieldItems =", start)
-        guard = resolver[start:end]
-        self.assertIn(") Then\n        Err.Raise vbObjectError + 2850", guard)
-        self.assertIn("\n    End If\n", guard)
-        self.assertNotIn("Then _", guard)
+        self.assertIn("BidirectionalSyncConflictLiveMatches(item, reason)", resolver)
+        self.assertIn("BidirectionalSyncFindConflictStateRow(item, stateRow)", resolver)
+        self.assertIn("wsConflict.Cells(stateRow, 6).Value2 = decision", resolver)
+        self.assertNotIn("既存判断を上書きしません", resolver)
+        self.assertNotIn("previousDecision", resolver)
 
     def test_manual_documents_only_the_linked_period_workflow_and_runtime_validation(self):
         for text in ("保存期間・保存期間ID", "入力項目のみ", "一意", "採用前"):
