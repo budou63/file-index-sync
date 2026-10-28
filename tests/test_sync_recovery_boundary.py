@@ -9,6 +9,27 @@ def proc(name):
     assert m, name
     return m.group()
 class RecoveryBoundary(unittest.TestCase):
+    def test_internal_commit_failure_model(self):
+        # Requirements model only; no VBA, file I/O or Excel execution.
+        from copy import deepcopy
+        initial={'input': '未保存入力', 'history': ['Excel採用'], 'baseline': ['土木・2']}
+        for phase in ('history', 'baseline', 'summary'):
+            with self.subTest(phase=phase):
+                recovery=deepcopy(initial)
+                live=deepcopy(initial)
+                snapshots={k:deepcopy(initial[k]) for k in ('history','baseline')}
+                with self.assertRaises(RuntimeError):
+                    live['input']='途中まで整形'
+                    live['history']=['判断履歴更新後']
+                    if phase=='history': raise RuntimeError('injected')
+                    live['baseline']=['工務・3']
+                    raise RuntimeError('injected')
+                live.update(snapshots)
+                self.assertEqual(live['history'],initial['history'])
+                self.assertEqual(live['baseline'],initial['baseline'])
+                self.assertEqual(recovery,initial)
+                self.assertNotEqual(live['input'],initial['input'])
+
     def test_copy_precedes_first_step2_mutation(self):
         s = proc('手順2_新ファイル基準表を作成する')
         self.assertLess(s.index('SyncRecoveryCreateCopy'), s.index('Step2ApplyRegistrationIdentifierCleanup wsDst'))

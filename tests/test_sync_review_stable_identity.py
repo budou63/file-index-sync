@@ -72,7 +72,7 @@ def exact_match(source, csv_rows, excel_rows):
     if len(matches) != 1:
         return None
     row = matches[0]
-    if row.get("year") != year or number_key(row.get("number")) != number or row.get("barcode") != barcode or row.get("status") != "同期済":
+    if row.get("year") != year or number_key(row.get("number")) != number or row.get("barcode") != barcode or row.get("status") not in {"同期済", "要確認", "反映待"}:
         return None
     for other in excel_rows:
         if other is not row and other.get("id") != fid and (other.get("barcode") == barcode or number_key(other.get("number")) == number):
@@ -202,13 +202,15 @@ class StableIdentityTests(unittest.TestCase):
         weak = {"status": "登録予定", "id": "", "folder": "似た名"}
         self.assertIsNotNone(exact_match(source, self.csv, [official]))
         self.assertEqual(filter_candidates(source, self.csv, [official], [weak]), [])
+        for status in ("要確認", "反映待"):
+            self.assertIsNotNone(exact_match(source, self.csv, [dict(official, status=status)]))
         old_label = dict(official, status="同期済み")
         self.assertIsNone(exact_match(source, self.csv, [old_label]))
         self.assertEqual(filter_candidates(source, self.csv, [old_label], [weak]), [weak])
         formal = proc(MODULE, "Private Function ReviewFindUniqueFormalMatch(")
         candidates = proc(MODULE, "Public Function SyncReviewCandidates(")
-        self.assertIn('ReviewField(dst, matchedRow, "同期状態") <> "同期済"', formal)
-        self.assertIn('ReviewField(dst, matchedFormalRow, "同期状態") <> "同期済"', candidates)
+        self.assertIn('Not ReviewIsLinkedSyncStatus(ReviewField(dst, matchedRow, "同期状態"))', formal)
+        self.assertIn('Not ReviewIsLinkedSyncStatus(ReviewField(dst, matchedFormalRow, "同期状態"))', candidates)
         self.assertNotIn('"同期済み"', formal + candidates)
 
     def test_duplicate_or_conflicting_identifiers_and_wrong_year_do_not_suppress(self):

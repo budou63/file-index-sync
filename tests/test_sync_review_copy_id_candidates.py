@@ -54,7 +54,7 @@ class CopyIdCandidateTests(unittest.TestCase):
         detector = procedure(MODULE, "Public Function SyncReviewCopyIdCandidates(")
         self.assertIn('NewCase("D"', detector)
         self.assertIn('ReviewField(dst, rowNo, "同期状態") <> "登録予定"', detector)
-        self.assertIn('ReviewField(dst, rowNo, "同期状態") <> "同期済"', detector)
+        self.assertIn('Not ReviewIsLinkedSyncStatus(ReviewField(dst, rowNo, "同期状態"))', detector)
         self.assertNotIn("SyncReviewCandidates(", detector)
         self.assertNotIn("ReviewBackup", detector)
         self.assertNotIn(".Rows(", detector)

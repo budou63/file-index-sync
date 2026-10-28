@@ -493,6 +493,13 @@ Private Function ReviewSourceStableKey(ByVal src As Worksheet, ByVal srcRow As L
         CStr(Len(barcode)) & ":" & barcode
 End Function
 
+Private Function ReviewIsLinkedSyncStatus(ByVal status As String) As Boolean
+    Select Case status
+        Case "同期済", "要確認", "反映待"
+            ReviewIsLinkedSyncStatus = True
+    End Select
+End Function
+
 Private Function ReviewFindUniqueFormalMatch(ByVal src As Worksheet, ByVal srcRow As Long, _
     ByVal dst As Worksheet, ByVal yearValue As Long, ByVal idIndex As Object, ByVal csvIds As Object, _
     ByVal csvYearBars As Object, ByVal csvYearNumbers As Object, ByVal sourceStableKey As String, _
@@ -514,7 +521,7 @@ Private Function ReviewFindUniqueFormalMatch(ByVal src As Worksheet, ByVal srcRo
     If ReviewField(dst, matchedRow, "ファイルID") <> fileId Then Exit Function
     If ReviewPadding(ReviewField(dst, matchedRow, "ファイル番号")) <> fileNumber Then Exit Function
     If ReviewField(dst, matchedRow, "バーコード番号") <> barcode Then Exit Function
-    If ReviewField(dst, matchedRow, "同期状態") <> "同期済" Then Exit Function
+    If Not ReviewIsLinkedSyncStatus(ReviewField(dst, matchedRow, "同期状態")) Then Exit Function
     ReviewFindUniqueFormalMatch = True
 End Function
 
@@ -685,8 +692,8 @@ Public Function SyncReviewCandidates(ByVal yearValue As Long) As Collection
                 collision = True: reason = "正式ファイルID一致行のファイル番号がCSVと一致しません。"
             ElseIf Len(bar) > 0 And ReviewField(dst, matchedFormalRow, "バーコード番号") <> bar Then
                 collision = True: reason = "正式ファイルID一致行のバーコード番号がCSVと一致しません。"
-            ElseIf ReviewField(dst, matchedFormalRow, "同期状態") <> "同期済" Then
-                collision = True: reason = "正式ファイルID一致行が同期済み状態ではありません。"
+            ElseIf Not ReviewIsLinkedSyncStatus(ReviewField(dst, matchedFormalRow, "同期状態")) Then
+                collision = True: reason = "正式ファイルID一致行が照合済みの既存状態ではありません。"
             End If
         End If
         If Not collision Then
@@ -850,7 +857,7 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
         If keeperRows.Count <> 1 Then GoTo NextCopySource
         rowNo = CLng(keeperRows(1))
         If ReviewField(dst, rowNo, "同期状態") <> "登録予定" And _
-           ReviewField(dst, rowNo, "同期状態") <> "同期済" Then GoTo NextCopySource
+           Not ReviewIsLinkedSyncStatus(ReviewField(dst, rowNo, "同期状態")) Then GoTo NextCopySource
         If ReviewName(dst, rowNo, False, False) <> ReviewName(src, sRow, True, False) Then GoTo NextCopySource
 
         valid = True
