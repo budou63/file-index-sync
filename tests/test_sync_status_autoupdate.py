@@ -45,6 +45,19 @@ class TestSyncStatusAutoupdate(unittest.TestCase):
         self.assertIn("context.Add \"BaselineSheetCreated\", CBool(baselineSheetCreated)", start)
         self.assertNotIn("Set context(\"BaselineSheetCreated\") = CBool(baselineSheetCreated)", start)
 
+    def test_step2_binds_transfer_map_after_context_initialization(self) -> None:
+        step2 = procedure(self.source, '手順2_新ファイル基準表を作成する')
+        build = step2.index('BuildStep2SourceTransferMap wsSrc')
+        start = step2.index('BidirectionalSyncStartContext wsDst')
+        assignment = 'Set mBidirectionalSyncContext("SyncTransferMap") = srcToDstMap'
+        self.assertEqual(step2.count(assignment), 1)
+        bind = step2.index(assignment)
+        update = step2.index('UpdateSyncStatusColumn wsDst')
+        self.assertLess(build, start)
+        self.assertLess(start, bind)
+        self.assertLess(bind, update)
+        self.assertNotIn('If BidirectionalSyncContextIsActive() Then ' + assignment, step2)
+
     def test_yoshida_case_state_transitions(self) -> None:
         self.assertEqual(file_status(is_new=False, unresolved=True, excel_adopted_pending=False, all_synced=False), "要確認")
         self.assertEqual(file_status(is_new=False, unresolved=False, excel_adopted_pending=True, all_synced=False), "反映待")

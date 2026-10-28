@@ -5744,11 +5744,11 @@ Public Sub 手順2_新ファイル基準表を作成する()
     ' 3) 目録CSVの見出し辞書とCSV由来列の転記マップを作成する
     BuildStep2SourceTransferMap wsSrc, wsDst, srcLastCol, srcHeaderMap, existingDstHeaders, _
         baselineUserManagedHeaders, srcToDstMap
-    If BidirectionalSyncContextIsActive() Then Set mBidirectionalSyncContext("SyncTransferMap") = srcToDstMap
     ' 第2段階: 既存の行更新は B/E/C の3方向比較を通す。
     ' 手動確認・システム側手動編集待ちは、ブックと同じ場所の別CSVへ出力する。
     bidirectionalOutputPath = BidirectionalSyncDefaultOutputPath(targetYearValue)
     BidirectionalSyncStartContext wsDst, targetYearValue, bidirectionalOutputPath
+    Set mBidirectionalSyncContext("SyncTransferMap") = srcToDstMap
     If Not syncStatusPromptReady Then
         dstLastRow = Step2GetLastDataRow(wsDst)
         If dstLastRow < 1 Then dstLastRow = 1
