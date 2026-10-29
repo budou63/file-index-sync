@@ -76,7 +76,7 @@ class TestBidirectionalThreeWaySync(unittest.TestCase):
         non_system_check = body.index('If decision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then', year_check)
         create_item = body.index('Set item = CreateObject("Scripting.Dictionary")', non_system_check)
         first_add = body.index('item.Add "category", "E"', non_system_check)
-        live_check = body.index('If BidirectionalSyncConflictLiveMatches(item, liveReason) Then', first_add)
+        live_check = body.index('If BidirectionalSyncConflictLiveMatches(item, liveReason, r, baselineRows, baselineSheet) Then', first_add)
         result_add = body.index("result.Add item", live_check)
         self.assertLess(loop_start, year_check)
         self.assertLess(year_check, non_system_check)
@@ -134,7 +134,12 @@ class TestBidirectionalThreeWaySync(unittest.TestCase):
 
         live = vba_block(self.source, "Private Function BidirectionalSyncConflictLiveMatches")
         self.assertIn('If baselineKnown Then', live)
-        self.assertIn('If baselineValues.Exists(baselineKey) Or Len(CStr(fieldItem("baselineValue"))) > 0 Then', live)
+        self.assertIn('If baselineRows.Exists(baselineKey) Or Len(CStr(fieldItem("baselineValue"))) > 0 Then', live)
+        self.assertIn('Optional ByVal knownStateRow As Long = 0', live)
+        self.assertIn('Set baselineRows = mBidirectionalSyncContext("BaselineRows")', live)
+        self.assertIn('Optional ByVal cachedBaselineRows As Variant', live)
+        self.assertIn('Optional ByVal cachedBaselineSheet As Variant', live)
+        self.assertIn('BidirectionalSyncLoadBaselineMaps wsBase, baselineValues, baselineRows', live)
         resolve = vba_block(self.source, "Public Function BidirectionalSyncResolveConflict")
         for option_name in ("BIDIRECTIONAL_SYNC_CONFLICT_EXCEL", "BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM", "BIDIRECTIONAL_SYNC_CONFLICT_HOLD"):
             self.assertIn(option_name, resolve)
@@ -169,6 +174,54 @@ class TestBidirectionalThreeWaySync(unittest.TestCase):
         self.assertIn('"見出し名"', self.source)
         self.assertIn('BidirectionalSyncBaselineKey', self.source)
         self.assertIn('BidirectionalSyncStoreBaseline', self.source)
+
+    def test_baseline_loader_bulk_reads_rows_without_per_cell_sheet_access(self) -> None:
+        body = vba_block(self.source, "Private Sub BidirectionalSyncLoadBaselineMaps")
+        read_position = body.index("baselineData = ws.Range(")
+        loop_start = body.index("For rowNo = 1 To UBound(baselineData, 1)")
+        loop_end = body.index("Next rowNo", loop_start)
+        loop = body[loop_start:loop_end]
+
+        self.assertLess(read_position, loop_start)
+        self.assertIn("ws.Cells(2, 1)", body[:loop_start])
+        self.assertIn("ws.Cells(lastRow, 5)", body[:loop_start])
+        self.assertNotIn("ws.Cells(", loop)
+        self.assertIn("baselineData(rowNo, 1)", loop)
+        self.assertIn("baselineData(rowNo, 2)", loop)
+        self.assertIn("baselineData(rowNo, 3)", loop)
+        self.assertIn("baselineData(rowNo, 5)", loop)
+        self.assertIn("baselineRows.Add mapKey, CLng(worksheetRow)", loop)
+        self.assertIn("If Len(rowId) = 0 And Len(headerName) = 0 Then GoTo ContinueNextBaselineRow", loop)
+        self.assertIn("If Len(rowId) = 0 Or Len(headerName) = 0 Then", loop)
+        self.assertIn("BIDIRECTIONAL_SYNC_BASELINE_VERSION", loop)
+        self.assertIn("If baselineValues.Exists(mapKey) Then", loop)
+
+    def test_bulk_baseline_rows_keep_identity_value_version_and_source_row_contract(self) -> None:
+        # Lightweight oracle for the five-column persisted format; VBA execution is tested separately in Excel.
+        sheet_rows = [
+            ["row-1", "タイトル", "保管対象", "2026-10-29", "1"],
+            ["", "", "ignored", "", "old-version-is-ignored"],
+            ["row-2", "保存期間", "10年", "2026-10-29", "1"],
+        ]
+        values: dict[str, str] = {}
+        source_rows: dict[str, int] = {}
+        for worksheet_row, row in enumerate(sheet_rows, start=2):
+            row_id = str(row[0] or "").strip()
+            header = str(row[1] or "").strip()
+            if not row_id and not header:
+                continue
+            if not row_id or not header:
+                raise ValueError(f"incomplete identity at row {worksheet_row}")
+            if row[4] != "1":
+                raise ValueError(f"bad version at row {worksheet_row}")
+            key = f"{row_id.upper()}|{header}"
+            if key in values:
+                raise ValueError(f"duplicate key at row {worksheet_row}")
+            values[key] = str(row[2] or "")
+            source_rows[key] = worksheet_row
+
+        self.assertEqual(values, {"ROW-1|タイトル": "保管対象", "ROW-2|保存期間": "10年"})
+        self.assertEqual(source_rows, {"ROW-1|タイトル": 2, "ROW-2|保存期間": 4})
 
     def test_excel_csv_and_conflict_paths_are_explicit(self) -> None:
         for required in (

@@ -17749,9 +17749,11 @@ Private Sub BidirectionalSyncLoadBaselineMaps( _
 
     Dim lastRow As Long
     Dim rowNo As Long
+    Dim worksheetRow As Long
     Dim rowId As String
     Dim headerName As String
     Dim mapKey As String
+    Dim baselineData As Variant
 
     If ws Is Nothing Then Err.Raise vbObjectError + 2788, , "双方向同期基準値シートが見つかりません。"
     If baselineValues Is Nothing Or baselineRows Is Nothing Then Err.Raise vbObjectError + 2789, , "同期基準値の内部マップを作成できません。"
@@ -17760,19 +17762,22 @@ Private Sub BidirectionalSyncLoadBaselineMaps( _
     lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
     If lastRow < 2 Then Exit Sub
 
-    For rowNo = 2 To lastRow
-        rowId = Trim$(CStr(ws.Cells(rowNo, 1).Value2))
-        headerName = CanonicalHeaderName(CStr(ws.Cells(rowNo, 2).Value2))
+    ' Excelオブジェクトモデルへのセル単位アクセスを避け、基準表を一度に配列へ読み込む。
+    baselineData = ws.Range(ws.Cells(2, 1), ws.Cells(lastRow, 5)).Value2
+    For rowNo = 1 To UBound(baselineData, 1)
+        worksheetRow = rowNo + 1
+        rowId = Trim$(CStr(baselineData(rowNo, 1)))
+        headerName = CanonicalHeaderName(CStr(baselineData(rowNo, 2)))
         If Len(rowId) = 0 And Len(headerName) = 0 Then GoTo ContinueNextBaselineRow
         If Len(rowId) = 0 Or Len(headerName) = 0 Then _
-            Err.Raise vbObjectError + 2790, , "双方向同期基準値に行IDまたは見出し名がない行があります（行 " & CStr(rowNo) & "）。"
-        If CStr(ws.Cells(rowNo, 5).Value2) <> BIDIRECTIONAL_SYNC_BASELINE_VERSION Then _
-            Err.Raise vbObjectError + 2791, , "双方向同期基準値の形式バージョンを確認できません（行 " & CStr(rowNo) & "）。"
+            Err.Raise vbObjectError + 2790, , "双方向同期基準値に行IDまたは見出し名がない行があります（行 " & CStr(worksheetRow) & "）。"
+        If CStr(baselineData(rowNo, 5)) <> BIDIRECTIONAL_SYNC_BASELINE_VERSION Then _
+            Err.Raise vbObjectError + 2791, , "双方向同期基準値の形式バージョンを確認できません（行 " & CStr(worksheetRow) & "）。"
         mapKey = BidirectionalSyncBaselineKey(rowId, headerName)
         If baselineValues.Exists(mapKey) Then _
             Err.Raise vbObjectError + 2792, , "双方向同期基準値に重複があります。自動で採用しません。"
-        baselineValues.Add mapKey, CStr(ws.Cells(rowNo, 3).Value2)
-        baselineRows.Add mapKey, CLng(rowNo)
+        baselineValues.Add mapKey, CStr(baselineData(rowNo, 3))
+        baselineRows.Add mapKey, CLng(worksheetRow)
 ContinueNextBaselineRow:
     Next rowNo
 
@@ -19079,7 +19084,8 @@ Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As
     Dim r As Long, lastRow As Long, values As Variant, item As Object
     Dim seenHistory As Object, activeCaseKeys As Object
     Dim historyKey As String, caseKey As String, decision As String, liveReason As String
-    Dim hasFormulaValue As Variant
+    Dim hasFormulaValue As Variant, baselineCacheReady As Boolean
+    Dim baselineValues As Object, baselineRows As Object, baselineSheet As Worksheet
 
     Set result = New Collection
     Set ws = BidirectionalSyncConflictSheet(False, created)
@@ -19109,6 +19115,25 @@ Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As
             seenHistory.Add historyKey, True
 
             If decision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then
+                If Not baselineCacheReady Then
+                    On Error GoTo BaselineCacheUnavailable
+                    If BidirectionalSyncContextIsActive() Then
+                        Set baselineSheet = mBidirectionalSyncContext("BaselineSheet")
+                        Set baselineRows = mBidirectionalSyncContext("BaselineRows")
+                    Else
+                        On Error Resume Next
+                        Set baselineSheet = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
+                        On Error GoTo BaselineCacheUnavailable
+                        If baselineSheet Is Nothing Then GoTo BaselineCacheUnavailable
+                        Set baselineValues = CreateObject("Scripting.Dictionary")
+                        Set baselineRows = CreateObject("Scripting.Dictionary")
+                        baselineValues.CompareMode = vbTextCompare: baselineRows.CompareMode = vbTextCompare
+                        BidirectionalSyncLoadBaselineMaps baselineSheet, baselineValues, baselineRows
+                    End If
+                    If baselineSheet Is Nothing Or baselineRows Is Nothing Then GoTo BaselineCacheUnavailable
+                    baselineCacheReady = True
+                    On Error GoTo 0
+                End If
                 Set item = CreateObject("Scripting.Dictionary")
                 item.Add "category", "E"
                 item.Add "year", CLng(values(1, 1))
@@ -19125,7 +19150,7 @@ Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As
                 item.Add "headers", BidirectionalSyncUnpackConflictHeaders(CStr(values(1, 5)))
                 item.Add "stateRow", CLng(r)
                 liveReason = ""
-                If BidirectionalSyncConflictLiveMatches(item, liveReason) Then
+                If BidirectionalSyncConflictLiveMatches(item, liveReason, r, baselineRows, baselineSheet) Then
                     caseKey = BidirectionalSyncConflictCaseKey(CStr(values(1, 2)), CStr(values(1, 4)))
                     If activeCaseKeys.Exists(caseKey) Then Err.Raise vbObjectError + 2857, , "現在の競合候補に同一案件が重複しています。"
                     activeCaseKeys.Add caseKey, True
@@ -19135,6 +19160,10 @@ Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As
         End If
     Next r
 
+    Set BidirectionalSyncConflictReviewCases = result
+    Exit Function
+BaselineCacheUnavailable:
+    Err.Clear
     Set BidirectionalSyncConflictReviewCases = result
 End Function
 
@@ -19162,7 +19191,9 @@ Private Function BidirectionalSyncFindConflictStateRow(ByVal item As Object, ByR
     BidirectionalSyncFindConflictStateRow = found
 End Function
 
-Private Function BidirectionalSyncConflictLiveMatches(ByVal item As Object, ByRef reason As String) As Boolean
+Private Function BidirectionalSyncConflictLiveMatches(ByVal item As Object, ByRef reason As String, _
+    Optional ByVal knownStateRow As Long = 0, _
+    Optional ByVal cachedBaselineRows As Variant, Optional ByVal cachedBaselineSheet As Variant) As Boolean
     Dim wsSrc As Worksheet, wsDst As Worksheet, wsBase As Worksheet, wsConflict As Worksheet
     Dim sourceHeaderMap As Object, baselineValues As Object, baselineRows As Object
     Dim fieldItems As Collection, fieldItem As Object
@@ -19180,10 +19211,26 @@ Private Function BidirectionalSyncConflictLiveMatches(ByVal item As Object, ByRe
     Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
     Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
     On Error Resume Next
-    Set wsBase = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
     Set wsConflict = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_CONFLICT_SHEET)
     On Error GoTo InvalidState
-    If wsBase Is Nothing Or wsConflict Is Nothing Then reason = "同期基準または競合情報がありません。": Exit Function
+    If IsObject(cachedBaselineRows) And IsObject(cachedBaselineSheet) Then
+        Set baselineRows = cachedBaselineRows
+        Set wsBase = cachedBaselineSheet
+    ElseIf BidirectionalSyncContextIsActive() Then
+        Set wsBase = mBidirectionalSyncContext("BaselineSheet")
+        Set baselineRows = mBidirectionalSyncContext("BaselineRows")
+    Else
+        On Error Resume Next
+        Set wsBase = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
+        On Error GoTo InvalidState
+        If wsBase Is Nothing Then reason = "同期基準または競合情報がありません。": Exit Function
+        Set baselineValues = CreateObject("Scripting.Dictionary")
+        Set baselineRows = CreateObject("Scripting.Dictionary")
+        baselineValues.CompareMode = vbTextCompare: baselineRows.CompareMode = vbTextCompare
+        BidirectionalSyncLoadBaselineMaps wsBase, baselineValues, baselineRows
+    End If
+    If wsBase Is Nothing Or wsConflict Is Nothing Or baselineRows Is Nothing Then _
+        reason = "同期基準または競合情報がありません。": Exit Function
     srcLastCol = GetLastHeaderCol(wsSrc): dstLastCol = GetLastHeaderCol(wsDst)
     srcYearCol = FindHeaderColumn(wsSrc, srcLastCol, GetStep2HeaderCandidates("年度（和暦）"))
     srcWesternCol = FindHeaderColumn(wsSrc, srcLastCol, Array("年度"))
@@ -19209,13 +19256,18 @@ Private Function BidirectionalSyncConflictLiveMatches(ByVal item As Object, ByRe
     If stableKey <> CStr(item("stableKey")) Then reason = "CSV側の安定識別キーが変わりました。": Exit Function
     If Not BidirectionalSyncBatchSourceKeyIsUnique(wsSrc, srcRow, stableKey) Then _
         reason = "CSV側の安定識別キーが一意ではありません。": Exit Function
-    Set baselineValues = CreateObject("Scripting.Dictionary")
-    Set baselineRows = CreateObject("Scripting.Dictionary")
-    baselineValues.CompareMode = vbTextCompare: baselineRows.CompareMode = vbTextCompare
-    BidirectionalSyncLoadBaselineMaps wsBase, baselineValues, baselineRows
-    If Not BidirectionalSyncFindConflictStateRow(item, stateRow) Then reason = "保存済み競合が見つかりません。": Exit Function
-    If CStr(wsConflict.Cells(stateRow, 5).Value2) <> CStr(item("snapshot")) Or _
+    If knownStateRow >= 2 Then
+        stateRow = knownStateRow
+    ElseIf Not BidirectionalSyncFindConflictStateRow(item, stateRow) Then
+        reason = "保存済み競合が見つかりません。": Exit Function
+    End If
+    If stateRow > BidirectionalSyncConflictLastRow(wsConflict) Then _
+        reason = "保存済み競合が見つかりません。": Exit Function
+    If CLng(wsConflict.Cells(stateRow, 1).Value2) <> CLng(item("year")) Or _
+       CStr(wsConflict.Cells(stateRow, 2).Value2) <> CStr(item("rowId")) Or _
        CStr(wsConflict.Cells(stateRow, 3).Value2) <> CStr(item("stableKey")) Or _
+       CStr(wsConflict.Cells(stateRow, 4).Value2) <> CStr(item("groupName")) Or _
+       CStr(wsConflict.Cells(stateRow, 5).Value2) <> CStr(item("snapshot")) Or _
        CStr(wsConflict.Cells(stateRow, 6).Value2) <> CStr(item("decision")) Or _
        Not BidirectionalSyncConflictDecisionIsValid(CStr(wsConflict.Cells(stateRow, 6).Value2)) Then _
         reason = "保存済み競合の内容または判断が変わりました。": Exit Function
@@ -19229,11 +19281,11 @@ Private Function BidirectionalSyncConflictLiveMatches(ByVal item As Object, ByRe
         baselineKnown = True
         If fieldItem.Exists("baselineKnown") Then baselineKnown = CBool(fieldItem("baselineKnown"))
         If baselineKnown Then
-            If Not baselineValues.Exists(baselineKey) Then reason = "前回同期値が見つかりません。": Exit Function
+            If Not baselineRows.Exists(baselineKey) Then reason = "前回同期値が見つかりません。": Exit Function
             valueText = NormalizeValueForUpdateCompare(CStr(fieldItem("sourceHeader")), wsBase.Cells(CLng(baselineRows(baselineKey)), 3).Value2)
             If valueText <> CStr(fieldItem("baselineValue")) Then reason = "前回同期値が変わりました。": Exit Function
         Else
-            If baselineValues.Exists(baselineKey) Or Len(CStr(fieldItem("baselineValue"))) > 0 Then _
+            If baselineRows.Exists(baselineKey) Or Len(CStr(fieldItem("baselineValue"))) > 0 Then _
                 reason = "前回同期値の未記録状態が変わりました。": Exit Function
         End If
         valueText = NormalizeValueForUpdateCompare(CStr(fieldItem("sourceHeader")), wsSrc.Cells(srcRow, srcCol).Value2)
@@ -21248,6 +21300,47 @@ Private Sub SyncStateTrackMatchedRow(ByVal wsSrc As Worksheet, ByVal wsDst As Wo
     Set mBidirectionalSyncContext("StateTransferMap") = transferMap
 End Sub
 
+Private Function SyncStateBuildDestinationRowMap(ByVal ws As Worksheet) As Object
+    Dim rowMap As Object, col As Long, r As Long, lastRow As Long, rowId As String
+    col = BidirectionalDiffFindExcelRowIdColumn(ws, GetLastHeaderCol(ws))
+    If col <= 0 Then Err.Raise vbObjectError + 2902, , "同期状態の管理行ID列が不明です。"
+    Set rowMap = CreateObject("Scripting.Dictionary")
+    rowMap.CompareMode = vbTextCompare
+    lastRow = Step2GetLastDataRow(ws)
+    For r = 2 To lastRow
+        rowId = GetTrimmedCell(ws, r, col)
+        If rowMap.Exists(rowId) Then
+            rowMap(rowId) = CLng(0)
+        Else
+            rowMap.Add rowId, CLng(r)
+        End If
+    Next r
+    Set SyncStateBuildDestinationRowMap = rowMap
+End Function
+
+Private Function SyncStateCurrentDestinationRowMap(ByVal ws As Worksheet) As Object
+    Dim rowMap As Object
+    If BidirectionalSyncContextIsActive() Then
+        If mBidirectionalSyncContext.Exists("DestinationRowMap") Then _
+            Set rowMap = mBidirectionalSyncContext("DestinationRowMap")
+    End If
+    If rowMap Is Nothing Then
+        Set rowMap = SyncStateBuildDestinationRowMap(ws)
+        If BidirectionalSyncContextIsActive() Then
+            mBidirectionalSyncContext.Add "DestinationRowMap", Empty
+            Set mBidirectionalSyncContext("DestinationRowMap") = rowMap
+        End If
+    End If
+    Set SyncStateCurrentDestinationRowMap = rowMap
+End Function
+
+Private Function SyncStateFindDestinationRowByMap(ByVal rowMap As Object, ByVal rowId As String) As Long
+    If rowMap Is Nothing Then Err.Raise vbObjectError + 2902, , "同期状態の管理行ID索引がありません。"
+    If Not rowMap.Exists(rowId) Then Err.Raise vbObjectError + 2902, , "同期状態の対象行が見つかりません。"
+    If CLng(rowMap(rowId)) <= 0 Then Err.Raise vbObjectError + 2902, , "同期状態の管理行IDが重複しています。"
+    SyncStateFindDestinationRowByMap = CLng(rowMap(rowId))
+End Function
+
 Private Function SyncStateFindDestinationRow(ByVal ws As Worksheet, ByVal rowId As String) As Long
     Dim col As Long, r As Long, found As Long
     col = BidirectionalDiffFindExcelRowIdColumn(ws, GetLastHeaderCol(ws))
@@ -21307,11 +21400,18 @@ Private Function SyncStateCalculate(ByVal wsSrc As Worksheet, ByVal srcRow As Lo
     If Not SyncStateRelatedPairsComplete(transferMap) Then GoTo Review
     Set sourceHeaders = BidirectionalDiffBuildHeaderColumnMap(wsSrc, GetLastHeaderCol(wsSrc))
     Set destinationHeaders = BidirectionalDiffBuildHeaderColumnMap(wsDst, GetLastHeaderCol(wsDst))
-    Set baselineValues = CreateObject("Scripting.Dictionary")
-    Set baselineRows = CreateObject("Scripting.Dictionary")
-    baselineValues.CompareMode = vbTextCompare: baselineRows.CompareMode = vbTextCompare
-    Set wsBase = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
-    BidirectionalSyncLoadBaselineMaps wsBase, baselineValues, baselineRows
+    If BidirectionalSyncContextIsActive() Then
+        ' CSV整形中は開始時に読み込んだ行マップを再利用する。
+        ' 基準値シートは確定処理まで変更しないため、保存済み値は元の行から取得できる。
+        Set baselineRows = mBidirectionalSyncContext("BaselineRows")
+        Set wsBase = mBidirectionalSyncContext("BaselineSheet")
+    Else
+        Set baselineValues = CreateObject("Scripting.Dictionary")
+        Set baselineRows = CreateObject("Scripting.Dictionary")
+        baselineValues.CompareMode = vbTextCompare: baselineRows.CompareMode = vbTextCompare
+        Set wsBase = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
+        BidirectionalSyncLoadBaselineMaps wsBase, baselineValues, baselineRows
+    End If
     Set acceptedHeaders = CreateObject("Scripting.Dictionary")
     acceptedHeaders.CompareMode = vbTextCompare
     ' 現在の値に一致する有効履歴だけ。過去のアーカイブは除外する既存APIを使う。
@@ -21348,8 +21448,8 @@ Private Function SyncStateCalculate(ByVal wsSrc As Worksheet, ByVal srcRow As Lo
             baselineKey = BidirectionalSyncBaselineKey(rowId, CStr(key))
             If acceptedHeaders.Exists(CanonicalHeaderName(CStr(key))) Then
                 pending = True
-            ElseIf baselineValues.Exists(baselineKey) Then
-                If StrComp(csvValue, CStr(baselineValues(baselineKey)), vbTextCompare) <> 0 Then GoTo Review
+            ElseIf baselineRows.Exists(baselineKey) Then
+                If StrComp(csvValue, CStr(wsBase.Cells(CLng(baselineRows(baselineKey)), 3).Value2), vbTextCompare) <> 0 Then GoTo Review
                 pending = True
             Else
                 GoTo Review
@@ -21393,24 +21493,27 @@ Private Sub SyncStateWrite(ByVal wsDst As Worksheet, ByVal dstRow As Long, ByVal
 End Sub
 
 Private Sub SyncStateAlignCases(ByVal cases As Collection)
-    Dim item As Object, wsDst As Worksheet
+    Dim item As Object, wsDst As Worksheet, rowMap As Object
     Set wsDst = mBidirectionalSyncContext("DestinationSheet")
+    Set rowMap = SyncStateCurrentDestinationRowMap(wsDst)
     For Each item In cases
-        item("destinationRow") = SyncStateFindDestinationRow(wsDst, CStr(item("rowId")))
+        item("destinationRow") = SyncStateFindDestinationRowByMap(rowMap, CStr(item("rowId")))
     Next item
 End Sub
 
 Private Sub SyncStateApplyMatchedRows()
-    Dim rows As Object, transferMap As Object, key As Variant, wsSrc As Worksheet, wsDst As Worksheet
-    Dim dstRow As Long, cases As Collection, item As Object
+    Dim rows As Object, transferMap As Object, rowMap As Object
+    Dim key As Variant, wsSrc As Worksheet, wsDst As Worksheet
+    Dim dstRow As Long, cases As Collection
     Set rows = mBidirectionalSyncContext("StateRows")
     If rows.Count = 0 Then Exit Sub
     Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
     Set wsDst = mBidirectionalSyncContext("DestinationSheet")
     Set transferMap = mBidirectionalSyncContext("StateTransferMap")
+    Set rowMap = SyncStateCurrentDestinationRowMap(wsDst)
     Set cases = BidirectionalSyncConflictReviewCases(CLng(mBidirectionalSyncContext("TargetYear")))
     For Each key In rows.Keys
-        dstRow = SyncStateFindDestinationRow(wsDst, CStr(key))
+        dstRow = SyncStateFindDestinationRowByMap(rowMap, CStr(key))
         SyncStateWrite wsDst, dstRow, SyncStateCalculate(wsSrc, CLng(rows(key)), wsDst, dstRow, _
             CStr(key), CLng(mBidirectionalSyncContext("TargetYear")), transferMap, cases)
     Next key

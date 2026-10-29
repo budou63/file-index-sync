@@ -272,7 +272,7 @@ class RecordLevelConflictUiTests(unittest.TestCase):
         resolve = procedure(MODULE, "BidirectionalSyncResolveConflict", "Function")
         self.assertIn('Module1.BidirectionalSyncConflictReviewCases(targetYear)', reload_ui)
         self.assertIn('If decision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then', load_cases)
-        self.assertIn('BidirectionalSyncConflictLiveMatches(item, liveReason)', load_cases)
+        self.assertIn('BidirectionalSyncConflictLiveMatches(item, liveReason, r, baselineRows, baselineSheet)', load_cases)
         self.assertIn('item.Add "decision", decision', load_cases)
         self.assertIn('wsConflict.Cells(stateRow, 6).Value2 = decision', resolve)
         self.assertIn('item("decision") = decision', resolve)

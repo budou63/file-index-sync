@@ -126,11 +126,27 @@ class ConflictDecisionHistoryTests(unittest.TestCase):
     def test_current_review_list_filters_archived_history_against_live_values(self) -> None:
         review = procedure(MODULE, "BidirectionalSyncConflictReviewCases", "Function")
         self.assertIn("BidirectionalSyncConflictHistoryKey", review)
-        self.assertIn("BidirectionalSyncConflictLiveMatches(item", review)
+        self.assertIn("BidirectionalSyncConflictLiveMatches(item, liveReason, r, baselineRows, baselineSheet)", review)
         self.assertIn("activeCaseKeys.Exists(caseKey)", review)
         self.assertIn("result.Add item", review)
         lookup = procedure(MODULE, "BidirectionalSyncFindConflictStateRow", "Function")
         self.assertIn("BidirectionalSyncConflictHistoryKey", lookup)
+
+    def test_bulk_conflict_review_reuses_baseline_map_and_current_history_row(self) -> None:
+        live = procedure(MODULE, "BidirectionalSyncConflictLiveMatches", "Function")
+        active_start = live.index("If BidirectionalSyncContextIsActive() Then")
+        active_end = live.index("Else", active_start)
+        self.assertIn('Set baselineRows = mBidirectionalSyncContext("BaselineRows")', live[active_start:active_end])
+        self.assertNotIn("BidirectionalSyncLoadBaselineMaps", live[active_start:active_end])
+        review = procedure(MODULE, "BidirectionalSyncConflictReviewCases", "Function")
+        self.assertIn("BidirectionalSyncConflictLiveMatches(item, liveReason, r, baselineRows, baselineSheet)", review)
+        self.assertEqual(review.count("BidirectionalSyncLoadBaselineMaps baselineSheet, baselineValues, baselineRows"), 1)
+        known_start = live.index("If knownStateRow >= 2 Then")
+        known_end = live.index("ElseIf Not BidirectionalSyncFindConflictStateRow", known_start)
+        known = live[known_start:known_end]
+        self.assertNotIn("BidirectionalSyncFindConflictStateRow", known)
+        self.assertIn('wsConflict.Cells(stateRow, 1).Value2) <> CLng(item("year"))', live)
+        self.assertIn('wsConflict.Cells(stateRow, 4).Value2) <> CStr(item("groupName"))', live)
 
     def test_saved_conflict_guard_uses_only_live_cases_not_archived_rows(self) -> None:
         load = procedure(MODULE, "BidirectionalSyncLoadSavedConflictKeys", "Function")
