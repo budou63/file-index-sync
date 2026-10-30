@@ -9417,7 +9417,9 @@ Private Sub UpdateRowFromSourceByHeader( _
     ' 第2段階の3方向同期コンテキストでは、CSV由来値を一括上書きしない。
     ' 各項目を B（前回確認値）/E（Excel）/C（CSV）で判定してから書き込む。
     If BidirectionalSyncContextIsActive() Then
+        SyncBaselineBeginComparison
         BidirectionalSyncApplyThreeWayToRow wsSrc, wsDst, srcRow, dstRow, srcHeaderMap, srcToDstMap, preserveExactIdentity
+        SyncBaselineEndComparison
         Exit Sub
     End If
 
@@ -17445,6 +17447,7 @@ Private Sub BidirectionalSyncStartContext( _
     Dim internalSnapshots As Collection
     Dim baselineSheetCreated As Boolean
     Dim lines As Collection
+    Dim preparationStarted As Double, preparationSeconds As Double, readStarted As Double, readSeconds As Double
     Dim errorNumber As Long
     Dim errorDescription As String
 
@@ -17456,7 +17459,9 @@ Private Sub BidirectionalSyncStartContext( _
     If Len(Trim$(outputPath)) = 0 Then Err.Raise vbObjectError + 2786, , "手動編集一覧の出力先がありません。"
 
     Set internalSnapshots = SyncRecoveryCaptureInternalSheets()
-    Set baselineSheet = BidirectionalSyncEnsureBaselineSheet(wsDst, baselineSheetCreated)
+    preparationStarted = CDbl(Timer)
+    Set baselineSheet = HorizontalBaselineEnsureSheet(wsDst, baselineSheetCreated)
+    preparationSeconds = SyncBaselineElapsed(preparationStarted)
     Set baselineValues = CreateObject("Scripting.Dictionary")
     Set baselineRows = CreateObject("Scripting.Dictionary")
     Set pendingBaselines = CreateObject("Scripting.Dictionary")
@@ -17466,7 +17471,10 @@ Private Sub BidirectionalSyncStartContext( _
     baselineRows.CompareMode = vbTextCompare
     pendingBaselines.CompareMode = vbTextCompare
     guideCodeSnapshots.CompareMode = vbTextCompare
+    readStarted = CDbl(Timer)
     BidirectionalSyncLoadBaselineMaps baselineSheet, baselineValues, baselineRows
+    readSeconds = SyncBaselineElapsed(readStarted)
+    HorizontalBaselineProtect baselineSheet
 
     Set lines = New Collection
     lines.Add BidirectionalDiffCsvLine(Array( _
@@ -17482,6 +17490,12 @@ Private Sub BidirectionalSyncStartContext( _
     context.Add "IdentityHoldCount", CLng(0)
     context.Add "CurrentMatchKind", "同一性確認済"
     context.Add "StartedAt", Format$(Now, "yyyy/mm/dd hh:nn:ss")
+    context.Add "PreparationSeconds", preparationSeconds
+    context.Add "BaselineReadSeconds", readSeconds
+    context.Add "CompareSeconds", 0#
+    context.Add "CompareStartedAt", 0#
+    context.Add "FormPrepareSeconds", 0#
+    context.Add "WriteSeconds", 0#
     context.Add "BaselineSheet", Empty
     Set context("BaselineSheet") = baselineSheet
     context.Add "BaselineValues", Empty
@@ -17542,17 +17556,29 @@ Private Function BidirectionalSyncFinishContext(Optional ByRef reportSummary As 
     Set lines = mBidirectionalSyncContext("Lines")
     Set conflictCases = mBidirectionalSyncContext("ConflictCases")
     outputPath = CStr(mBidirectionalSyncContext("OutputPath"))
+    mBidirectionalSyncContext("WriteStartedAt") = CDbl(Timer)
+    mBidirectionalSyncContext("WriteFormAtStart") = CDbl(mBidirectionalSyncContext("FormPrepareSeconds"))
     BidirectionalDiffWriteUtf8Csv outputPath, lines
     SyncStateAlignCases conflictCases
     BidirectionalSyncRefreshConflictState CLng(mBidirectionalSyncContext("TargetYear")), conflictCases
     SyncStateApplyMatchedRows
     BidirectionalSyncCommitPendingBaselines
+    SyncBaselineAccumulate "WriteSeconds", CDbl(mBidirectionalSyncContext("WriteStartedAt"))
+    mBidirectionalSyncContext("WriteSeconds") = CDbl(mBidirectionalSyncContext("WriteSeconds")) - _
+        (CDbl(mBidirectionalSyncContext("FormPrepareSeconds")) - CDbl(mBidirectionalSyncContext("WriteFormAtStart")))
+    If CDbl(mBidirectionalSyncContext("WriteSeconds")) < 0 Then mBidirectionalSyncContext("WriteSeconds") = 0#
 
     BidirectionalSyncFinishContext = CLng(mBidirectionalSyncContext("ManualCount"))
     reportSummary = "CSV反映: " & CStr(mBidirectionalSyncContext("CsvAppliedCount")) & " 項目" & vbCrLf & _
         "同期基準確定: " & CStr(mBidirectionalSyncContext("BaselineConfirmedCount")) & " 項目" & vbCrLf & _
         "同一性未確定: " & CStr(mBidirectionalSyncContext("IdentityHoldCount")) & " 件" & vbCrLf & _
-        "3方向競合: " & CStr(conflictCases.Count) & " 件（承認前は両方を保持）"
+        "3方向競合: " & CStr(conflictCases.Count) & " 件（承認前は両方を保持）" & vbCrLf & _
+        "処理秒: 基準値読込=" & Format$(CDbl(mBidirectionalSyncContext("BaselineReadSeconds")), "0.000") & _
+        " / 比較=" & Format$(CDbl(mBidirectionalSyncContext("CompareSeconds")), "0.000") & _
+        " / フォーム準備=" & Format$(CDbl(mBidirectionalSyncContext("FormPrepareSeconds")), "0.000") & _
+        " / 書込=" & Format$(CDbl(mBidirectionalSyncContext("WriteSeconds")), "0.000") & _
+        " / 初回移行・準備=" & Format$(CDbl(mBidirectionalSyncContext("PreparationSeconds")), "0.000")
+    Debug.Print "SYNC_TIMING " & Replace(reportSummary, vbCrLf, " | ")
     Set mBidirectionalSyncContext = Nothing
     Exit Function
 
@@ -17592,6 +17618,7 @@ Private Sub BidirectionalSyncDiscardContext()
     On Error GoTo ErrorHandler
     If context.Exists("GuideCodeSnapshots") Then _
         rollbackDescription = BidirectionalSyncRollbackGuideCodeSnapshots(context)
+    If context.Exists("HorizontalUndo") Then HorizontalBaselineRestoreUndo context("HorizontalUndo")
     If context.Exists("InternalSnapshots") Then SyncRecoveryRestoreInternalSheets context("InternalSnapshots")
     If context.Exists("BaselineSheetCreated") Then baselineSheetCreated = CBool(context("BaselineSheetCreated"))
     If baselineSheetCreated Then
@@ -17632,8 +17659,10 @@ Private Sub BidirectionalSyncDeleteNewBaselineSheet(ByVal baselineSheet As Works
     Dim applicationRestoreErrorNumber As Long
 
     If baselineSheet Is Nothing Then Exit Sub
-    If baselineSheet.Name <> BIDIRECTIONAL_SYNC_BASELINE_SHEET Then _
-        Err.Raise vbObjectError + 2804, , "作成直後の同期基準シートを確認できません。自動削除しません。"
+    If baselineSheet.Name <> BIDIRECTIONAL_SYNC_BASELINE_SHEET Then
+        If baselineSheet.Name <> HORIZONTAL_BASELINE_SHEET Then _
+            Err.Raise vbObjectError + 2804, , "作成直後の同期基準シートを確認できません。自動削除しません。"
+    End If
     If Not (baselineSheet.Parent Is ThisWorkbook) Then _
         Err.Raise vbObjectError + 2809, , "同期基準シートのブック参照を確認できません。自動削除しません。"
     If ThisWorkbook.ReadOnly Or ThisWorkbook.ProtectStructure Then _
@@ -17683,6 +17712,29 @@ End Sub
 Private Function BidirectionalSyncContextIsActive() As Boolean
     BidirectionalSyncContextIsActive = Not (mBidirectionalSyncContext Is Nothing)
 End Function
+
+Private Function SyncBaselineElapsed(ByVal started As Double) As Double
+    SyncBaselineElapsed = CDbl(Timer) - started
+    If SyncBaselineElapsed < 0 Then SyncBaselineElapsed = SyncBaselineElapsed + 86400#
+End Function
+
+Private Sub SyncBaselineAccumulate(ByVal metric As String, ByVal started As Double)
+    If Not BidirectionalSyncContextIsActive() Then Exit Sub
+    If Not mBidirectionalSyncContext.Exists(metric) Then mBidirectionalSyncContext.Add metric, 0#
+    mBidirectionalSyncContext(metric) = CDbl(mBidirectionalSyncContext(metric)) + SyncBaselineElapsed(started)
+End Sub
+
+Private Sub SyncBaselineBeginComparison()
+    mBidirectionalSyncContext("CompareStartedAt") = CDbl(Timer)
+    mBidirectionalSyncContext("CompareFormAtStart") = CDbl(mBidirectionalSyncContext("FormPrepareSeconds"))
+End Sub
+
+Private Sub SyncBaselineEndComparison()
+    SyncBaselineAccumulate "CompareSeconds", CDbl(mBidirectionalSyncContext("CompareStartedAt"))
+    mBidirectionalSyncContext("CompareSeconds") = CDbl(mBidirectionalSyncContext("CompareSeconds")) - _
+        (CDbl(mBidirectionalSyncContext("FormPrepareSeconds")) - CDbl(mBidirectionalSyncContext("CompareFormAtStart")))
+    If CDbl(mBidirectionalSyncContext("CompareSeconds")) < 0 Then mBidirectionalSyncContext("CompareSeconds") = 0#
+End Sub
 
 Private Function BidirectionalSyncCurrentMatchKind() As String
     If BidirectionalSyncContextIsActive() Then _
@@ -17864,6 +17916,7 @@ Private Function HorizontalBaselineReadData(ByVal ws As Worksheet) As Variant
     lastRow = GetLastUsedRow(ws): lastCol = GetLastHeaderCol(ws)
     If lastRow < 1 Or lastCol < HORIZONTAL_BASELINE_META_COLS Then _
         Err.Raise vbObjectError + 2910, , "横型同期基準の構造を確認できません。"
+    If GetLastUsedCol(ws) <> lastCol Then Err.Raise vbObjectError + 2910, , "横型同期基準に見出しのないデータ列があります。"
     data = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Value2
     HorizontalBaselineReadData = data
 End Function
@@ -17886,6 +17939,93 @@ Private Sub HorizontalBaselineLoadMaps(ByVal ws As Worksheet, _
     HorizontalBaselineMapsFromData data, baselineValues, baselineRows
 End Sub
 
+Private Function BidirectionalSyncExistingBaselineSheet() As Worksheet
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(HORIZONTAL_BASELINE_SHEET)
+    If ws Is Nothing Then Set ws = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
+    On Error GoTo 0
+    ' 横型が存在する場合、不正でも旧表へ黙って戻さない。利用側で検証して停止する。
+    Set BidirectionalSyncExistingBaselineSheet = ws
+End Function
+
+Private Function BidirectionalSyncPersistedBaselineValue(ByVal ws As Worksheet, ByVal rows As Object, ByVal key As String) As Variant
+    Dim location As Variant, r As Long, c As Long, expectedKey As String, mask As String
+    If ws Is Nothing Or rows Is Nothing Then Err.Raise vbObjectError + 2915, , "同期基準の参照がありません。"
+    If Not rows.Exists(key) Then Err.Raise vbObjectError + 2915, , "前回同期値がありません。"
+    location = rows(key)
+    If ws.Name = HORIZONTAL_BASELINE_SHEET Then
+        If Not IsArray(location) Then Err.Raise vbObjectError + 2915, , "横型同期基準の位置情報が不正です。"
+        r = CLng(location(0)): c = CLng(location(1))
+        If r < 2 Or c <= HORIZONTAL_BASELINE_META_COLS Then Err.Raise vbObjectError + 2915, , "横型同期基準の参照範囲が不正です。"
+        expectedKey = BidirectionalSyncBaselineKey(CStr(ws.Cells(r, 1).Value2), CStr(ws.Cells(1, c).Value2))
+        mask = CStr(ws.Cells(r, 3).Value2)
+        If Mid$(mask, c - HORIZONTAL_BASELINE_META_COLS, 1) <> "1" Then Err.Raise vbObjectError + 2915, , "横型同期基準の項目が未確定です。"
+    Else
+        If ws.Name <> BIDIRECTIONAL_SYNC_BASELINE_SHEET Or IsArray(location) Then Err.Raise vbObjectError + 2915, , "旧同期基準の位置情報が不正です。"
+        r = CLng(location): c = 3
+        If r < 2 Then Err.Raise vbObjectError + 2915, , "旧同期基準の参照範囲が不正です。"
+        expectedKey = BidirectionalSyncBaselineKey(CStr(ws.Cells(r, 1).Value2), CStr(ws.Cells(r, 2).Value2))
+    End If
+    If StrComp(key, expectedKey, vbTextCompare) <> 0 Then Err.Raise vbObjectError + 2915, , "同期基準の行または項目が読込後に変わりました。"
+    If ws.Cells(r, c).HasFormula Then Err.Raise vbObjectError + 2915, , "同期基準に数式が入っています。"
+    BidirectionalSyncPersistedBaselineValue = ws.Cells(r, c).Value2
+End Function
+
+Private Function HorizontalBaselineEnsureSheet(ByVal wsDst As Worksheet, ByRef created As Boolean) As Worksheet
+    Dim ws As Worksheet, legacy As Worksheet, data As Variant, skeleton As Variant, metadata As Variant
+    Dim i As Long, oldEvents As Boolean, failure As Long, detail As String, cleanupFailure As Long
+    created = False
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(HORIZONTAL_BASELINE_SHEET)
+    Set legacy = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
+    On Error GoTo 0
+    If Not ws Is Nothing Then Set HorizontalBaselineEnsureSheet = ws: Exit Function
+    If wsDst Is Nothing Then Err.Raise vbObjectError + 2916, , "新ファイル基準表がありません。"
+    If Not (wsDst.Parent Is ThisWorkbook) Then Err.Raise vbObjectError + 2916, , "移行対象のブックが一致しません。"
+    If ThisWorkbook.ReadOnly Or ThisWorkbook.ProtectStructure Then Err.Raise vbObjectError + 2916, , "横型基準を作成できないブックです。"
+    If wsDst.Visible <> xlSheetVisible Then Err.Raise vbObjectError + 2916, , "基準シートを隠すための表示シートがありません。"
+    metadata = HorizontalBaselineMetadataHeaders()
+    ReDim skeleton(1 To 1, 1 To HORIZONTAL_BASELINE_META_COLS)
+    For i = 0 To UBound(metadata): skeleton(1, i + 1) = CStr(metadata(i)): Next i
+    If legacy Is Nothing Then
+        data = skeleton
+    Else
+        data = HorizontalBaselineDataFromLegacy(legacy)
+    End If
+    oldEvents = Application.EnableEvents
+    On Error GoTo Failed
+    Application.EnableEvents = False
+    Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    created = True
+    ws.Name = HORIZONTAL_BASELINE_SHEET
+    ws.Range(ws.Cells(1, 1), ws.Cells(1, HORIZONTAL_BASELINE_META_COLS)).NumberFormat = "@"
+    ws.Range(ws.Cells(1, 1), ws.Cells(1, HORIZONTAL_BASELINE_META_COLS)).Value2 = skeleton
+    HorizontalBaselineReplaceData ws, data
+    wsDst.Activate
+    ws.Visible = xlSheetVeryHidden
+    Application.EnableEvents = oldEvents
+    Set HorizontalBaselineEnsureSheet = ws
+    Exit Function
+Failed:
+    failure = Err.Number: detail = Err.Description
+    On Error Resume Next
+    Err.Clear
+    If created Then BidirectionalSyncDeleteNewBaselineSheet ws
+    cleanupFailure = Err.Number
+    If cleanupFailure = 0 Then created = False
+    Err.Clear
+    Application.EnableEvents = oldEvents
+    If Err.Number <> 0 Then cleanupFailure = Err.Number
+    On Error GoTo 0
+    If cleanupFailure <> 0 Then
+        mSyncRecoveryRequired = True
+        Err.Raise vbObjectError + 2917, "HorizontalBaselineEnsureSheet", _
+            "横型移行失敗（" & CStr(failure) & "）: " & detail & " 新規シート破棄または状態復元も失敗（" & CStr(cleanupFailure) & "）。保存せず復旧コピーから再開してください。"
+    End If
+    Err.Raise vbObjectError + 2916, "HorizontalBaselineEnsureSheet", "旧基準を保持したまま横型移行を取り消しました（" & CStr(failure) & "）: " & detail
+End Function
+
 ' 行番号は永続キーにせず、管理行ID・正規化見出しで同じ既存3方向比較マップへ変換する。
 ' 旧シートの確定済みレコードだけを横へ並べ替え、現在のExcel値を初期基準に流用しない。
 Private Function HorizontalBaselineDataFromLegacy(ByVal legacy As Worksheet) As Variant
@@ -17893,7 +18033,17 @@ Private Function HorizontalBaselineDataFromLegacy(ByVal legacy As Worksheet) As 
     Dim raw As Variant, data As Variant, stamps() As String, known() As String, metadata As Variant
     Dim r As Long, c As Long, outRow As Long, outCol As Long, lastRow As Long
     Dim rowId As String, header As String, key As Variant, mask As String, packed As String
-    Dim hasFormula As Variant
+    Dim hasFormula As Variant, legacyHeaders As Variant
+    If legacy Is Nothing Then Err.Raise vbObjectError + 2911, , "旧同期基準がありません。"
+    If Not (legacy.Parent Is ThisWorkbook) Then Err.Raise vbObjectError + 2911, , "旧同期基準の所属ブックが違います。"
+    If legacy.Name <> BIDIRECTIONAL_SYNC_BASELINE_SHEET Then Err.Raise vbObjectError + 2911, , "旧同期基準以外を移行しません。"
+    If GetLastUsedCol(legacy) <> 5 Then Err.Raise vbObjectError + 2911, , "旧同期基準に想定外の列があります。"
+    legacyHeaders = Array("Excel管理行ID", "見出し名", "前回同期確認値", "確定日時", "形式")
+    For c = 1 To 5
+        If CStr(legacy.Cells(1, c).Value2) <> CStr(legacyHeaders(c - 1)) Then Err.Raise vbObjectError + 2911, , "旧同期基準の見出しを確認できません。"
+    Next c
+    If GetLastUsedRow(legacy) <> legacy.Cells(legacy.Rows.Count, 1).End(xlUp).Row Then _
+        Err.Raise vbObjectError + 2911, , "旧同期基準の末尾に管理行IDのないデータがあります。"
     Set values = CreateObject("Scripting.Dictionary"): values.CompareMode = vbTextCompare
     Set locations = CreateObject("Scripting.Dictionary"): locations.CompareMode = vbTextCompare
     Set rowMap = CreateObject("Scripting.Dictionary"): rowMap.CompareMode = vbTextCompare
@@ -17907,7 +18057,12 @@ Private Function HorizontalBaselineDataFromLegacy(ByVal legacy As Worksheet) As 
     raw = legacy.Range(legacy.Cells(1, 1), legacy.Cells(lastRow, 5)).Value2
     For r = 2 To UBound(raw, 1)
         rowId = Trim$(CStr(raw(r, 1))): header = CanonicalHeaderName(CStr(raw(r, 2)))
-        If Len(rowId) = 0 And Len(header) = 0 Then GoTo NextLegacyIdentity
+        If Len(rowId) = 0 And Len(header) = 0 Then
+            For c = 3 To 5
+                If Len(CStr(raw(r, c))) > 0 Then Err.Raise vbObjectError + 2911, , "管理行IDも項目もない旧基準値を無視できません。"
+            Next c
+            GoTo NextLegacyIdentity
+        End If
         If Not rowMap.Exists(rowId) Then rowMap.Add rowId, rowMap.Count + 2
         If Not columnMap.Exists(header) Then columnMap.Add header, columnMap.Count + HORIZONTAL_BASELINE_META_COLS + 1
 NextLegacyIdentity:
@@ -19468,10 +19623,16 @@ Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As
     Dim historyKey As String, caseKey As String, decision As String, liveReason As String
     Dim hasFormulaValue As Variant, baselineCacheReady As Boolean
     Dim baselineValues As Object, baselineRows As Object, baselineSheet As Worksheet
+    Dim preparationStarted As Double
+    Dim baselineErrorNumber As Long, baselineErrorDescription As String
 
+    preparationStarted = CDbl(Timer)
     Set result = New Collection
     Set ws = BidirectionalSyncConflictSheet(False, created)
-    If ws Is Nothing Then Set BidirectionalSyncConflictReviewCases = result: Exit Function
+    If ws Is Nothing Then
+        SyncBaselineAccumulate "FormPrepareSeconds", preparationStarted
+        Set BidirectionalSyncConflictReviewCases = result: Exit Function
+    End If
     Set seenHistory = CreateObject("Scripting.Dictionary")
     seenHistory.CompareMode = vbBinaryCompare
     Set activeCaseKeys = CreateObject("Scripting.Dictionary")
@@ -19504,7 +19665,7 @@ Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As
                         Set baselineRows = mBidirectionalSyncContext("BaselineRows")
                     Else
                         On Error Resume Next
-                        Set baselineSheet = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
+                        Set baselineSheet = BidirectionalSyncExistingBaselineSheet()
                         On Error GoTo BaselineCacheUnavailable
                         If baselineSheet Is Nothing Then GoTo BaselineCacheUnavailable
                         Set baselineValues = CreateObject("Scripting.Dictionary")
@@ -19542,11 +19703,18 @@ Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As
         End If
     Next r
 
+    SyncBaselineAccumulate "FormPrepareSeconds", preparationStarted
+    If Not BidirectionalSyncContextIsActive() Then Debug.Print "SYNC_TIMING form_prepare_seconds=" & Format$(SyncBaselineElapsed(preparationStarted), "0.000")
     Set BidirectionalSyncConflictReviewCases = result
     Exit Function
 BaselineCacheUnavailable:
+    baselineErrorNumber = Err.Number: baselineErrorDescription = Err.Description
     Err.Clear
-    Set BidirectionalSyncConflictReviewCases = result
+    SyncBaselineAccumulate "FormPrepareSeconds", preparationStarted
+    On Error GoTo 0
+    Err.Raise vbObjectError + 2918, "BidirectionalSyncConflictReviewCases", _
+        "前回同期基準を確認できないため判断フォーム準備を中止しました。履歴は保持しています（" & _
+        CStr(baselineErrorNumber) & "）: " & baselineErrorDescription
 End Function
 
 Private Function BidirectionalSyncFindConflictStateRow(ByVal item As Object, ByRef stateRow As Long) As Boolean
@@ -19603,7 +19771,7 @@ Private Function BidirectionalSyncConflictLiveMatches(ByVal item As Object, ByRe
         Set baselineRows = mBidirectionalSyncContext("BaselineRows")
     Else
         On Error Resume Next
-        Set wsBase = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
+        Set wsBase = BidirectionalSyncExistingBaselineSheet()
         On Error GoTo InvalidState
         If wsBase Is Nothing Then reason = "同期基準または競合情報がありません。": Exit Function
         Set baselineValues = CreateObject("Scripting.Dictionary")
@@ -19664,7 +19832,7 @@ Private Function BidirectionalSyncConflictLiveMatches(ByVal item As Object, ByRe
         If fieldItem.Exists("baselineKnown") Then baselineKnown = CBool(fieldItem("baselineKnown"))
         If baselineKnown Then
             If Not baselineRows.Exists(baselineKey) Then reason = "前回同期値が見つかりません。": Exit Function
-            valueText = NormalizeValueForUpdateCompare(CStr(fieldItem("sourceHeader")), wsBase.Cells(CLng(baselineRows(baselineKey)), 3).Value2)
+            valueText = NormalizeValueForUpdateCompare(CStr(fieldItem("sourceHeader")), BidirectionalSyncPersistedBaselineValue(wsBase, baselineRows, baselineKey))
             If valueText <> CStr(fieldItem("baselineValue")) Then reason = "前回同期値が変わりました。": Exit Function
         Else
             If baselineRows.Exists(baselineKey) Or Len(CStr(fieldItem("baselineValue"))) > 0 Then _
@@ -21602,8 +21770,9 @@ End Sub
 
 Private Function SyncRecoveryCaptureInternalSheets() As Collection
     Dim result As New Collection, name As Variant, ws As Worksheet, item As Object
-    Dim hasFormula As Variant
-    For Each name In Array(BIDIRECTIONAL_SYNC_BASELINE_SHEET, BIDIRECTIONAL_SYNC_CONFLICT_SHEET)
+    Dim hasFormula As Variant, numberFormat As Variant
+    ' 旧縦型表は移行後も凍結保持し、更新・消去・不要な全行退避をしない。
+    For Each name In Array(HORIZONTAL_BASELINE_SHEET, BIDIRECTIONAL_SYNC_CONFLICT_SHEET)
         Set ws = Nothing
         On Error Resume Next
         Set ws = ThisWorkbook.Worksheets(CStr(name))
@@ -21612,7 +21781,14 @@ Private Function SyncRecoveryCaptureInternalSheets() As Collection
         item.Add "name", CStr(name)
         item.Add "existed", Not ws Is Nothing
         If Not ws Is Nothing Then
-            If ws.ProtectContents Then Err.Raise vbObjectError + 2895, , "同期内部シートが保護されています。"
+            If CStr(name) = HORIZONTAL_BASELINE_SHEET Then
+                numberFormat = ws.UsedRange.NumberFormat
+                If IsNull(numberFormat) Then Err.Raise vbObjectError + 2895, , "横型基準の書式が混在しています。"
+                If CStr(numberFormat) <> "@" Then Err.Raise vbObjectError + 2895, , "横型基準が文字列形式ではありません。"
+                item.Add "numberFormat", CStr(numberFormat)
+            ElseIf ws.ProtectContents Then
+                Err.Raise vbObjectError + 2895, , "同期内部シートが保護されています。"
+            End If
             hasFormula = ws.UsedRange.HasFormula
             If IsNull(hasFormula) Then Err.Raise vbObjectError + 2895, , "同期内部シートに数式が含まれています。"
             If CBool(hasFormula) Then Err.Raise vbObjectError + 2895, , "同期内部シートに数式が含まれています。"
@@ -21638,6 +21814,10 @@ Private Sub SyncRecoveryRestoreInternalSheets(ByVal saved As Collection)
         If CBool(item("existed")) Then
             If ws Is Nothing Then Err.Raise vbObjectError + 2896, , "同期内部シートが消失しています。"
             expected = item("values")
+            If CStr(item("name")) = HORIZONTAL_BASELINE_SHEET Then
+                HorizontalBaselineProtect ws
+                ws.Range(CStr(item("address"))).NumberFormat = CStr(item("numberFormat"))
+            End If
             ws.UsedRange.ClearContents
             ws.Range(CStr(item("address"))).Value2 = expected
             actual = ws.Range(CStr(item("address"))).Value2
@@ -21791,7 +21971,7 @@ Private Function SyncStateCalculate(ByVal wsSrc As Worksheet, ByVal srcRow As Lo
         Set baselineValues = CreateObject("Scripting.Dictionary")
         Set baselineRows = CreateObject("Scripting.Dictionary")
         baselineValues.CompareMode = vbTextCompare: baselineRows.CompareMode = vbTextCompare
-        Set wsBase = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
+        Set wsBase = BidirectionalSyncExistingBaselineSheet()
         BidirectionalSyncLoadBaselineMaps wsBase, baselineValues, baselineRows
     End If
     Set acceptedHeaders = CreateObject("Scripting.Dictionary")
@@ -21831,7 +22011,7 @@ Private Function SyncStateCalculate(ByVal wsSrc As Worksheet, ByVal srcRow As Lo
             If acceptedHeaders.Exists(CanonicalHeaderName(CStr(key))) Then
                 pending = True
             ElseIf baselineRows.Exists(baselineKey) Then
-                If StrComp(csvValue, CStr(wsBase.Cells(CLng(baselineRows(baselineKey)), 3).Value2), vbTextCompare) <> 0 Then GoTo Review
+                If StrComp(csvValue, CStr(BidirectionalSyncPersistedBaselineValue(wsBase, baselineRows, baselineKey)), vbTextCompare) <> 0 Then GoTo Review
                 pending = True
             Else
                 GoTo Review

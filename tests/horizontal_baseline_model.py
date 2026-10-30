@@ -25,11 +25,11 @@ def pack(values):
     return ''.join(f'{len(text(v).encode("utf-16-le")) // 2}:{text(v)}' for v in values)
 
 
-def unpack(packed, count):
+def unpack(packed, count=None):
     raw = packed.encode('utf-16-le')
     pos = 0
     result = []
-    for _ in range(count):
+    while pos < len(raw):
         end = raw.find(b':\x00', pos)
         if end < pos or (end - pos) % 2:
             raise ValueError('invalid timestamp pack')
@@ -42,8 +42,8 @@ def unpack(packed, count):
             raise ValueError('truncated timestamp')
         result.append(raw[start:stop].decode('utf-16-le'))
         pos = stop
-    if pos != len(raw):
-        raise ValueError('extra timestamps')
+    if count is not None and len(result) != count:
+        raise ValueError('incorrect token count')
     return result
 
 
@@ -52,6 +52,8 @@ def legacy_maps(records):
     for rid, h, value, stamp, version in records:
         rid, h = text(rid).strip(), canonical(h)
         if not rid and not h:
+            if text(value) or text(stamp) or text(version):
+                raise ValueError('unkeyed legacy payload')
             continue
         if not rid or not h or text(version) != '1':
             raise ValueError('invalid legacy record')
@@ -150,6 +152,28 @@ def transactional_model(state, new, fail_at=None, rollback_fail=False):
         state[:] = original
         assert state == original
         raise
+
+
+def history_baseline_matches(values, rid, snapshot):
+    """Only the persisted-baseline part of replay. No CSV/Excel identity or live revalidation."""
+    tokens = unpack(snapshot)
+    flagged = bool(tokens and tokens[0] == 'BSC2')
+    tokens = tokens[1:] if flagged else tokens
+    width = 6 if flagged else 5
+    if not tokens or len(tokens) % width:
+        raise ValueError('invalid history field pack')
+    matches = True
+    for start in range(0, len(tokens), width):
+        fields = tokens[start:start+width]
+        known = fields[5] if flagged else '1'
+        if known not in ('0', '1'):
+            raise ValueError('invalid history known flag')
+        k = key(rid, fields[0])
+        if known == '1':
+            matches = matches and k in values and values[k] == fields[2]
+        else:
+            matches = matches and k not in values and fields[2] == ''
+    return matches
 
 
 def decide(baseline, excel, csv):

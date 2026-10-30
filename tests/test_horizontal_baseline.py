@@ -237,4 +237,116 @@ class HorizontalBaselineUpdateTests(unittest.TestCase):
         self.assertEqual('ｎ＋1', canonical('N+1'))
 
 
+class HorizontalBaselineIntegrationContracts(unittest.TestCase):
+    def test_normal_context_selects_horizontal_but_keeps_legacy_implementation(self):
+        start = proc('BidirectionalSyncStartContext')
+        self.assertIn('HorizontalBaselineEnsureSheet(wsDst, baselineSheetCreated)', start)
+        self.assertNotIn('BidirectionalSyncEnsureBaselineSheet(wsDst', start)
+        self.assertIn('Private Function BidirectionalSyncEnsureBaselineSheet(', MODULE)
+        ensure = proc('HorizontalBaselineEnsureSheet')
+        self.assertIn('HorizontalBaselineDataFromLegacy(legacy)', ensure)
+        self.assertNotIn('wsDst.Cells', ensure)
+        self.assertNotIn('legacy.Delete', ensure)
+        self.assertIn('data = skeleton', ensure)
+
+    def test_existing_wide_sheet_is_selected_before_legacy_without_fallback_on_bad_data(self):
+        getter = proc('BidirectionalSyncExistingBaselineSheet')
+        self.assertLess(getter.index('Worksheets(HORIZONTAL_BASELINE_SHEET)'), getter.index('Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)'))
+        self.assertIn('If ws Is Nothing Then', getter)
+        self.assertNotIn('HorizontalBaselineMapsFromData', getter)
+        self.assertIn('GetLastUsedCol(ws) <> lastCol', proc('HorizontalBaselineReadData'))
+        failed = proc('BidirectionalSyncConflictReviewCases').split('BaselineCacheUnavailable:', 1)[1]
+        self.assertIn('Err.Raise vbObjectError + 2918', failed)
+        self.assertNotIn('Set BidirectionalSyncConflictReviewCases = result', failed)
+
+    def test_history_and_state_no_longer_assume_legacy_c_column(self):
+        for name in ['BidirectionalSyncConflictLiveMatches', 'SyncStateCalculate']:
+            body = proc(name)
+            self.assertIn('BidirectionalSyncPersistedBaselineValue(wsBase, baselineRows, baselineKey)', body)
+            self.assertNotIn('wsBase.Cells(CLng(baselineRows(baselineKey)), 3)', body)
+            self.assertIn('BidirectionalSyncExistingBaselineSheet()', body)
+        self.assertIn('BidirectionalSyncExistingBaselineSheet()', proc('BidirectionalSyncConflictReviewCases'))
+
+    def test_persisted_lookup_revalidates_key_known_flag_and_no_formula(self):
+        getter = proc('BidirectionalSyncPersistedBaselineValue')
+        for text in ['IsArray(location)', 'location(0)', 'location(1)',
+                     'StrComp(key, expectedKey, vbTextCompare)', 'Mid$(mask,', '.HasFormula', 'rows.Exists(key)']:
+            self.assertIn(text, getter)
+
+    def test_old_baseline_is_not_captured_or_written_by_normal_new_flow(self):
+        capture = proc('SyncRecoveryCaptureInternalSheets')
+        self.assertIn('Array(HORIZONTAL_BASELINE_SHEET, BIDIRECTIONAL_SYNC_CONFLICT_SHEET)', capture)
+        self.assertNotIn('Array(BIDIRECTIONAL_SYNC_BASELINE_SHEET,', capture)
+        commit = proc('BidirectionalSyncCommitPendingBaselines')
+        branch = commit.split('If baselineSheet.Name = HORIZONTAL_BASELINE_SHEET Then',1)[1].split('End If',1)[0]
+        self.assertIn('HorizontalBaselineReplaceData', branch)
+        self.assertIn('pending.RemoveAll', branch)
+        self.assertIn('Exit Sub', branch)
+
+    def test_new_sheet_cleanup_is_owned_guarded_and_preserves_old_baseline(self):
+        create = proc('HorizontalBaselineEnsureSheet')
+        self.assertLess(create.index('HorizontalBaselineDataFromLegacy'), create.index('Worksheets.Add'))
+        for text in ['created = True', 'ws.Visible = xlSheetVeryHidden', 'If created Then BidirectionalSyncDeleteNewBaselineSheet ws', 'Application.EnableEvents = oldEvents']:
+            self.assertIn(text, create)
+        delete = proc('BidirectionalSyncDeleteNewBaselineSheet')
+        self.assertIn('baselineSheet.Name <> HORIZONTAL_BASELINE_SHEET', delete)
+        self.assertIn('baselineSheet.Parent Is ThisWorkbook', delete)
+        self.assertLess(delete.index('baselineSheet.Visible = xlSheetHidden'), delete.index('baselineSheet.Delete'))
+
+    def test_outer_rollback_restores_horizontal_undo_and_internal_state(self):
+        discard = proc('BidirectionalSyncDiscardContext')
+        self.assertLess(discard.index('HorizontalBaselineRestoreUndo'), discard.index('SyncRecoveryRestoreInternalSheets'))
+        restore = proc('SyncRecoveryRestoreInternalSheets')
+        self.assertIn('HorizontalBaselineProtect ws', restore)
+        self.assertIn('item("numberFormat")', restore)
+        finish = proc('BidirectionalSyncFinishContext')
+        self.assertLess(finish.index('BidirectionalDiffWriteUtf8Csv'), finish.index('BidirectionalSyncCommitPendingBaselines'))
+        self.assertLess(finish.index('BidirectionalSyncRefreshConflictState'), finish.index('BidirectionalSyncCommitPendingBaselines'))
+
+    def test_legacy_sparse_payload_without_identity_is_a_stop(self):
+        with self.assertRaises(ValueError): pivot([('', '', 'unkeyed data', '', '1')])
+        converter = proc('HorizontalBaselineDataFromLegacy')
+        self.assertIn('GetLastUsedCol(legacy) <> 5', converter)
+        self.assertIn('GetLastUsedRow(legacy) <> legacy.Cells', converter)
+        self.assertIn('管理行IDも項目もない旧基準値を無視できません', converter)
+
+    def test_history_baseline_predicate_preserves_old_and_flagged_packs(self):
+        from horizontal_baseline_model import history_baseline_matches, apply_confirmed
+        old = legacy_maps([('A', '保存期間', '3年', '', '1')])
+        new = load(pivot([('A', '保存期間', '3年', '', '1')]))
+        for packed in [pack(['保存期間', '保存期間', '3年', '10年', '5年']),
+                       pack(['BSC2', '備考', '備考', '', 'sys', 'excel', '0'])]:
+            self.assertTrue(history_baseline_matches(old, 'A', packed))
+            self.assertEqual(history_baseline_matches(old, 'A', packed), history_baseline_matches(new, 'A', packed))
+        changed = load(apply_confirmed(pivot([('A', '保存期間', '3年', '', '1')]), {('A', '保存期間'): '5年'}))
+        self.assertFalse(history_baseline_matches(changed, 'A', pack(['保存期間','保存期間','3年','10年','5年'])))
+
+    def test_rerunning_excel_only_change_keeps_baseline_and_waiting(self):
+        from horizontal_baseline_model import apply_confirmed
+        data = pivot([('A', '保存期間', '3年', '', '1')])
+        for _ in range(5):
+            self.assertEqual('excel_only_hold', decide(load(data)[key('A', '保存期間')], '5年', '3年'))
+            data = apply_confirmed(data, {})
+            self.assertEqual('3年', load(data)[key('A', '保存期間')])
+
+    def test_all_new_vba_helper_references_have_definitions(self):
+        import re
+        names = {name.lower() for name in re.findall(r'(?m)^\s*(?:Private|Public) (?:Sub|Function) (\w+)', MODULE)}
+        references = set(re.findall(r'\b(?:HorizontalBaseline|SyncBaseline)\w+\b', MODULE))
+        self.assertGreater(len(references), 10)
+        for ref in references: self.assertIn(ref.lower(), names, ref)
+
+    def test_timer_sections_exist_and_report_at_success_only(self):
+        start = proc('BidirectionalSyncStartContext')
+        finish = proc('BidirectionalSyncFinishContext')
+        for metric in ['BaselineReadSeconds', 'CompareSeconds', 'FormPrepareSeconds', 'WriteSeconds']:
+            self.assertIn(metric, start)
+            self.assertIn(metric, finish)
+        self.assertIn('86400#', proc('SyncBaselineElapsed'))
+        self.assertIn('SyncBaselineBeginComparison', proc('UpdateRowFromSourceByHeader'))
+        self.assertIn('SyncBaselineEndComparison', proc('UpdateRowFromSourceByHeader'))
+        self.assertIn('SyncBaselineAccumulate "FormPrepareSeconds"', proc('BidirectionalSyncConflictReviewCases'))
+        self.assertLess(finish.index('BidirectionalSyncCommitPendingBaselines'), finish.index('Debug.Print "SYNC_TIMING'))
+
+
 if __name__ == '__main__': unittest.main()
