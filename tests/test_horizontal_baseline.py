@@ -121,4 +121,120 @@ class HorizontalBaselineSourceContracts(unittest.TestCase):
         self.assertIn('CStr(data(r, 2)) <> HORIZONTAL_BASELINE_VERSION',proc('HorizontalBaselineMapsFromData'))
 
 
+class HorizontalBaselineUpdateTests(unittest.TestCase):
+    def setUp(self):
+        self.records = [('A', '保存期間', '3年', 'old-time', '1'), ('A', '備考', '', 'old-time', '1'), ('B', '識別番号', '00003', 'old-time', '1')]
+
+    def test_update_only_confirmed_keys_and_keep_input_unchanged(self):
+        from horizontal_baseline_model import apply_confirmed
+        original = pivot(self.records)
+        before = copy.deepcopy(original)
+        after = apply_confirmed(original, {('A', '保存期間'): '5年'})
+        self.assertEqual(before, original)
+        self.assertEqual('5年', load(after)[key('A', '保存期間')])
+        self.assertEqual('00003', load(after)[key('B', '識別番号')])
+        self.assertEqual('', load(after)[key('A', '備考')])
+        self.assertNotIn(key('B', '備考'), load(after))
+
+    def test_waiting_conflict_and_hold_without_pending_do_not_advance(self):
+        from horizontal_baseline_model import apply_confirmed
+        initial = pivot([('A', '保存期間', '3年', '', '1')])
+        for excel, csv in [('5年', '3年'), ('5年', '10年')]:
+            self.assertEqual(load(initial), load(apply_confirmed(initial, {})))
+            self.assertNotEqual('confirmed', decide('3年', excel, csv))
+
+    def test_new_record_and_column_leave_other_items_unknown(self):
+        from horizontal_baseline_model import apply_confirmed
+        data = apply_confirmed(pivot(self.records), {('C', '新項目'): '=001'})
+        self.assertEqual('=001', load(data)[key('C', '新項目')])
+        self.assertNotIn(key('A', '新項目'), load(data))
+        self.assertNotIn(key('C', '保存期間'), load(data))
+
+    def test_unmodified_item_timestamps_are_preserved(self):
+        from horizontal_baseline_model import apply_confirmed
+        data = apply_confirmed(pivot(self.records), {('B', '識別番号'): '00004'})
+        row = next(row for row in data[1:] if row[0].upper() == 'A')
+        dates = unpack(row[3], len(data[0])-4)
+        self.assertEqual('old-time', dates[[canonical.casefold() for canonical in data[0][4:]].index('保存期間')])
+
+    def test_no_pending_does_not_remove_missing_or_deleted_records(self):
+        from horizontal_baseline_model import apply_confirmed
+        self.assertEqual(legacy_maps(self.records), load(apply_confirmed(pivot(self.records), {})))
+
+    def test_write_failure_and_readback_failure_restore_model(self):
+        from horizontal_baseline_model import transactional_model
+        for failure in ['write', 'readback']:
+            state = pivot(self.records)
+            before = copy.deepcopy(state)
+            new = pivot(self.records + [('C', '保存期間', '5年', '', '1')])
+            with self.assertRaises(RuntimeError): transactional_model(state, new, fail_at=failure)
+            self.assertEqual(before, state)
+
+    def test_failed_rollback_is_a_stop_not_success(self):
+        from horizontal_baseline_model import transactional_model
+        state = pivot(self.records)
+        with self.assertRaisesRegex(RuntimeError, '保存せず'):
+            transactional_model(state, pivot(self.records), fail_at='readback', rollback_fail=True)
+
+    def test_pending_without_identity_is_rejected(self):
+        from horizontal_baseline_model import apply_confirmed
+        with self.assertRaises(ValueError): apply_confirmed(pivot(self.records), {('', '保存期間'): '5年'})
+
+    def test_vba_protection_and_atomic_update_contracts(self):
+        protection = proc('HorizontalBaselineProtect')
+        self.assertIn('UserInterfaceOnly:=True', protection)
+        self.assertIn('ws.ProtectionMode', protection)
+        self.assertNotIn('.Unprotect', protection)
+        writer = proc('HorizontalBaselineReplaceData')
+        self.assertLess(writer.index('before = target.Value2'), writer.index('target.Value2 = data'))
+        self.assertLess(writer.index('target.NumberFormat = "@"'), writer.index('target.Value2 = data'))
+        for required in ['HorizontalBaselineDataMatches(data, actual)', 'target.Value2 = before',
+                         'oldRange.NumberFormat = oldFormat', 'extraRows.NumberFormat = rowFormat',
+                         'extraCols.NumberFormat = colFormat', 'HorizontalBaselineDataMatches(before, actual, True)',
+                         'mSyncRecoveryRequired = True', 'Application.EnableEvents = oldEvents']:
+            self.assertIn(required, writer)
+        self.assertNotIn('target.Clear\n', writer)
+        self.assertIn('mBidirectionalSyncContext("HorizontalUndo")', writer)
+        self.assertIn('HorizontalBaselineDataMatches(expected, actual, True)', proc('HorizontalBaselineRestoreUndo'))
+        pending = proc('HorizontalBaselineApplyPending')
+        self.assertNotIn('.Cells(', pending)
+        self.assertNotIn('ThisWorkbook.Worksheets', pending)
+        self.assertIn('For Each key In pending.Keys', pending)
+
+    def test_vba_procedures_are_top_level_balanced_and_unique(self):
+        import re
+        current = None
+        names = set()
+        for number, line in enumerate(MODULE.splitlines(), 1):
+            start = re.match(r'\s*(?:Private |Public |Friend )?(?:Static )?(Sub|Function|Property (?:Get|Let|Set))\s+(\w+)', line)
+            end = re.match(r'\s*End (Sub|Function|Property)\b', line)
+            if start:
+                self.assertIsNone(current, f'nested procedure at {number}: {line}')
+                name = start[2].lower()
+                self.assertNotIn(name, names, f'duplicate procedure at {number}')
+                names.add(name)
+                current = start[1].split()[0]
+            elif end:
+                self.assertEqual(current, end[1], f'unmatched end at {number}')
+                current = None
+        self.assertIsNone(current)
+        self.assertGreater(len(names), 300)
+
+    def test_timestamp_decoder_requires_an_actual_length_token(self):
+        body = proc('HorizontalBaselineUnpackStamp')
+        self.assertIn('separator <= position', body)
+        self.assertIn('lengthToken Like "*[!0-9]*"', body)
+        self.assertIn('valueLength > Len(packed) - separator', body)
+        self.assertIn('stamp = HorizontalBaselineUnpackStamp(packed, position)', proc('HorizontalBaselineMapsFromData'))
+        data = pivot([('A', '保存期間', '', '', '1')])
+        data[1][3] = ''
+        with self.assertRaises(ValueError): load(data)
+
+    def test_aliases(self):
+        from horizontal_baseline_model import canonical
+        self.assertEqual('タイトル', canonical('個別フォルダー'))
+        self.assertEqual('分類名２', canonical('第１ガイド'))
+        self.assertEqual('ｎ＋1', canonical('N+1'))
+
+
 if __name__ == '__main__': unittest.main()

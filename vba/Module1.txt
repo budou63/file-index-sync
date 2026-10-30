@@ -17812,6 +17812,7 @@ Private Sub HorizontalBaselineMapsFromData(ByVal data As Variant, _
         For c = 1 To UBound(data, 2)
             If IsError(data(r, c)) Or IsNull(data(r, c)) Then _
                 Err.Raise vbObjectError + 2910, , "横型同期基準にエラーまたはNullがあります。"
+            If Len(CStr(data(r, c))) > 32767 Then Err.Raise vbObjectError + 2910, , "横型基準の文字列がセルの保存上限を超えています。"
         Next c
     Next r
     For c = 1 To HORIZONTAL_BASELINE_META_COLS
@@ -17835,7 +17836,7 @@ Private Sub HorizontalBaselineMapsFromData(ByVal data As Variant, _
         mask = CStr(data(r, 3)): packed = CStr(data(r, 4)): position = 1
         If Len(mask) <> fieldCount Then Err.Raise vbObjectError + 2910, , "横型同期基準の確定済項目数が一致しません。"
         For c = HORIZONTAL_BASELINE_META_COLS + 1 To UBound(data, 2)
-            stamp = BidirectionalSyncUnpackConflictValue(packed, position)
+            stamp = HorizontalBaselineUnpackStamp(packed, position)
             Select Case Mid$(mask, c - HORIZONTAL_BASELINE_META_COLS, 1)
                 Case "1"
                     key = BidirectionalSyncBaselineKey(rowId, CStr(data(1, c)))
@@ -17865,6 +17866,17 @@ Private Function HorizontalBaselineReadData(ByVal ws As Worksheet) As Variant
         Err.Raise vbObjectError + 2910, , "横型同期基準の構造を確認できません。"
     data = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Value2
     HorizontalBaselineReadData = data
+End Function
+
+Private Function HorizontalBaselineUnpackStamp(ByVal packed As String, ByRef position As Long) As String
+    Dim separator As Long, lengthToken As String, valueLength As Long
+    separator = InStr(position, packed, ":", vbBinaryCompare)
+    If separator <= position Or position < 1 Then Err.Raise vbObjectError + 2911, , "横型基準の確定日時が不正です。"
+    lengthToken = Mid$(packed, position, separator - position)
+    If lengthToken Like "*[!0-9]*" Then Err.Raise vbObjectError + 2911, , "横型基準の確定日時の長さが不正です。"
+    valueLength = CLng(lengthToken)
+    If valueLength > Len(packed) - separator Then Err.Raise vbObjectError + 2911, , "横型基準の確定日時が途切れています。"
+    HorizontalBaselineUnpackStamp = BidirectionalSyncUnpackConflictValue(packed, position)
 End Function
 
 Private Sub HorizontalBaselineLoadMaps(ByVal ws As Worksheet, _
@@ -17936,6 +17948,217 @@ NextLegacyValue:
     HorizontalBaselineDataFromLegacy = data
 End Function
 
+Private Function HorizontalBaselineApplyPending(ByVal original As Variant, ByVal pending As Object) As Variant
+    Dim values As Object, locations As Object, rowMap As Object, columnMap As Object
+    Dim data As Variant, stamps() As String, known() As String, entry As Variant, key As Variant
+    Dim r As Long, c As Long, rr As Long, cc As Long, position As Long, rowId As String, header As String
+    Dim mask As String, packed As String, stamp As String
+    Set values = CreateObject("Scripting.Dictionary"): values.CompareMode = vbTextCompare
+    Set locations = CreateObject("Scripting.Dictionary"): locations.CompareMode = vbTextCompare
+    HorizontalBaselineMapsFromData original, values, locations
+    Set rowMap = CreateObject("Scripting.Dictionary"): rowMap.CompareMode = vbTextCompare
+    Set columnMap = CreateObject("Scripting.Dictionary"): columnMap.CompareMode = vbTextCompare
+    For r = 2 To UBound(original, 1): rowMap.Add CStr(original(r, 1)), r: Next r
+    For c = HORIZONTAL_BASELINE_META_COLS + 1 To UBound(original, 2)
+        columnMap.Add CanonicalHeaderName(CStr(original(1, c))), c
+    Next c
+    For Each key In pending.Keys
+        entry = pending(key): rowId = Trim$(CStr(entry(0))): header = CanonicalHeaderName(CStr(entry(1)))
+        If Len(rowId) = 0 Or Len(header) = 0 Then Err.Raise vbObjectError + 2912, , "確定対象の管理行IDまたは項目がありません。"
+        If StrComp(CStr(key), BidirectionalSyncBaselineKey(rowId, header), vbTextCompare) <> 0 Then _
+            Err.Raise vbObjectError + 2912, , "確定対象キーと項目が一致しません。"
+        If Not rowMap.Exists(rowId) Then rowMap.Add rowId, rowMap.Count + 2
+        If Not columnMap.Exists(header) Then columnMap.Add header, columnMap.Count + HORIZONTAL_BASELINE_META_COLS + 1
+    Next key
+    ReDim data(1 To rowMap.Count + 1, 1 To columnMap.Count + HORIZONTAL_BASELINE_META_COLS)
+    ReDim stamps(1 To rowMap.Count + 1, 1 To columnMap.Count + HORIZONTAL_BASELINE_META_COLS)
+    ReDim known(1 To rowMap.Count + 1, 1 To columnMap.Count + HORIZONTAL_BASELINE_META_COLS)
+    For r = 1 To UBound(original, 1)
+        For c = 1 To UBound(original, 2): data(r, c) = original(r, c): Next c
+        If r >= 2 Then
+            position = 1: packed = CStr(original(r, 4))
+            For c = HORIZONTAL_BASELINE_META_COLS + 1 To UBound(original, 2)
+                stamps(r, c) = HorizontalBaselineUnpackStamp(packed, position)
+                known(r, c) = Mid$(CStr(original(r, 3)), c - HORIZONTAL_BASELINE_META_COLS, 1)
+            Next c
+        End If
+    Next r
+    For Each key In rowMap.Keys
+        rr = CLng(rowMap(key)): data(rr, 1) = CStr(key): data(rr, 2) = HORIZONTAL_BASELINE_VERSION
+    Next key
+    For Each key In columnMap.Keys: data(1, CLng(columnMap(key))) = CStr(key): Next key
+    stamp = Format$(Now, "yyyy/mm/dd hh:nn:ss")
+    For Each key In pending.Keys
+        entry = pending(key)
+        rr = CLng(rowMap(Trim$(CStr(entry(0))))): cc = CLng(columnMap(CanonicalHeaderName(CStr(entry(1)))))
+        data(rr, cc) = CStr(entry(2)): known(rr, cc) = "1": stamps(rr, cc) = stamp
+    Next key
+    For r = 2 To UBound(data, 1)
+        mask = "": packed = ""
+        For c = HORIZONTAL_BASELINE_META_COLS + 1 To UBound(data, 2)
+            If known(r, c) = "1" Then mask = mask & "1" Else mask = mask & "0"
+            packed = packed & BidirectionalSyncPackConflictValue(stamps(r, c))
+        Next c
+        data(r, 3) = mask: data(r, 4) = packed
+        If Len(packed) > 30000 Then Err.Raise vbObjectError + 2912, , "横型基準の項目別確定日時が保存可能な長さを超えています。"
+    Next r
+    HorizontalBaselineMapsFromData data, values, locations
+    HorizontalBaselineApplyPending = data
+End Function
+
+Private Sub HorizontalBaselineProtect(ByVal ws As Worksheet)
+    Dim locked As Variant
+    If ThisWorkbook.ReadOnly Then Err.Raise vbObjectError + 2913, , "読み取り専用の横型基準は更新できません。"
+    If Not (ws.Parent Is ThisWorkbook) Then Err.Raise vbObjectError + 2913, , "横型基準の所属ブックが違います。"
+    If ws.Name <> HORIZONTAL_BASELINE_SHEET Then Err.Raise vbObjectError + 2913, , "横型基準以外の保護は変更しません。"
+    locked = ws.UsedRange.Locked
+    If IsNull(locked) Then Err.Raise vbObjectError + 2913, , "横型基準にロック解除セルがあります。"
+    If Not CBool(locked) Then Err.Raise vbObjectError + 2913, , "横型基準にロック解除セルがあります。"
+    ' 再オープン後はUI専用保護を再設定する。別のパスワード保護なら解除せず失敗する。
+    ws.Protect Password:="", DrawingObjects:=True, Contents:=True, Scenarios:=True, UserInterfaceOnly:=True, _
+        AllowFormattingCells:=False, AllowFormattingColumns:=False, AllowFormattingRows:=False, _
+        AllowInsertingColumns:=False, AllowInsertingRows:=False, AllowInsertingHyperlinks:=False, _
+        AllowDeletingColumns:=False, AllowDeletingRows:=False, AllowSorting:=False, AllowFiltering:=False, AllowUsingPivotTables:=False
+    If Not ws.ProtectContents Or Not ws.ProtectionMode Then Err.Raise vbObjectError + 2913, , "横型基準のUI専用保護を確認できません。"
+End Sub
+
+Private Function HorizontalBaselineDataMatches(ByVal expected As Variant, ByVal actual As Variant, _
+    Optional ByVal requireTypes As Boolean = False) As Boolean
+    Dim r As Long, c As Long
+    If Not IsArray(expected) Or Not IsArray(actual) Then Exit Function
+    If UBound(expected, 1) <> UBound(actual, 1) Or UBound(expected, 2) <> UBound(actual, 2) Then Exit Function
+    For r = 1 To UBound(expected, 1)
+        For c = 1 To UBound(expected, 2)
+            If IsError(actual(r, c)) Or IsNull(actual(r, c)) Then Exit Function
+            If requireTypes Then
+                If VarType(expected(r, c)) <> VarType(actual(r, c)) Then Exit Function
+            End If
+            If StrComp(CStr(expected(r, c)), CStr(actual(r, c)), vbBinaryCompare) <> 0 Then Exit Function
+        Next c
+    Next r
+    HorizontalBaselineDataMatches = True
+End Function
+
+Private Sub HorizontalBaselineRestoreUndo(ByVal undo As Object)
+    Dim ws As Worksheet, target As Range, expected As Variant, actual As Variant
+    Dim oldEvents As Boolean, failure As Long, detail As String
+    Set ws = undo("sheet")
+    HorizontalBaselineProtect ws
+    Set target = ws.Range(CStr(undo("address")))
+    expected = undo("values")
+    oldEvents = Application.EnableEvents
+    On Error GoTo Failed
+    Application.EnableEvents = False
+    target.NumberFormat = "@"
+    target.Value2 = expected
+    ws.Range(CStr(undo("oldAddress"))).NumberFormat = CStr(undo("oldFormat"))
+    If undo.Exists("rowAddress") Then ws.Range(CStr(undo("rowAddress"))).NumberFormat = CStr(undo("rowFormat"))
+    If undo.Exists("colAddress") Then ws.Range(CStr(undo("colAddress"))).NumberFormat = CStr(undo("colFormat"))
+    actual = target.Value2
+    If Not HorizontalBaselineDataMatches(expected, actual, True) Then Err.Raise vbObjectError + 2914, , "横型基準の復元照合が一致しません。"
+    Application.EnableEvents = oldEvents
+    Exit Sub
+Failed:
+    failure = Err.Number: detail = Err.Description
+    mSyncRecoveryRequired = True
+    On Error Resume Next
+    Application.EnableEvents = oldEvents
+    On Error GoTo 0
+    Err.Raise vbObjectError + 2914, "HorizontalBaselineRestoreUndo", _
+        "横型基準の復元に失敗（" & CStr(failure) & "）: " & detail & " 保存せず復旧コピーから再開してください。"
+End Sub
+
+' 既存領域と追加領域を一つの書込境界にする。セルをClearせず、内容と書式を退避・復元する。
+Private Sub HorizontalBaselineReplaceData(ByVal ws As Worksheet, ByVal data As Variant)
+    Dim original As Variant, before As Variant, actual As Variant, values As Object, locations As Object
+    Dim undo As Object
+    Dim target As Range, oldRange As Range, extraRows As Range, extraCols As Range
+    Dim rowFormat As Variant, colFormat As Variant, oldFormat As Variant
+    Dim oldRows As Long, oldCols As Long, newRows As Long, newCols As Long
+    Dim oldEvents As Boolean, failure As Long, detail As String, rollbackFailure As Long
+    original = HorizontalBaselineReadData(ws)
+    Set values = CreateObject("Scripting.Dictionary"): values.CompareMode = vbTextCompare
+    Set locations = CreateObject("Scripting.Dictionary"): locations.CompareMode = vbTextCompare
+    HorizontalBaselineMapsFromData original, values, locations
+    HorizontalBaselineMapsFromData data, values, locations
+    oldRows = UBound(original, 1): oldCols = UBound(original, 2)
+    newRows = UBound(data, 1): newCols = UBound(data, 2)
+    If newRows < oldRows Or newCols < oldCols Then Err.Raise vbObjectError + 2913, , "既存横型基準の行・項目を自動削除しません。"
+    If ws.Comments.Count > 0 Or ws.Shapes.Count > 0 Or ws.ListObjects.Count > 0 Then _
+        Err.Raise vbObjectError + 2913, , "横型基準に管理外のコメント・図形・テーブルがあります。上書きしません。"
+    Set oldRange = ws.Range(ws.Cells(1, 1), ws.Cells(oldRows, oldCols))
+    oldFormat = oldRange.NumberFormat
+    If IsNull(oldFormat) Then Err.Raise vbObjectError + 2913, , "横型基準の表示形式が混在しています。"
+    If CStr(oldFormat) <> "@" Then Err.Raise vbObjectError + 2913, , "横型基準は文字列形式でなければ更新しません。"
+    If newRows > oldRows Then
+        Set extraRows = ws.Range(ws.Cells(oldRows + 1, 1), ws.Cells(newRows, oldCols))
+        rowFormat = extraRows.NumberFormat
+        If IsNull(rowFormat) Then Err.Raise vbObjectError + 2913, , "横型基準の追加行に混在書式があります。"
+        If Application.WorksheetFunction.CountA(extraRows) <> 0 Then Err.Raise vbObjectError + 2913, , "横型基準の追加行が空ではありません。"
+    End If
+    If newCols > oldCols Then
+        Set extraCols = ws.Range(ws.Cells(1, oldCols + 1), ws.Cells(newRows, newCols))
+        colFormat = extraCols.NumberFormat
+        If IsNull(colFormat) Then Err.Raise vbObjectError + 2913, , "横型基準の追加列に混在書式があります。"
+        If Application.WorksheetFunction.CountA(extraCols) <> 0 Then Err.Raise vbObjectError + 2913, , "横型基準の追加列が空ではありません。"
+    End If
+    Set target = ws.Range(ws.Cells(1, 1), ws.Cells(newRows, newCols))
+    before = target.Value2
+    HorizontalBaselineProtect ws
+    Set undo = CreateObject("Scripting.Dictionary")
+    undo.Add "sheet", Empty: Set undo("sheet") = ws
+    undo.Add "address", target.Address: undo.Add "values", before
+    undo.Add "oldAddress", oldRange.Address: undo.Add "oldFormat", CStr(oldFormat)
+    If Not extraRows Is Nothing Then
+        undo.Add "rowAddress", extraRows.Address: undo.Add "rowFormat", CStr(rowFormat)
+    End If
+    If Not extraCols Is Nothing Then
+        undo.Add "colAddress", extraCols.Address: undo.Add "colFormat", CStr(colFormat)
+    End If
+    If BidirectionalSyncContextIsActive() Then
+        If mBidirectionalSyncContext.Exists("HorizontalUndo") Then Err.Raise vbObjectError + 2913, , "横型基準の確定を同じ処理中に繰り返せません。"
+        mBidirectionalSyncContext.Add "HorizontalUndo", Empty
+        Set mBidirectionalSyncContext("HorizontalUndo") = undo
+    End If
+    oldEvents = Application.EnableEvents
+    On Error GoTo Rollback
+    Application.EnableEvents = False
+    target.NumberFormat = "@"
+    target.Value2 = data
+    actual = target.Value2
+    If Not HorizontalBaselineDataMatches(data, actual) Then Err.Raise vbObjectError + 2913, , "横型基準の書込後照合が一致しません。"
+    HorizontalBaselineMapsFromData actual, values, locations
+    Application.EnableEvents = oldEvents
+    Exit Sub
+Rollback:
+    failure = Err.Number: detail = Err.Description
+    On Error Resume Next
+    Err.Clear
+    target.ClearContents
+    target.Value2 = before
+    If Err.Number <> 0 Then rollbackFailure = Err.Number
+    Err.Clear
+    oldRange.NumberFormat = oldFormat
+    If Not extraRows Is Nothing Then extraRows.NumberFormat = rowFormat
+    If Not extraCols Is Nothing Then extraCols.NumberFormat = colFormat
+    If Err.Number <> 0 Then rollbackFailure = Err.Number
+    Err.Clear
+    actual = target.Value2
+    If Not HorizontalBaselineDataMatches(before, actual, True) Then rollbackFailure = vbObjectError + 2914
+    If Err.Number <> 0 Then rollbackFailure = Err.Number
+    Err.Clear
+    Application.EnableEvents = oldEvents
+    If Err.Number <> 0 Then rollbackFailure = Err.Number
+    On Error GoTo 0
+    If rollbackFailure <> 0 Then
+        mSyncRecoveryRequired = True
+        Err.Raise vbObjectError + 2914, "HorizontalBaselineReplaceData", _
+            "横型基準の更新失敗（" & CStr(failure) & "）: " & detail & " 復元も失敗（" & CStr(rollbackFailure) & "）。保存せず復旧コピーから再開してください。"
+    End If
+    Err.Raise vbObjectError + 2913, "HorizontalBaselineReplaceData", _
+        "横型基準の更新を元へ戻しました。元のエラー（" & CStr(failure) & "）: " & detail
+End Sub
+
 Private Function BidirectionalSyncBaselineKey(ByVal rowId As String, ByVal canonicalHeader As String) As String
     BidirectionalSyncBaselineKey = UCase$(Trim$(rowId)) & "|" & CanonicalHeaderName(canonicalHeader)
 End Function
@@ -17993,6 +18216,12 @@ Private Sub BidirectionalSyncCommitPendingBaselines()
     Set baselineRows = mBidirectionalSyncContext("BaselineRows")
     Set baselineSheet = mBidirectionalSyncContext("BaselineSheet")
     If baselineSheet Is Nothing Then Err.Raise vbObjectError + 2805, , "同期基準値シートを確認できません。"
+    If baselineSheet.Name = HORIZONTAL_BASELINE_SHEET Then
+        HorizontalBaselineReplaceData baselineSheet, HorizontalBaselineApplyPending(HorizontalBaselineReadData(baselineSheet), pending)
+        BidirectionalSyncLoadBaselineMaps baselineSheet, mBidirectionalSyncContext("BaselineValues"), baselineRows
+        pending.RemoveAll
+        Exit Sub
+    End If
 
     initialLastRow = baselineSheet.Cells(baselineSheet.Rows.Count, 1).End(xlUp).Row
     If initialLastRow < 1 Then initialLastRow = 1

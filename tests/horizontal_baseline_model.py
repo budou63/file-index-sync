@@ -88,6 +88,8 @@ def load(data):
     fields = [canonical(h).casefold() for h in data[0][4:]]
     if any(not h for h in fields) or len(set(fields)) != len(fields):
         raise ValueError('ambiguous fields')
+    if any(len(text(value).encode('utf-16-le'))//2 > 32767 for row in data for value in row):
+        raise ValueError('cell text limit')
     ids, result = set(), {}
     for row in data[1:]:
         if len(row) != len(data[0]):
@@ -107,6 +109,47 @@ def load(data):
             elif value or stamps[i]:
                 raise ValueError('unconfirmed value or timestamp')
     return result
+
+
+def apply_confirmed(data, pending, stamp='2026/10/30 00:00:00'):
+    """Pure oracle: only explicit confirmed keys update; no current-sheet values are read."""
+    values = load(data)
+    stamps = {}
+    for row in data[1:]:
+        dates = unpack(row[3], len(data[0])-4)
+        for i, header in enumerate(data[0][4:]):
+            if row[2][i] == '1':
+                stamps[key(row[0], header)] = dates[i]
+    updates = {}
+    for (rid, header), value in pending.items():
+        k = key(rid, header)
+        if not k[0] or not k[1] or k in updates:
+            raise ValueError('missing or duplicate pending identity')
+        updates[k] = text(value)
+    records = [(rid, header, value, stamps[(rid, header)], '1')
+               for (rid, header), value in values.items() if (rid, header) not in updates]
+    records += [(rid, header, value, stamp, '1') for (rid, header), value in updates.items()]
+    return pivot(records)
+
+
+def transactional_model(state, new, fail_at=None, rollback_fail=False):
+    """Fault-injection model only. This does not execute VBA/Excel rollback."""
+    import copy
+    original = copy.deepcopy(state)
+    load(new)
+    try:
+        state[:] = copy.deepcopy(new)
+        if fail_at == 'write':
+            state[-1][-1] = 'partial-corruption'
+            raise RuntimeError('write failed')
+        if fail_at == 'readback' or state != new:
+            raise RuntimeError('readback mismatch')
+    except RuntimeError:
+        if rollback_fail:
+            raise RuntimeError('保存せず復旧コピーから再開')
+        state[:] = original
+        assert state == original
+        raise
 
 
 def decide(baseline, excel, csv):
