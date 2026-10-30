@@ -113,6 +113,65 @@ def load(data):
     return result
 
 
+def _matches_production_copy(candidate_headers, destination_headers):
+    """Recognize a named copy by a unique set of destination headers incl. managed ID."""
+    candidate = [canonical(h).casefold() for h in candidate_headers]
+    destination = [canonical(h).casefold() for h in destination_headers]
+    if len(candidate) < 2 or 'excel管理行id' not in candidate:
+        return False
+    if any(not h for h in candidate) or len(set(candidate)) != len(candidate):
+        return False
+    return all(destination.count(h) == 1 for h in candidate)
+
+
+def ensure_model(existing_headers, destination_headers, legacy_records, destination_has_rows,
+                 existing_data=None, mixed_number_format=False):
+    """Model migration source choice; mixed cell formats are deliberately non-semantic."""
+    if existing_headers is not None and existing_headers[:4] == META:
+        if existing_data is None or load(existing_data) is None:
+            raise ValueError('invalid canonical table')
+        return 'canonical', existing_data, False
+    if existing_headers is not None:
+        markers = set(existing_headers[:4]) & set(META)
+        if markers:
+            raise ValueError('partial horizontal schema')
+        if not _matches_production_copy(existing_headers, destination_headers):
+            raise ValueError('unknown sheet structure')
+        if legacy_records is None:
+            raise ValueError('copy has no legacy migration source')
+        migrated = pivot(legacy_records)
+        if destination_has_rows and not load(migrated):
+            raise ValueError('legacy baseline is insufficient')
+        return 'migrated_copy', migrated, True
+    if legacy_records is None:
+        if destination_has_rows:
+            raise ValueError('existing rows have no baseline')
+        return 'empty', [META], False
+    migrated = pivot(legacy_records)
+    if destination_has_rows and not load(migrated):
+        raise ValueError('legacy baseline is insufficient')
+    return 'migrated_legacy', migrated, False
+
+
+def migrate_copy_transactionally(state, migrated, fail_at=None):
+    """Fault-injection model for archive/replace rollback, not VBA execution."""
+    import copy
+    before = copy.deepcopy(state)
+    try:
+        state['archive'] = copy.deepcopy(state['copy_sheet'])
+        if fail_at == 'after_archive':
+            raise RuntimeError('migration interrupted after archive')
+        state['baseline'] = copy.deepcopy(migrated)
+        if fail_at == 'after_write' or load(state['baseline']) != load(migrated):
+            raise RuntimeError('migration write/readback failed')
+    except RuntimeError:
+        state.clear()
+        state.update(before)
+        assert state == before
+        raise
+    return state
+
+
 def apply_confirmed(data, pending, stamp='2026/10/30 00:00:00'):
     """Pure oracle: only explicit confirmed keys update; no current-sheet values are read."""
     values = load(data)

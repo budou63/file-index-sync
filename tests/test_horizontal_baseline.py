@@ -3,7 +3,8 @@ import copy
 from pathlib import Path
 import random
 import unittest
-from horizontal_baseline_model import META, decide, key, legacy_maps, load, pack, pivot, unpack
+from horizontal_baseline_model import (META, decide, ensure_model, key, legacy_maps,
+                                       load, migrate_copy_transactionally, pack, pivot, unpack)
 
 MODULE = (Path(__file__).resolve().parents[1] / 'vba/Module1.txt').read_text(encoding='utf-8-sig')
 
@@ -92,6 +93,85 @@ class HorizontalBaselineFormatTests(unittest.TestCase):
         for k in old:
             e,c = rng.choice(['', '3年', '5年']),rng.choice(['', '3年', '10年'])
             self.assertEqual(decide(old[k],e,c),decide(new[k],e,c))
+
+
+class HorizontalBaselineMigrationTests(unittest.TestCase):
+    def setUp(self):
+        self.records = [('row-1', '保存期間', '3年', 'old-time', '1'),
+                        ('row-1', '備考', '', 'old-time', '1'),
+                        ('row-2', 'タイトル', '00123', 'old-time', '1')]
+        self.headers = ['通し番号', 'タイトル', '保存期間', '備考', 'Excel管理行ID', '同期状態']
+
+    def test_missing_horizontal_table_migrates_from_legacy_or_safe_stops(self):
+        mode, data, archived = ensure_model(None, self.headers, self.records, True)
+        self.assertEqual('migrated_legacy', mode)
+        self.assertFalse(archived)
+        self.assertEqual(legacy_maps(self.records), load(data))
+        self.assertEqual(('empty', [META], False), ensure_model(None, self.headers, None, False))
+        with self.assertRaisesRegex(ValueError, 'no baseline'):
+            ensure_model(None, self.headers, None, True)
+
+    def test_production_copy_with_mixed_formats_uses_vertical_source_and_is_archived(self):
+        mode, data, archived = ensure_model(self.headers, self.headers, self.records, True,
+                                             mixed_number_format=True)
+        self.assertEqual('migrated_copy', mode)
+        self.assertTrue(archived)
+        self.assertEqual(legacy_maps(self.records), load(data))
+
+    def test_canonical_horizontal_table_is_validated_and_reused(self):
+        canonical = pivot(self.records)
+        mode, data, archived = ensure_model(META, self.headers, self.records, True,
+                                             existing_data=canonical)
+        self.assertEqual('canonical', mode)
+        self.assertIs(data, canonical)
+        self.assertFalse(archived)
+
+    def test_confirmed_blank_and_unconfirmed_item_remain_distinct_after_copy_migration(self):
+        _, data, _ = ensure_model(self.headers, self.headers, self.records, True,
+                                  mixed_number_format=True)
+        migrated = load(data)
+        self.assertIn(key('row-1', '備考'), migrated)
+        self.assertEqual('', migrated[key('row-1', '備考')])
+        self.assertNotIn(key('row-2', '備考'), migrated)
+
+    def test_waiting_excel_change_does_not_advance_legacy_baseline(self):
+        _, data, _ = ensure_model(self.headers, self.headers, self.records, True,
+                                  mixed_number_format=True)
+        baseline = load(data)
+        k = key('row-1', '保存期間')
+        self.assertEqual('excel_only_hold', decide(baseline[k], '5年', '3年'))
+        from horizontal_baseline_model import apply_confirmed
+        after = apply_confirmed(data, {})
+        self.assertEqual(baseline, load(after))
+
+    def test_failed_copy_migration_restores_copy_and_vertical_source(self):
+        import copy
+        state = {'copy_sheet': {'headers': self.headers, 'formats': ['Text', 'Date', 'General']},
+                 'vertical': copy.deepcopy(self.records)}
+        before = copy.deepcopy(state)
+        migrated = pivot(self.records)
+        for fail_at in ['after_archive', 'after_write']:
+            with self.subTest(fail_at=fail_at), self.assertRaises(RuntimeError):
+                migrate_copy_transactionally(state, migrated, fail_at=fail_at)
+            self.assertEqual(before, state)
+
+    def test_rerunning_migration_reuses_canonical_without_duplicate_archive(self):
+        migrated = pivot(self.records)
+        first = ensure_model(self.headers, self.headers, self.records, True,
+                             mixed_number_format=True)
+        self.assertTrue(first[2])
+        second = ensure_model(META, self.headers, self.records, True,
+                              existing_data=first[1])
+        self.assertEqual(('canonical', first[1], False), second)
+        self.assertEqual(legacy_maps(self.records), load(second[1]))
+
+    def test_unrecognized_copy_partial_schema_and_empty_legacy_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, 'unknown sheet'):
+            ensure_model(['ID', '値'], self.headers, self.records, True)
+        with self.assertRaisesRegex(ValueError, 'partial horizontal'):
+            ensure_model([META[0], '値'], self.headers, self.records, True)
+        with self.assertRaisesRegex(ValueError, 'insufficient'):
+            ensure_model(self.headers, self.headers, [], True, mixed_number_format=True)
 
 
 class HorizontalBaselineSourceContracts(unittest.TestCase):
@@ -240,7 +320,9 @@ class HorizontalBaselineUpdateTests(unittest.TestCase):
 class HorizontalBaselineIntegrationContracts(unittest.TestCase):
     def test_normal_context_selects_horizontal_but_keeps_legacy_implementation(self):
         start = proc('BidirectionalSyncStartContext')
-        self.assertIn('HorizontalBaselineEnsureSheet(wsDst, baselineSheetCreated)', start)
+        self.assertIn('HorizontalBaselineEnsureSheet(wsDst, baselineSheetCreated,', start)
+        self.assertIn('archivedBaselineCopy, archivedBaselineVisibility)', start)
+        self.assertLess(start.index('HorizontalBaselineEnsureSheet'), start.index('SyncRecoveryCaptureInternalSheets'))
         self.assertNotIn('BidirectionalSyncEnsureBaselineSheet(wsDst', start)
         self.assertIn('Private Function BidirectionalSyncEnsureBaselineSheet(', MODULE)
         ensure = proc('HorizontalBaselineEnsureSheet')
@@ -273,9 +355,17 @@ class HorizontalBaselineIntegrationContracts(unittest.TestCase):
                      'StrComp(key, expectedKey, vbTextCompare)', 'Mid$(mask,', '.HasFormula', 'rows.Exists(key)']:
             self.assertIn(text, getter)
 
+    def test_recovery_capture_ignores_mixed_format_baseline_candidates(self):
+        capture = proc('SyncRecoveryCaptureInternalSheets')
+        self.assertIn('Array(BIDIRECTIONAL_SYNC_CONFLICT_SHEET)', capture)
+        self.assertNotIn('HORIZONTAL_BASELINE_SHEET', capture)
+        self.assertNotIn('UsedRange.NumberFormat', capture)
+        self.assertNotIn('IsNull(numberFormat)', MODULE)
+        start = proc('BidirectionalSyncStartContext')
+        self.assertLess(start.index('HorizontalBaselineEnsureSheet'), start.index('SyncRecoveryCaptureInternalSheets'))
+
     def test_old_baseline_is_not_captured_or_written_by_normal_new_flow(self):
         capture = proc('SyncRecoveryCaptureInternalSheets')
-        self.assertIn('Array(HORIZONTAL_BASELINE_SHEET, BIDIRECTIONAL_SYNC_CONFLICT_SHEET)', capture)
         self.assertNotIn('Array(BIDIRECTIONAL_SYNC_BASELINE_SHEET,', capture)
         commit = proc('BidirectionalSyncCommitPendingBaselines')
         branch = commit.split('If baselineSheet.Name = HORIZONTAL_BASELINE_SHEET Then',1)[1].split('End If',1)[0]
@@ -286,19 +376,38 @@ class HorizontalBaselineIntegrationContracts(unittest.TestCase):
     def test_new_sheet_cleanup_is_owned_guarded_and_preserves_old_baseline(self):
         create = proc('HorizontalBaselineEnsureSheet')
         self.assertLess(create.index('HorizontalBaselineDataFromLegacy'), create.index('Worksheets.Add'))
-        for text in ['created = True', 'ws.Visible = xlSheetVeryHidden', 'If created Then BidirectionalSyncDeleteNewBaselineSheet ws', 'Application.EnableEvents = oldEvents']:
+        for text in ['HorizontalBaselineRequireSufficientLegacy', 'HorizontalBaselineIsCanonicalSheet(ws)',
+                     'HorizontalBaselineMatchesDestinationHeaders(ws, wsDst)', 'HorizontalBaselineUniqueArchiveName()',
+                     'HorizontalBaselineDeleteTemporarySheet tempSheet, temporaryName',
+                     'ws.Visible = archivedVisibility', 'created = True',
+                     'HorizontalBaselineProtect tempSheet', 'tempSheet.UsedRange.NumberFormat = "@"',
+                     'Application.EnableEvents = oldEvents']:
             self.assertIn(text, create)
+        self.assertIn('HorizontalBaselineProtect ws', create)
+        self.assertIn('ws.UsedRange.NumberFormat = "@"', create)
+        self.assertIn('archiveName = HorizontalBaselineUniqueArchiveName()', create)
+        capture = proc('SyncRecoveryCaptureInternalSheets')
+        self.assertNotIn('If IsNull(numberFormat)', capture)
+        classifier = proc('HorizontalBaselineIsCanonicalSheet')
+        self.assertIn('HorizontalBaselineMapsFromData data, values, rows', classifier)
+        self.assertIn('破損した基準を自動移行しません', classifier)
+        matcher = proc('HorizontalBaselineMatchesDestinationHeaders')
+        self.assertIn('Excel管理行ID', matcher)
+        self.assertIn('matchCount <> 1', matcher)
+        self.assertIn('mapped.Exists(CStr(mappedCol))', matcher)
         delete = proc('BidirectionalSyncDeleteNewBaselineSheet')
         self.assertIn('baselineSheet.Name <> HORIZONTAL_BASELINE_SHEET', delete)
         self.assertIn('baselineSheet.Parent Is ThisWorkbook', delete)
         self.assertLess(delete.index('baselineSheet.Visible = xlSheetHidden'), delete.index('baselineSheet.Delete'))
+        self.assertIn('HorizontalBaselineRestoreArchivedCopy archivedBaselineCopy', proc('BidirectionalSyncDiscardContext'))
 
     def test_outer_rollback_restores_horizontal_undo_and_internal_state(self):
         discard = proc('BidirectionalSyncDiscardContext')
         self.assertLess(discard.index('HorizontalBaselineRestoreUndo'), discard.index('SyncRecoveryRestoreInternalSheets'))
         restore = proc('SyncRecoveryRestoreInternalSheets')
-        self.assertIn('HorizontalBaselineProtect ws', restore)
-        self.assertIn('item("numberFormat")', restore)
+        self.assertNotIn('HorizontalBaselineProtect ws', restore)
+        self.assertNotIn('item("numberFormat")', restore)
+        self.assertIn('HorizontalBaselineRestoreArchivedCopy archivedBaselineCopy', discard)
         finish = proc('BidirectionalSyncFinishContext')
         self.assertLess(finish.index('BidirectionalDiffWriteUtf8Csv'), finish.index('BidirectionalSyncCommitPendingBaselines'))
         self.assertLess(finish.index('BidirectionalSyncRefreshConflictState'), finish.index('BidirectionalSyncCommitPendingBaselines'))

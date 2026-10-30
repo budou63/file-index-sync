@@ -44,7 +44,10 @@ class RecoveryBoundary(unittest.TestCase):
     def test_context_restores_history_and_baseline_before_discard(self):
         start = proc('BidirectionalSyncStartContext')
         discard = proc('BidirectionalSyncDiscardContext')
-        self.assertLess(start.index('SyncRecoveryCaptureInternalSheets'), start.index('HorizontalBaselineEnsureSheet'))
+        self.assertLess(start.index('HorizontalBaselineEnsureSheet'), start.index('SyncRecoveryCaptureInternalSheets'))
+        capture = proc('SyncRecoveryCaptureInternalSheets')
+        self.assertNotIn('HORIZONTAL_BASELINE_SHEET', capture)
+        self.assertNotIn('UsedRange.NumberFormat', capture)
         self.assertIn('HorizontalBaselineRestoreUndo', discard)
         self.assertLess(discard.index('HorizontalBaselineRestoreUndo'), discard.index('SyncRecoveryRestoreInternalSheets'))
         self.assertIn('SyncRecoveryRestoreInternalSheets', discard)

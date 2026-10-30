@@ -17439,6 +17439,8 @@ Private Sub BidirectionalSyncStartContext( _
 
     Dim context As Object
     Dim baselineSheet As Worksheet
+    Dim archivedBaselineCopy As Worksheet
+    Dim archivedBaselineVisibility As XlSheetVisibility
     Dim baselineValues As Object
     Dim baselineRows As Object
     Dim pendingBaselines As Object
@@ -17458,9 +17460,10 @@ Private Sub BidirectionalSyncStartContext( _
     If wsDst Is Nothing Then Err.Raise vbObjectError + 2785, , "新ファイル基準表シートが見つかりません。"
     If Len(Trim$(outputPath)) = 0 Then Err.Raise vbObjectError + 2786, , "手動編集一覧の出力先がありません。"
 
-    Set internalSnapshots = SyncRecoveryCaptureInternalSheets()
     preparationStarted = CDbl(Timer)
-    Set baselineSheet = HorizontalBaselineEnsureSheet(wsDst, baselineSheetCreated)
+    Set baselineSheet = HorizontalBaselineEnsureSheet(wsDst, baselineSheetCreated, _
+        archivedBaselineCopy, archivedBaselineVisibility)
+    Set internalSnapshots = SyncRecoveryCaptureInternalSheets()
     preparationSeconds = SyncBaselineElapsed(preparationStarted)
     Set baselineValues = CreateObject("Scripting.Dictionary")
     Set baselineRows = CreateObject("Scripting.Dictionary")
@@ -17518,6 +17521,9 @@ Private Sub BidirectionalSyncStartContext( _
     context.Add "InternalSnapshots", Empty
     Set context("InternalSnapshots") = internalSnapshots
     context.Add "BaselineSheetCreated", CBool(baselineSheetCreated)
+    context.Add "BaselineArchive", Empty
+    If Not archivedBaselineCopy Is Nothing Then Set context("BaselineArchive") = archivedBaselineCopy
+    context.Add "BaselineArchiveVisibility", CLng(archivedBaselineVisibility)
     context.Add "Lines", Empty
     Set context("Lines") = lines
 
@@ -17531,10 +17537,13 @@ ErrorHandler:
         On Error GoTo CleanupError
         BidirectionalSyncDeleteNewBaselineSheet baselineSheet
     End If
+    If Not archivedBaselineCopy Is Nothing Then _
+        HorizontalBaselineRestoreArchivedCopy archivedBaselineCopy, archivedBaselineVisibility
     On Error GoTo 0
     Err.Raise errorNumber, "BidirectionalSyncStartContext", errorDescription
 
 CleanupError:
+    mSyncRecoveryRequired = True
     Err.Raise vbObjectError + 2807, "BidirectionalSyncStartContext", _
         "同期開始処理が失敗し、新規作成した同期基準シートを安全に破棄できません。ブックを保存せずに終了してください。"
 
@@ -17608,6 +17617,8 @@ Private Sub BidirectionalSyncDiscardContext()
     Dim context As Object
     Dim baselineSheetCreated As Boolean
     Dim baselineSheet As Worksheet
+    Dim archivedBaselineCopy As Worksheet
+    Dim archivedBaselineVisibility As XlSheetVisibility
     Dim rollbackDescription As String
     Dim deleteDescription As String
     Dim originalErrorNumber As Long
@@ -17621,6 +17632,11 @@ Private Sub BidirectionalSyncDiscardContext()
     If context.Exists("HorizontalUndo") Then HorizontalBaselineRestoreUndo context("HorizontalUndo")
     If context.Exists("InternalSnapshots") Then SyncRecoveryRestoreInternalSheets context("InternalSnapshots")
     If context.Exists("BaselineSheetCreated") Then baselineSheetCreated = CBool(context("BaselineSheetCreated"))
+    If context.Exists("BaselineArchive") Then
+        If Not IsEmpty(context("BaselineArchive")) Then Set archivedBaselineCopy = context("BaselineArchive")
+    End If
+    If context.Exists("BaselineArchiveVisibility") Then _
+        archivedBaselineVisibility = CLng(context("BaselineArchiveVisibility"))
     If baselineSheetCreated Then
         Set baselineSheet = context("BaselineSheet")
         On Error Resume Next
@@ -17630,6 +17646,8 @@ Private Sub BidirectionalSyncDiscardContext()
         Err.Clear
         On Error GoTo ErrorHandler
     End If
+    If Not archivedBaselineCopy Is Nothing Then _
+        HorizontalBaselineRestoreArchivedCopy archivedBaselineCopy, archivedBaselineVisibility
     Set mBidirectionalSyncContext = Nothing
     On Error GoTo 0
     If Len(rollbackDescription) > 0 Or Len(deleteDescription) > 0 Then _
@@ -17972,48 +17990,237 @@ Private Function BidirectionalSyncPersistedBaselineValue(ByVal ws As Worksheet, 
     BidirectionalSyncPersistedBaselineValue = ws.Cells(r, c).Value2
 End Function
 
-Private Function HorizontalBaselineEnsureSheet(ByVal wsDst As Worksheet, ByRef created As Boolean) As Worksheet
-    Dim ws As Worksheet, legacy As Worksheet, data As Variant, skeleton As Variant, metadata As Variant
+Private Function HorizontalBaselineIsCanonicalSheet(ByVal ws As Worksheet) As Boolean
+    Dim metadata As Variant, headerData As Variant, data As Variant
+    Dim values As Object, rows As Object
+    Dim c As Long, i As Long, complete As Boolean, partial As Boolean
+    If ws Is Nothing Then Exit Function
+    If Not (ws.Parent Is ThisWorkbook) Then Err.Raise vbObjectError + 2916, , "横型基準のブックが一致しません。"
+    If GetLastUsedCol(ws) = 0 Then Exit Function
+    headerData = ws.Range(ws.Cells(1, 1), ws.Cells(1, HORIZONTAL_BASELINE_META_COLS)).Value2
+    metadata = HorizontalBaselineMetadataHeaders()
+    complete = True
+    For c = 1 To HORIZONTAL_BASELINE_META_COLS
+        If CStr(headerData(1, c)) <> CStr(metadata(c - 1)) Then complete = False
+        For i = 0 To UBound(metadata)
+            If CStr(headerData(1, c)) = CStr(metadata(i)) Then partial = True
+        Next i
+    Next c
+    If Not complete Then
+        If partial Then Err.Raise vbObjectError + 2916, , "横型基準の管理見出しが一部だけ存在します。破損した基準を自動移行しません。"
+        Exit Function
+    End If
+    data = HorizontalBaselineReadData(ws)
+    Set values = CreateObject("Scripting.Dictionary"): values.CompareMode = vbTextCompare
+    Set rows = CreateObject("Scripting.Dictionary"): rows.CompareMode = vbTextCompare
+    HorizontalBaselineMapsFromData data, values, rows
+    HorizontalBaselineIsCanonicalSheet = True
+End Function
+
+Private Function HorizontalBaselineMatchesDestinationHeaders(ByVal candidate As Worksheet, _
+    ByVal destination As Worksheet) As Boolean
+    Dim candidateLastCol As Long, destinationLastCol As Long, c As Long, d As Long
+    Dim matchCount As Long, mappedCol As Long, actual As Variant, destinationHeaders As Variant
+    Dim header As String, mapped As Object
+    If candidate Is Nothing Or destination Is Nothing Then Exit Function
+    If Not (candidate.Parent Is ThisWorkbook) Or Not (destination.Parent Is ThisWorkbook) Then Exit Function
+    candidateLastCol = GetLastHeaderCol(candidate)
+    destinationLastCol = GetLastHeaderCol(destination)
+    If candidateLastCol < 2 Or candidateLastCol > destinationLastCol Then Exit Function
+    If FindHeaderColumn(candidate, candidateLastCol, Array("Excel管理行ID")) = 0 Then Exit Function
+    actual = candidate.Range(candidate.Cells(1, 1), candidate.Cells(1, candidateLastCol)).Value2
+    destinationHeaders = destination.Range(destination.Cells(1, 1), destination.Cells(1, destinationLastCol)).Value2
+    Set mapped = CreateObject("Scripting.Dictionary"): mapped.CompareMode = vbTextCompare
+    For c = 1 To candidateLastCol
+        header = Trim$(CStr(actual(1, c)))
+        If Len(header) = 0 Then Exit Function
+        mappedCol = 0: matchCount = 0
+        For d = 1 To destinationLastCol
+            If StrComp(CanonicalHeaderName(header), _
+                CanonicalHeaderName(CStr(destinationHeaders(1, d))), vbTextCompare) = 0 Then
+                mappedCol = d: matchCount = matchCount + 1
+            End If
+        Next d
+        If matchCount <> 1 Then Exit Function
+        If mapped.Exists(CStr(mappedCol)) Then Exit Function
+        mapped.Add CStr(mappedCol), header
+    Next c
+    HorizontalBaselineMatchesDestinationHeaders = True
+End Function
+
+Private Function HorizontalBaselineUniqueTemporaryName() As String
+    Dim i As Long, candidate As String, ws As Worksheet
+    For i = 1 To 9999
+        candidate = "HB_MIG_" & Format$(i, "0000")
+        Set ws = Nothing
+        On Error Resume Next
+        Set ws = ThisWorkbook.Worksheets(candidate)
+        On Error GoTo 0
+        If ws Is Nothing Then HorizontalBaselineUniqueTemporaryName = candidate: Exit Function
+    Next i
+    Err.Raise vbObjectError + 2916, , "横型移行用の一時シート名を確保できません。"
+End Function
+
+Private Function HorizontalBaselineUniqueArchiveName() As String
+    Dim i As Long, candidate As String, ws As Worksheet
+    For i = 1 To 9999
+        candidate = "同期基準コピー_移行前_" & Format$(i, "0000")
+        Set ws = Nothing
+        On Error Resume Next
+        Set ws = ThisWorkbook.Worksheets(candidate)
+        On Error GoTo 0
+        If ws Is Nothing Then HorizontalBaselineUniqueArchiveName = candidate: Exit Function
+    Next i
+    Err.Raise vbObjectError + 2916, , "移行前コピーの退避先シート名を確保できません。"
+End Function
+
+Private Sub HorizontalBaselineRequireSufficientLegacy(ByVal data As Variant, ByVal destination As Worksheet)
+    Dim values As Object, rows As Object
+    Set values = CreateObject("Scripting.Dictionary"): values.CompareMode = vbTextCompare
+    Set rows = CreateObject("Scripting.Dictionary"): rows.CompareMode = vbTextCompare
+    HorizontalBaselineMapsFromData data, values, rows
+    If GetLastUsedRow(destination) > 1 And values.Count = 0 Then _
+        Err.Raise vbObjectError + 2916, , "本表に既存データがありますが、移行元の確定済み基準値がありません。推測で初期化しません。"
+End Sub
+
+Private Sub HorizontalBaselineDeleteTemporarySheet(ByVal ws As Worksheet, ByVal expectedName As String)
+    Dim oldAlerts As Boolean, oldEvents As Boolean, failure As Long
+    If ws Is Nothing Then Exit Sub
+    If Not (ws.Parent Is ThisWorkbook) Or ws.Name <> expectedName Then _
+        Err.Raise vbObjectError + 2917, , "今回作成した横型移行用一時シートを特定できません。"
+    If ThisWorkbook.ReadOnly Or ThisWorkbook.ProtectStructure Then _
+        Err.Raise vbObjectError + 2917, , "一時シートを安全に破棄できるブック状態ではありません。"
+    oldAlerts = Application.DisplayAlerts: oldEvents = Application.EnableEvents
+    On Error GoTo Failed
+    Application.EnableEvents = False
+    ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD).Activate
+    Application.DisplayAlerts = False
+    If ws.Visible = xlSheetVeryHidden Then ws.Visible = xlSheetHidden
+    ws.Delete
+    Application.DisplayAlerts = oldAlerts: Application.EnableEvents = oldEvents
+    Exit Sub
+Failed:
+    failure = Err.Number
+    On Error Resume Next
+    Application.DisplayAlerts = oldAlerts: Application.EnableEvents = oldEvents
+    On Error GoTo 0
+    Err.Raise vbObjectError + 2917, "HorizontalBaselineDeleteTemporarySheet", _
+        "今回作成した一時シートを破棄できません（" & CStr(failure) & "）。ブックを保存せず復旧コピーから再開してください。"
+End Sub
+
+Private Sub HorizontalBaselineRestoreArchivedCopy(ByVal archived As Worksheet, _
+    ByVal originalVisibility As XlSheetVisibility)
+    Dim current As Worksheet
+    If archived Is Nothing Then Exit Sub
+    If Not (archived.Parent Is ThisWorkbook) Then Err.Raise vbObjectError + 2917, , "移行前コピーの所属ブックが違います。"
+    If Left$(archived.Name, Len("同期基準コピー_移行前_")) <> "同期基準コピー_移行前_" Then _
+        Err.Raise vbObjectError + 2917, , "移行前コピーの退避名が想定と異なります。"
+    On Error Resume Next
+    Set current = ThisWorkbook.Worksheets(HORIZONTAL_BASELINE_SHEET)
+    On Error GoTo 0
+    If Not current Is Nothing Then Err.Raise vbObjectError + 2917, , "移行前コピーを戻す前に新しい横型基準を破棄できません。"
+    ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD).Activate
+    archived.Name = HORIZONTAL_BASELINE_SHEET
+    archived.Visible = originalVisibility
+End Sub
+
+Private Function HorizontalBaselineEnsureSheet(ByVal wsDst As Worksheet, ByRef created As Boolean, _
+    ByRef archivedCopy As Worksheet, ByRef archivedVisibility As XlSheetVisibility) As Worksheet
+    Dim ws As Worksheet, legacy As Worksheet, tempSheet As Worksheet
+    Dim data As Variant, skeleton As Variant, metadata As Variant, actual As Variant
+    Dim values As Object, rows As Object
     Dim i As Long, oldEvents As Boolean, failure As Long, detail As String, cleanupFailure As Long
-    created = False
+    Dim candidateCopy As Boolean, candidateRenamed As Boolean, canonicalRenamed As Boolean
+    Dim temporaryName As String, archiveName As String
+    created = False: Set archivedCopy = Nothing
     On Error Resume Next
     Set ws = ThisWorkbook.Worksheets(HORIZONTAL_BASELINE_SHEET)
     Set legacy = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
     On Error GoTo 0
-    If Not ws Is Nothing Then Set HorizontalBaselineEnsureSheet = ws: Exit Function
     If wsDst Is Nothing Then Err.Raise vbObjectError + 2916, , "新ファイル基準表がありません。"
     If Not (wsDst.Parent Is ThisWorkbook) Then Err.Raise vbObjectError + 2916, , "移行対象のブックが一致しません。"
     If ThisWorkbook.ReadOnly Or ThisWorkbook.ProtectStructure Then Err.Raise vbObjectError + 2916, , "横型基準を作成できないブックです。"
     If wsDst.Visible <> xlSheetVisible Then Err.Raise vbObjectError + 2916, , "基準シートを隠すための表示シートがありません。"
-    metadata = HorizontalBaselineMetadataHeaders()
-    ReDim skeleton(1 To 1, 1 To HORIZONTAL_BASELINE_META_COLS)
-    For i = 0 To UBound(metadata): skeleton(1, i + 1) = CStr(metadata(i)): Next i
-    If legacy Is Nothing Then
-        data = skeleton
-    Else
+
+    If Not ws Is Nothing Then
+        If HorizontalBaselineIsCanonicalSheet(ws) Then
+            HorizontalBaselineProtect ws
+            ws.UsedRange.NumberFormat = "@"
+            If ws.Visible <> xlSheetVeryHidden Then
+                wsDst.Activate: ws.Visible = xlSheetVeryHidden
+            End If
+            Set HorizontalBaselineEnsureSheet = ws
+            Exit Function
+        End If
+        If Not HorizontalBaselineMatchesDestinationHeaders(ws, wsDst) Then _
+            Err.Raise vbObjectError + 2916, , "前回同期基準表は正規横型でも本表コピーでもありません。上書きしません。"
+        candidateCopy = True
+        If legacy Is Nothing Then _
+            Err.Raise vbObjectError + 2916, , "本表コピーはありますが移行元の縦型基準がありません。推測で初期化しません。"
         data = HorizontalBaselineDataFromLegacy(legacy)
+        HorizontalBaselineRequireSufficientLegacy data, wsDst
+    Else
+        metadata = HorizontalBaselineMetadataHeaders()
+        ReDim skeleton(1 To 1, 1 To HORIZONTAL_BASELINE_META_COLS)
+        For i = 0 To UBound(metadata): skeleton(1, i + 1) = CStr(metadata(i)): Next i
+        If legacy Is Nothing Then
+            If GetLastUsedRow(wsDst) > 1 Then _
+                Err.Raise vbObjectError + 2916, , "本表に既存データがありますが縦型基準がありません。安全に初期化できません。"
+            data = skeleton
+        Else
+            data = HorizontalBaselineDataFromLegacy(legacy)
+            HorizontalBaselineRequireSufficientLegacy data, wsDst
+        End If
     End If
+
     oldEvents = Application.EnableEvents
     On Error GoTo Failed
     Application.EnableEvents = False
-    Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
-    created = True
-    ws.Name = HORIZONTAL_BASELINE_SHEET
-    ws.Range(ws.Cells(1, 1), ws.Cells(1, HORIZONTAL_BASELINE_META_COLS)).NumberFormat = "@"
-    ws.Range(ws.Cells(1, 1), ws.Cells(1, HORIZONTAL_BASELINE_META_COLS)).Value2 = skeleton
-    HorizontalBaselineReplaceData ws, data
+    temporaryName = HorizontalBaselineUniqueTemporaryName()
+    Set tempSheet = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    tempSheet.Name = temporaryName
+    With tempSheet.Range(tempSheet.Cells(1, 1), tempSheet.Cells(UBound(data, 1), UBound(data, 2)))
+        .NumberFormat = "@"
+        .Value2 = data
+        actual = .Value2
+    End With
+    If Not HorizontalBaselineDataMatches(data, actual, True) Then _
+        Err.Raise vbObjectError + 2916, , "新しい横型基準の初期書込を照合できません。"
+    Set values = CreateObject("Scripting.Dictionary"): values.CompareMode = vbTextCompare
+    Set rows = CreateObject("Scripting.Dictionary"): rows.CompareMode = vbTextCompare
+    HorizontalBaselineMapsFromData actual, values, rows
     wsDst.Activate
-    ws.Visible = xlSheetVeryHidden
+    If candidateCopy Then
+        archivedVisibility = ws.Visible
+        archiveName = HorizontalBaselineUniqueArchiveName()
+        ws.Name = archiveName: candidateRenamed = True
+        ws.Visible = xlSheetVeryHidden
+        Set archivedCopy = ws
+    End If
+    tempSheet.Name = HORIZONTAL_BASELINE_SHEET: canonicalRenamed = True
+    HorizontalBaselineProtect tempSheet
+    tempSheet.UsedRange.NumberFormat = "@"
+    wsDst.Activate: tempSheet.Visible = xlSheetVeryHidden
     Application.EnableEvents = oldEvents
-    Set HorizontalBaselineEnsureSheet = ws
+    created = True
+    Set HorizontalBaselineEnsureSheet = tempSheet
     Exit Function
+
 Failed:
     failure = Err.Number: detail = Err.Description
     On Error Resume Next
     Err.Clear
-    If created Then BidirectionalSyncDeleteNewBaselineSheet ws
-    cleanupFailure = Err.Number
-    If cleanupFailure = 0 Then created = False
+    If Not tempSheet Is Nothing Then
+        If canonicalRenamed And tempSheet.Name = HORIZONTAL_BASELINE_SHEET Then tempSheet.Name = temporaryName
+        If tempSheet.Name = temporaryName Then HorizontalBaselineDeleteTemporarySheet tempSheet, temporaryName
+    End If
+    If Err.Number <> 0 Then cleanupFailure = Err.Number
+    Err.Clear
+    If candidateRenamed Then
+        ws.Name = HORIZONTAL_BASELINE_SHEET
+        ws.Visible = archivedVisibility
+    End If
+    If Err.Number <> 0 Then cleanupFailure = Err.Number
     Err.Clear
     Application.EnableEvents = oldEvents
     If Err.Number <> 0 Then cleanupFailure = Err.Number
@@ -18021,9 +18228,10 @@ Failed:
     If cleanupFailure <> 0 Then
         mSyncRecoveryRequired = True
         Err.Raise vbObjectError + 2917, "HorizontalBaselineEnsureSheet", _
-            "横型移行失敗（" & CStr(failure) & "）: " & detail & " 新規シート破棄または状態復元も失敗（" & CStr(cleanupFailure) & "）。保存せず復旧コピーから再開してください。"
+            "横型移行失敗（" & CStr(failure) & "）: " & detail & " 一時シート/コピー名またはイベント状態を戻せませんでした（" & CStr(cleanupFailure) & "）。保存せず復旧コピーから再開してください。"
     End If
-    Err.Raise vbObjectError + 2916, "HorizontalBaselineEnsureSheet", "旧基準を保持したまま横型移行を取り消しました（" & CStr(failure) & "）: " & detail
+    Err.Raise vbObjectError + 2916, "HorizontalBaselineEnsureSheet", _
+        "既存の縦型基準を保持したまま横型移行を取り消しました（" & CStr(failure) & "）: " & detail
 End Function
 
 ' 行番号は永続キーにせず、管理行ID・正規化見出しで同じ既存3方向比較マップへ変換する。
@@ -21770,9 +21978,9 @@ End Sub
 
 Private Function SyncRecoveryCaptureInternalSheets() As Collection
     Dim result As New Collection, name As Variant, ws As Worksheet, item As Object
-    Dim hasFormula As Variant, numberFormat As Variant
-    ' 旧縦型表は移行後も凍結保持し、更新・消去・不要な全行退避をしない。
-    For Each name In Array(HORIZONTAL_BASELINE_SHEET, BIDIRECTIONAL_SYNC_CONFLICT_SHEET)
+    Dim hasFormula As Variant
+    ' 基準表は移行/確定処理自身の検証済みundoで復元する。ここでは判断履歴だけを退避。
+    For Each name In Array(BIDIRECTIONAL_SYNC_CONFLICT_SHEET)
         Set ws = Nothing
         On Error Resume Next
         Set ws = ThisWorkbook.Worksheets(CStr(name))
@@ -21781,12 +21989,7 @@ Private Function SyncRecoveryCaptureInternalSheets() As Collection
         item.Add "name", CStr(name)
         item.Add "existed", Not ws Is Nothing
         If Not ws Is Nothing Then
-            If CStr(name) = HORIZONTAL_BASELINE_SHEET Then
-                numberFormat = ws.UsedRange.NumberFormat
-                If IsNull(numberFormat) Then Err.Raise vbObjectError + 2895, , "横型基準の書式が混在しています。"
-                If CStr(numberFormat) <> "@" Then Err.Raise vbObjectError + 2895, , "横型基準が文字列形式ではありません。"
-                item.Add "numberFormat", CStr(numberFormat)
-            ElseIf ws.ProtectContents Then
+            If ws.ProtectContents Then
                 Err.Raise vbObjectError + 2895, , "同期内部シートが保護されています。"
             End If
             hasFormula = ws.UsedRange.HasFormula
@@ -21814,10 +22017,6 @@ Private Sub SyncRecoveryRestoreInternalSheets(ByVal saved As Collection)
         If CBool(item("existed")) Then
             If ws Is Nothing Then Err.Raise vbObjectError + 2896, , "同期内部シートが消失しています。"
             expected = item("values")
-            If CStr(item("name")) = HORIZONTAL_BASELINE_SHEET Then
-                HorizontalBaselineProtect ws
-                ws.Range(CStr(item("address"))).NumberFormat = CStr(item("numberFormat"))
-            End If
             ws.UsedRange.ClearContents
             ws.Range(CStr(item("address"))).Value2 = expected
             actual = ws.Range(CStr(item("address"))).Value2
