@@ -30,6 +30,8 @@ Private Const BIDIRECTIONAL_SYNC_BASELINE_VERSION As String = "1"
 Private Const HORIZONTAL_BASELINE_SHEET As String = "前回同期基準表"
 Private Const HORIZONTAL_BASELINE_VERSION As String = "HB1"
 Private Const HORIZONTAL_BASELINE_META_COLS As Long = 4
+' 前回同期基準表のコピー元は3行目が見出し、4行目以降がデータ。
+Private Const HORIZONTAL_BASELINE_COPY_HEADER_ROW As Long = 3
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_SHEET As String = "双方向同期競合"
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_VERSION As String = "1"
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_LAST_COL As Long = 10
@@ -18020,16 +18022,21 @@ End Function
 Private Function HorizontalBaselineMatchesDestinationHeaders(ByVal candidate As Worksheet, _
     ByVal destination As Worksheet) As Boolean
     Dim candidateLastCol As Long, destinationLastCol As Long, c As Long, d As Long
-    Dim matchCount As Long, mappedCol As Long, actual As Variant, destinationHeaders As Variant
+    Dim headerRow As Long, matchCount As Long, mappedCol As Long
+    Dim actual As Variant, destinationHeaders As Variant
     Dim header As String, mapped As Object
     If candidate Is Nothing Or destination Is Nothing Then Exit Function
     If Not (candidate.Parent Is ThisWorkbook) Or Not (destination.Parent Is ThisWorkbook) Then Exit Function
-    candidateLastCol = GetLastHeaderCol(candidate)
-    destinationLastCol = GetLastHeaderCol(destination)
-    If candidateLastCol < 2 Or candidateLastCol > destinationLastCol Then Exit Function
-    If FindHeaderColumn(candidate, candidateLastCol, Array("Excel管理行ID")) = 0 Then Exit Function
-    actual = candidate.Range(candidate.Cells(1, 1), candidate.Cells(1, candidateLastCol)).Value2
-    destinationHeaders = destination.Range(destination.Cells(1, 1), destination.Cells(1, destinationLastCol)).Value2
+    headerRow = HORIZONTAL_BASELINE_COPY_HEADER_ROW
+    candidateLastCol = GetLastHeaderCol(candidate, headerRow)
+    destinationLastCol = GetLastHeaderCol(destination, headerRow)
+    If candidateLastCol < 2 Or candidateLastCol <> destinationLastCol Then Exit Function
+    If FindHeaderColumnByCandidatesAtRow(candidate, headerRow, candidateLastCol, _
+        Array("Excel管理行ID")) = 0 Then Exit Function
+    actual = candidate.Range(candidate.Cells(headerRow, 1), _
+        candidate.Cells(headerRow, candidateLastCol)).Value2
+    destinationHeaders = destination.Range(destination.Cells(headerRow, 1), _
+        destination.Cells(headerRow, destinationLastCol)).Value2
     Set mapped = CreateObject("Scripting.Dictionary"): mapped.CompareMode = vbTextCompare
     For c = 1 To candidateLastCol
         header = Trim$(CStr(actual(1, c)))
@@ -18045,7 +18052,7 @@ Private Function HorizontalBaselineMatchesDestinationHeaders(ByVal candidate As 
         If mapped.Exists(CStr(mappedCol)) Then Exit Function
         mapped.Add CStr(mappedCol), header
     Next c
-    HorizontalBaselineMatchesDestinationHeaders = True
+    HorizontalBaselineMatchesDestinationHeaders = (mapped.Count = destinationLastCol)
 End Function
 
 Private Function HorizontalBaselineUniqueTemporaryName() As String

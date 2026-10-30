@@ -114,15 +114,25 @@ def load(data):
 
 
 def _matches_production_copy(candidate_headers, destination_headers):
-    """Recognize a named copy by a unique set of destination headers incl. managed ID."""
+    # Recognize a named copy by the exact, unique schema, including managed ID.
     candidate = [canonical(h).casefold() for h in candidate_headers]
     destination = [canonical(h).casefold() for h in destination_headers]
-    if len(candidate) < 2 or 'excel管理行id' not in candidate:
+    if len(candidate) < 2 or len(candidate) != len(destination):
         return False
-    if any(not h for h in candidate) or len(set(candidate)) != len(candidate):
+    if "excel管理行id" not in candidate or "excel管理行id" not in destination:
         return False
-    return all(destination.count(h) == 1 for h in candidate)
+    if any(not h for h in candidate + destination):
+        return False
+    if len(set(candidate)) != len(candidate) or len(set(destination)) != len(destination):
+        return False
+    return set(candidate) == set(destination)
 
+
+def _matches_production_copy_sheet(candidate_rows, destination_rows, header_row=3):
+    # Only the specified header row is semantic; titles and data are not.
+    if header_row < 1 or len(candidate_rows) < header_row or len(destination_rows) < header_row:
+        return False
+    return _matches_production_copy(candidate_rows[header_row-1], destination_rows[header_row-1])
 
 def ensure_model(existing_headers, destination_headers, legacy_records, destination_has_rows,
                  existing_data=None, mixed_number_format=False):

@@ -3,8 +3,8 @@ import copy
 from pathlib import Path
 import random
 import unittest
-from horizontal_baseline_model import (META, decide, ensure_model, key, legacy_maps,
-                                       load, migrate_copy_transactionally, pack, pivot, unpack)
+from horizontal_baseline_model import (META, _matches_production_copy_sheet, decide, ensure_model, key,
+                                       legacy_maps, load, migrate_copy_transactionally, pack, pivot, unpack)
 
 MODULE = (Path(__file__).resolve().parents[1] / 'vba/Module1.txt').read_text(encoding='utf-8-sig')
 
@@ -117,6 +117,51 @@ class HorizontalBaselineMigrationTests(unittest.TestCase):
         self.assertEqual('migrated_copy', mode)
         self.assertTrue(archived)
         self.assertEqual(legacy_maps(self.records), load(data))
+
+    def test_row3_copy_is_recognized_after_destination_data_changes(self):
+        import copy
+        candidate = [['新ファイル基準表'], ['対象年度: 令和8年度'], self.headers.copy(),
+                     ['1', '旧タイトル', '3年', '', 'row-1', '同期済'],
+                     ['2', '別タイトル', '5年', '', 'row-2', '同期済']]
+        destination = copy.deepcopy(candidate)
+        self.assertTrue(_matches_production_copy_sheet(candidate, destination))
+        destination[3][1] = '職員が変更したタイトル'
+        destination.insert(4, ['3', '新しい行', '7年', '', 'row-3', '登録予定'])
+        destination[3], destination[4] = destination[4], destination[3]
+        self.assertNotEqual(candidate[3:], destination[3:])
+        self.assertTrue(_matches_production_copy_sheet(candidate, destination))
+        mode, data, archived = ensure_model(candidate[2], destination[2], self.records, True,
+                                             mixed_number_format=True)
+        self.assertEqual('migrated_copy', mode)
+        self.assertTrue(archived)
+        self.assertEqual(legacy_maps(self.records), load(data))
+
+    def test_copy_match_uses_row3_and_rejects_partial_or_ambiguous_schema(self):
+        from horizontal_baseline_model import _matches_production_copy
+        candidate = [['新ファイル基準表'], ['補足'], self.headers.copy()]
+        destination = [['新ファイル基準表'], ['補足'], self.headers.copy()]
+        self.assertTrue(_matches_production_copy_sheet(candidate, destination))
+        self.assertFalse(_matches_production_copy_sheet(
+            [['新ファイル基準表'], ['補足'], ['Excel管理行ID', '見出し']], destination))
+        self.assertFalse(_matches_production_copy(self.headers[:-1], self.headers))
+        duplicated = self.headers.copy()
+        duplicated[-1] = duplicated[1]
+        self.assertFalse(_matches_production_copy(duplicated, self.headers))
+
+    def test_vba_copy_matcher_uses_row3_and_requires_complete_unique_schema(self):
+        matcher = proc('HorizontalBaselineMatchesDestinationHeaders')
+        self.assertIn('HORIZONTAL_BASELINE_COPY_HEADER_ROW', matcher)
+        self.assertIn('GetLastHeaderCol(candidate, headerRow)', matcher)
+        self.assertIn('GetLastHeaderCol(destination, headerRow)', matcher)
+        self.assertIn('FindHeaderColumnByCandidatesAtRow(candidate, headerRow', matcher)
+        self.assertIn('candidate.Cells(headerRow, 1)', matcher)
+        self.assertIn('destination.Cells(headerRow, 1)', matcher)
+        self.assertIn('candidateLastCol <> destinationLastCol', matcher)
+        self.assertIn('mapped.Exists(CStr(mappedCol))', matcher)
+        self.assertIn('mapped.Count = destinationLastCol', matcher)
+        self.assertNotIn('candidate.Cells(1,', matcher)
+        self.assertNotIn('destination.Cells(1,', matcher)
+        self.assertNotIn('GetLastUsedRow(candidate)', matcher)
 
     def test_canonical_horizontal_table_is_validated_and_reused(self):
         canonical = pivot(self.records)
