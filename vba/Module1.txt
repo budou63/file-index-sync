@@ -27,6 +27,9 @@ Private Const SEAL_PER_PAGE As Long = 12
 ' 双方向編集・第2段階: 前回確認済み値の内部管理と、手順2中の安全更新コンテキスト。
 Private Const BIDIRECTIONAL_SYNC_BASELINE_SHEET As String = "双方向同期基準値"
 Private Const BIDIRECTIONAL_SYNC_BASELINE_VERSION As String = "1"
+Private Const HORIZONTAL_BASELINE_SHEET As String = "前回同期基準表"
+Private Const HORIZONTAL_BASELINE_VERSION As String = "HB1"
+Private Const HORIZONTAL_BASELINE_META_COLS As Long = 4
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_SHEET As String = "双方向同期競合"
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_VERSION As String = "1"
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_LAST_COL As Long = 10
@@ -17757,6 +17760,10 @@ Private Sub BidirectionalSyncLoadBaselineMaps( _
 
     If ws Is Nothing Then Err.Raise vbObjectError + 2788, , "双方向同期基準値シートが見つかりません。"
     If baselineValues Is Nothing Or baselineRows Is Nothing Then Err.Raise vbObjectError + 2789, , "同期基準値の内部マップを作成できません。"
+    If ws.Name = HORIZONTAL_BASELINE_SHEET Then
+        HorizontalBaselineLoadMaps ws, baselineValues, baselineRows
+        Exit Sub
+    End If
     baselineValues.RemoveAll
     baselineRows.RemoveAll
     lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
@@ -17782,6 +17789,152 @@ ContinueNextBaselineRow:
     Next rowNo
 
 End Sub
+
+' 横型の基準値は「値」「確定済みフラグ」「項目別確定日時」を分ける。
+' 空文字の確定値と、過去に一度も確定していない項目を混同しない。
+Private Function HorizontalBaselineMetadataHeaders() As Variant
+    HorizontalBaselineMetadataHeaders = Array("Excel管理行ID", "__同期基準形式", "__確定済項目", "__項目確定日時")
+End Function
+
+Private Sub HorizontalBaselineMapsFromData(ByVal data As Variant, _
+    ByVal baselineValues As Object, ByVal baselineRows As Object)
+    Dim metadata As Variant, headers As Object, identities As Object
+    Dim r As Long, c As Long, fieldCount As Long, position As Long
+    Dim rowId As String, header As String, mask As String, packed As String, stamp As String, key As String
+    If Not IsArray(data) Then Err.Raise vbObjectError + 2910, , "横型同期基準の配列がありません。"
+    If UBound(data, 2) < HORIZONTAL_BASELINE_META_COLS Then _
+        Err.Raise vbObjectError + 2910, , "横型同期基準の管理列が不足しています。"
+    metadata = HorizontalBaselineMetadataHeaders()
+    Set headers = CreateObject("Scripting.Dictionary"): headers.CompareMode = vbTextCompare
+    Set identities = CreateObject("Scripting.Dictionary"): identities.CompareMode = vbTextCompare
+    baselineValues.RemoveAll: baselineRows.RemoveAll
+    For r = 1 To UBound(data, 1)
+        For c = 1 To UBound(data, 2)
+            If IsError(data(r, c)) Or IsNull(data(r, c)) Then _
+                Err.Raise vbObjectError + 2910, , "横型同期基準にエラーまたはNullがあります。"
+        Next c
+    Next r
+    For c = 1 To HORIZONTAL_BASELINE_META_COLS
+        If CStr(data(1, c)) <> CStr(metadata(c - 1)) Then _
+            Err.Raise vbObjectError + 2910, , "横型同期基準の管理見出しが一致しません。通常のシートコピーは基準にできません。"
+    Next c
+    fieldCount = UBound(data, 2) - HORIZONTAL_BASELINE_META_COLS
+    For c = HORIZONTAL_BASELINE_META_COLS + 1 To UBound(data, 2)
+        header = CanonicalHeaderName(CStr(data(1, c)))
+        If Len(header) = 0 Then Err.Raise vbObjectError + 2910, , "横型同期基準に空の見出しがあります。"
+        If headers.Exists(header) Then Err.Raise vbObjectError + 2910, , "横型同期基準の項目見出しが重複しています。"
+        headers.Add header, c
+    Next c
+    For r = 2 To UBound(data, 1)
+        rowId = Trim$(CStr(data(r, 1)))
+        If Len(rowId) = 0 Then Err.Raise vbObjectError + 2910, , "横型同期基準に管理行IDのない行があります。"
+        If identities.Exists(rowId) Then Err.Raise vbObjectError + 2910, , "横型同期基準の管理行IDが重複しています。"
+        identities.Add rowId, r
+        If CStr(data(r, 2)) <> HORIZONTAL_BASELINE_VERSION Then _
+            Err.Raise vbObjectError + 2910, , "横型同期基準の形式を確認できません。"
+        mask = CStr(data(r, 3)): packed = CStr(data(r, 4)): position = 1
+        If Len(mask) <> fieldCount Then Err.Raise vbObjectError + 2910, , "横型同期基準の確定済項目数が一致しません。"
+        For c = HORIZONTAL_BASELINE_META_COLS + 1 To UBound(data, 2)
+            stamp = BidirectionalSyncUnpackConflictValue(packed, position)
+            Select Case Mid$(mask, c - HORIZONTAL_BASELINE_META_COLS, 1)
+                Case "1"
+                    key = BidirectionalSyncBaselineKey(rowId, CStr(data(1, c)))
+                    baselineValues.Add key, CStr(data(r, c))
+                    baselineRows.Add key, Array(CLng(r), CLng(c))
+                Case "0"
+                    If Len(CStr(data(r, c))) > 0 Or Len(stamp) > 0 Then _
+                        Err.Raise vbObjectError + 2910, , "未確定の横型基準に値または確定日時があります。推測して採用しません。"
+                Case Else
+                    Err.Raise vbObjectError + 2910, , "横型同期基準の確定フラグが不正です。"
+            End Select
+        Next c
+        If position <> Len(packed) + 1 Then Err.Raise vbObjectError + 2910, , "横型同期基準の確定日時が項目数と一致しません。"
+    Next r
+End Sub
+
+Private Function HorizontalBaselineReadData(ByVal ws As Worksheet) As Variant
+    Dim hasFormula As Variant, data As Variant, lastRow As Long, lastCol As Long
+    If ws Is Nothing Then Err.Raise vbObjectError + 2910, , "前回同期基準表が見つかりません。"
+    If Not (ws.Parent Is ThisWorkbook) Then Err.Raise vbObjectError + 2910, , "横型同期基準のブックが一致しません。"
+    If ws.Name <> HORIZONTAL_BASELINE_SHEET Then Err.Raise vbObjectError + 2910, , "横型同期基準のシート名が一致しません。"
+    hasFormula = ws.UsedRange.HasFormula
+    If IsNull(hasFormula) Then Err.Raise vbObjectError + 2910, , "横型同期基準には数式を保存できません。"
+    If CBool(hasFormula) Then Err.Raise vbObjectError + 2910, , "横型同期基準には数式を保存できません。"
+    lastRow = GetLastUsedRow(ws): lastCol = GetLastHeaderCol(ws)
+    If lastRow < 1 Or lastCol < HORIZONTAL_BASELINE_META_COLS Then _
+        Err.Raise vbObjectError + 2910, , "横型同期基準の構造を確認できません。"
+    data = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Value2
+    HorizontalBaselineReadData = data
+End Function
+
+Private Sub HorizontalBaselineLoadMaps(ByVal ws As Worksheet, _
+    ByVal baselineValues As Object, ByVal baselineRows As Object)
+    Dim data As Variant
+    data = HorizontalBaselineReadData(ws)
+    HorizontalBaselineMapsFromData data, baselineValues, baselineRows
+End Sub
+
+' 行番号は永続キーにせず、管理行ID・正規化見出しで同じ既存3方向比較マップへ変換する。
+' 旧シートの確定済みレコードだけを横へ並べ替え、現在のExcel値を初期基準に流用しない。
+Private Function HorizontalBaselineDataFromLegacy(ByVal legacy As Worksheet) As Variant
+    Dim values As Object, locations As Object, rowMap As Object, columnMap As Object
+    Dim raw As Variant, data As Variant, stamps() As String, known() As String, metadata As Variant
+    Dim r As Long, c As Long, outRow As Long, outCol As Long, lastRow As Long
+    Dim rowId As String, header As String, key As Variant, mask As String, packed As String
+    Dim hasFormula As Variant
+    Set values = CreateObject("Scripting.Dictionary"): values.CompareMode = vbTextCompare
+    Set locations = CreateObject("Scripting.Dictionary"): locations.CompareMode = vbTextCompare
+    Set rowMap = CreateObject("Scripting.Dictionary"): rowMap.CompareMode = vbTextCompare
+    Set columnMap = CreateObject("Scripting.Dictionary"): columnMap.CompareMode = vbTextCompare
+    BidirectionalSyncLoadBaselineMaps legacy, values, locations
+    hasFormula = legacy.UsedRange.HasFormula
+    If IsNull(hasFormula) Then Err.Raise vbObjectError + 2911, , "旧基準値に数式があるため横型へ移行しません。"
+    If CBool(hasFormula) Then Err.Raise vbObjectError + 2911, , "旧基準値に数式があるため横型へ移行しません。"
+    lastRow = legacy.Cells(legacy.Rows.Count, 1).End(xlUp).Row
+    If lastRow < 1 Then lastRow = 1
+    raw = legacy.Range(legacy.Cells(1, 1), legacy.Cells(lastRow, 5)).Value2
+    For r = 2 To UBound(raw, 1)
+        rowId = Trim$(CStr(raw(r, 1))): header = CanonicalHeaderName(CStr(raw(r, 2)))
+        If Len(rowId) = 0 And Len(header) = 0 Then GoTo NextLegacyIdentity
+        If Not rowMap.Exists(rowId) Then rowMap.Add rowId, rowMap.Count + 2
+        If Not columnMap.Exists(header) Then columnMap.Add header, columnMap.Count + HORIZONTAL_BASELINE_META_COLS + 1
+NextLegacyIdentity:
+    Next r
+    ReDim data(1 To rowMap.Count + 1, 1 To columnMap.Count + HORIZONTAL_BASELINE_META_COLS)
+    ReDim stamps(1 To rowMap.Count + 1, 1 To columnMap.Count + HORIZONTAL_BASELINE_META_COLS)
+    ReDim known(1 To rowMap.Count + 1, 1 To columnMap.Count + HORIZONTAL_BASELINE_META_COLS)
+    metadata = HorizontalBaselineMetadataHeaders()
+    For c = 1 To HORIZONTAL_BASELINE_META_COLS: data(1, c) = CStr(metadata(c - 1)): Next c
+    For Each key In columnMap.Keys: data(1, CLng(columnMap(key))) = CStr(key): Next key
+    For Each key In rowMap.Keys
+        data(CLng(rowMap(key)), 1) = CStr(key)
+        data(CLng(rowMap(key)), 2) = HORIZONTAL_BASELINE_VERSION
+    Next key
+    For r = 2 To UBound(raw, 1)
+        rowId = Trim$(CStr(raw(r, 1))): header = CanonicalHeaderName(CStr(raw(r, 2)))
+        If Len(rowId) = 0 And Len(header) = 0 Then GoTo NextLegacyValue
+        outRow = CLng(rowMap(rowId)): outCol = CLng(columnMap(header))
+        data(outRow, outCol) = CStr(raw(r, 3))
+        stamps(outRow, outCol) = CStr(raw(r, 4)): known(outRow, outCol) = "1"
+NextLegacyValue:
+    Next r
+    For r = 2 To UBound(data, 1)
+        mask = "": packed = ""
+        For c = HORIZONTAL_BASELINE_META_COLS + 1 To UBound(data, 2)
+            If known(r, c) = "1" Then mask = mask & "1" Else mask = mask & "0"
+            packed = packed & BidirectionalSyncPackConflictValue(stamps(r, c))
+        Next c
+        data(r, 3) = mask: data(r, 4) = packed
+    Next r
+    HorizontalBaselineMapsFromData data, locations, columnMap
+    If values.Count <> locations.Count Then Err.Raise vbObjectError + 2911, , "旧新の基準値件数が一致しません。"
+    For Each key In values.Keys
+        If Not locations.Exists(CStr(key)) Then Err.Raise vbObjectError + 2911, , "横型化で基準値が欠落しました。"
+        If StrComp(CStr(values(key)), CStr(locations(key)), vbBinaryCompare) <> 0 Then _
+            Err.Raise vbObjectError + 2911, , "横型化で基準値が変わりました。"
+    Next key
+    HorizontalBaselineDataFromLegacy = data
+End Function
 
 Private Function BidirectionalSyncBaselineKey(ByVal rowId As String, ByVal canonicalHeader As String) As String
     BidirectionalSyncBaselineKey = UCase$(Trim$(rowId)) & "|" & CanonicalHeaderName(canonicalHeader)
