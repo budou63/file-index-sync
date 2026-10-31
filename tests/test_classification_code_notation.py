@@ -193,7 +193,9 @@ class ClassificationCodeNotationTests(unittest.TestCase):
         self.assertIn("SavedConflictKeys", conflict_guard)
         review_start = SOURCE.index("Public Function BidirectionalSyncConflictReviewCases(")
         review_cases = SOURCE[review_start:SOURCE.index("End Function", review_start)]
-        self.assertIn("BidirectionalSyncConflictReviewCases", conflict_loader)
+        self.assertIn("BidirectionalSyncConflictSheet(False, created)", conflict_loader)
+        self.assertIn("BidirectionalSyncUnpackConflictHeaders", conflict_loader)
+        self.assertIn("If Not conflictKeys.Exists(caseKey) Then", conflict_loader)
         self.assertIn("BidirectionalSyncConflictSheet(False, created)", review_cases)
         self.assertIn("BidirectionalSyncConflictDecisionIsValid", review_cases)
         self.assertLess(discard.index("BidirectionalSyncRollbackGuideCodeSnapshots"), discard.index("BidirectionalSyncDeleteNewBaselineSheet"))

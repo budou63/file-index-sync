@@ -148,10 +148,18 @@ class ConflictDecisionHistoryTests(unittest.TestCase):
         self.assertIn('wsConflict.Cells(stateRow, 1).Value2) <> CLng(item("year"))', live)
         self.assertIn('wsConflict.Cells(stateRow, 4).Value2) <> CStr(item("groupName"))', live)
 
-    def test_saved_conflict_guard_uses_only_live_cases_not_archived_rows(self) -> None:
+    def test_saved_conflict_guard_reads_latest_raw_state_even_when_values_changed(self) -> None:
         load = procedure(MODULE, "BidirectionalSyncLoadSavedConflictKeys", "Function")
-        self.assertIn("BidirectionalSyncConflictReviewCases", load)
-        self.assertNotIn("For i = 1 To UBound(values, 1)", load)
+        self.assertIn("BidirectionalSyncConflictSheet(False, created)", load)
+        self.assertIn("BidirectionalSyncUnpackConflictHeaders", load)
+        self.assertIn("If Not conflictKeys.Exists(caseKey) Then", load)
+        self.assertIn("If seenHistory.Exists(historyKey) Then GoTo FailClosed", load)
+        self.assertNotIn("BidirectionalSyncConflictReviewCases", load)
+        review = procedure(MODULE, "BidirectionalSyncConflictReviewCases", "Function")
+        self.assertIn("If seenCaseKeys.Exists(caseKey) Then GoTo ContinueHistoryRow", review)
+        refresh = procedure(MODULE, "BidirectionalSyncRefreshConflictState")
+        self.assertIn("latestHistoryByCase", refresh)
+        self.assertIn("CStr(latestHistoryByCase(caseKey)) = historyKey", refresh)
 
     def test_step4_ignores_stale_archives_but_still_blocks_live_unresolved_cases(self) -> None:
         step4 = procedure(MODULE, "BidirectionalSyncConflictBlocksStep4", "Function")

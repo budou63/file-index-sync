@@ -39,6 +39,7 @@ Private Const BIDIRECTIONAL_SYNC_CONFLICT_UNRESOLVED As String = "未解決"
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_EXCEL As String = "Excel採用"
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM As String = "システム採用"
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_HOLD As String = "保留"
+Private Const BIDIRECTIONAL_SYNC_CONFLICT_AUTO_RESOLVED As String = "自動解決"
 Private mBidirectionalSyncContext As Object
 Private mSyncRecoveryRequired As Boolean
 Private mSyncRecoveryCopyPath As String
@@ -17581,6 +17582,7 @@ Private Function BidirectionalSyncFinishContext(Optional ByRef reportSummary As 
 
     Dim lines As Collection
     Dim conflictCases As Collection
+    Dim caseItem As Object, conflictCount As Long
     Dim outputPath As String
     Dim originalErrorNumber As Long
     Dim originalErrorSource As String
@@ -17600,6 +17602,13 @@ Private Function BidirectionalSyncFinishContext(Optional ByRef reportSummary As 
     BidirectionalSyncRefreshConflictState CLng(mBidirectionalSyncContext("TargetYear")), conflictCases
     SyncStateApplyMatchedRows
     BidirectionalSyncCommitPendingBaselines
+    For Each caseItem In conflictCases
+        If caseItem.Exists("autoResolved") Then
+            If Not CBool(caseItem("autoResolved")) Then conflictCount = conflictCount + 1
+        Else
+            conflictCount = conflictCount + 1
+        End If
+    Next caseItem
     SyncBaselineAccumulate "WriteSeconds", CDbl(mBidirectionalSyncContext("WriteStartedAt"))
     mBidirectionalSyncContext("WriteSeconds") = CDbl(mBidirectionalSyncContext("WriteSeconds")) - _
         (CDbl(mBidirectionalSyncContext("FormPrepareSeconds")) - CDbl(mBidirectionalSyncContext("WriteFormAtStart")))
@@ -17609,7 +17618,7 @@ Private Function BidirectionalSyncFinishContext(Optional ByRef reportSummary As 
     reportSummary = "CSV反映: " & CStr(mBidirectionalSyncContext("CsvAppliedCount")) & " 項目" & vbCrLf & _
         "同期基準確定: " & CStr(mBidirectionalSyncContext("BaselineConfirmedCount")) & " 項目" & vbCrLf & _
         "同一性未確定: " & CStr(mBidirectionalSyncContext("IdentityHoldCount")) & " 件" & vbCrLf & _
-        "3方向競合: " & CStr(conflictCases.Count) & " 件（承認前は両方を保持）" & vbCrLf & _
+        "3方向競合: " & CStr(conflictCount) & " 件（承認前は両方を保持）" & vbCrLf & _
         "処理秒: 基準値読込=" & Format$(CDbl(mBidirectionalSyncContext("BaselineReadSeconds")), "0.000") & _
         " / 比較=" & Format$(CDbl(mBidirectionalSyncContext("CompareSeconds")), "0.000") & _
         " / フォーム準備=" & Format$(CDbl(mBidirectionalSyncContext("FormPrepareSeconds")), "0.000") & _
@@ -19031,14 +19040,17 @@ Private Function BidirectionalSyncPrepareClassificationCodeGroup( _
     End If
     If BidirectionalSyncHasSavedConflictForGroup( _
         CLng(mBidirectionalSyncContext("TargetYear")), rowId, groupName) Then
-        If Not BidirectionalSyncSavedConflictAllowsCodeNotation( _
-            wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, codeKey, nameKey, groupName) Then
-            If isGeneric10 Then
-                holdReason = "汎用項目１０に保存済みの競合判断があるため、自動修正しません。"
-            Else
-                holdReason = "同じ分類名・コードグループに保存済みの競合判断があるため、自動修正しません。"
+        If Not BidirectionalSyncSavedHistoryIsClosed( _
+            CLng(mBidirectionalSyncContext("TargetYear")), rowId, groupName) Then
+            If Not BidirectionalSyncSavedConflictAllowsCodeNotation( _
+                wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, codeKey, nameKey, groupName) Then
+                If isGeneric10 Then
+                    holdReason = "汎用項目１０に保存済みの競合判断があるため、自動修正しません。"
+                Else
+                    holdReason = "同じ分類名・コードグループに保存済みの競合判断があるため、自動修正しません。"
+                End If
+                Exit Function
             End If
-            Exit Function
         End If
     End If
     BidirectionalSyncRecordGuideCodeSnapshot excelCodeCell
@@ -19122,11 +19134,17 @@ Private Sub BidirectionalSyncApplyManagedGroup( _
     Dim initialMismatchReason As String
     Dim classificationCodeReady As Boolean
     Dim classificationCodeHoldReason As String
+    Dim savedHistoryPresent As Boolean
 
     If itemKeys Is Nothing Then Exit Sub
     If itemKeys.Count = 0 Then Exit Sub
     If Not BidirectionalSyncContextIsActive() Then Exit Sub
     Set baselineValues = mBidirectionalSyncContext("BaselineValues")
+    savedHistoryPresent = BidirectionalSyncProtectHeldConflict( _
+        CLng(mBidirectionalSyncContext("TargetYear")), rowId, groupName)
+    If savedHistoryPresent Then _
+        BidirectionalSyncValidateSavedIdentity wsSrc, wsDst, srcRow, dstRow, rowId, _
+            srcHeaderMap, srcToDstMap, itemKeys, groupName
     classificationCodeReady = BidirectionalSyncPrepareClassificationCodeGroup( _
         wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, itemKeys, groupName, classificationCodeHoldReason)
     allBaselineKnown = True
@@ -19147,6 +19165,12 @@ Private Sub BidirectionalSyncApplyManagedGroup( _
             mismatchedKeys.Add CStr(key)
         End If
     Next key
+
+    ' 保存済み判断は一致確定・CSV自動反映より先に確認する。
+    If savedHistoryPresent Then
+        If BidirectionalSyncProtectSavedDecision(wsSrc, wsDst, srcRow, dstRow, rowId, _
+            srcHeaderMap, srcToDstMap, itemKeys, groupName, excelEqualsCsv, classificationCodeReady) Then Exit Sub
+    End If
 
     ' E と C が一致した項目だけ、初回・再一致を問わず同期基準値を確定する。
     If excelEqualsCsv Then
@@ -19491,7 +19515,8 @@ Private Function BidirectionalSyncConflictDecisionIsValid(ByVal decision As Stri
         (decision = BIDIRECTIONAL_SYNC_CONFLICT_UNRESOLVED Or _
          decision = BIDIRECTIONAL_SYNC_CONFLICT_EXCEL Or _
          decision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Or _
-         decision = BIDIRECTIONAL_SYNC_CONFLICT_HOLD)
+         decision = BIDIRECTIONAL_SYNC_CONFLICT_HOLD Or _
+         decision = BIDIRECTIONAL_SYNC_CONFLICT_AUTO_RESOLVED)
 End Function
 
 
@@ -19525,6 +19550,133 @@ FailClosed:
     Err.Clear
     BidirectionalSyncHasSavedConflictForGroup = True
 
+End Function
+
+Private Function BidirectionalSyncProtectHeldConflict( _
+    ByVal targetYearValue As Long, ByVal rowId As String, ByVal groupName As String) As Boolean
+    BidirectionalSyncProtectHeldConflict = _
+        BidirectionalSyncHasSavedConflictForGroup(targetYearValue, rowId, groupName)
+End Function
+
+Private Sub BidirectionalSyncValidateSavedIdentity( _
+    ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
+    ByVal rowId As String, ByVal srcHeaderMap As Object, ByVal srcToDstMap As Object, _
+    ByVal itemKeys As Collection, ByVal groupName As String)
+    Dim yearValue As Long, caseKey As String, stableKey As String, savedKeys As Object, saved As Object
+    Dim keys As Object, seen As Object, fields As Collection, field As Object, key As Variant
+    Dim savedHeader As String, sourceKey As String, dstCol As Long
+    If Not CBool(mBidirectionalSyncContext("SavedConflictKeysValid")) Then _
+        Err.Raise vbObjectError + 2920, , "保存済みの判断履歴を確認できないため自動更新を中止しました。"
+    If StrComp(BidirectionalSyncCurrentMatchKind(), "正式ID一意一致", vbBinaryCompare) <> 0 Then _
+        Err.Raise vbObjectError + 2921, , "保存済み判断の正式なレコード識別を確認できません。"
+    yearValue = CLng(mBidirectionalSyncContext("TargetYear"))
+    caseKey = CStr(yearValue) & Chr$(30) & BidirectionalSyncConflictCaseKey(rowId, groupName)
+    Set savedKeys = mBidirectionalSyncContext("SavedConflictKeys")
+    If Not savedKeys.Exists(caseKey) Then Err.Raise vbObjectError + 2921, , "保存済み判断が見つかりません。"
+    Set saved = savedKeys(caseKey)
+    stableKey = BuildFileKeyFromSheetRow(wsSrc, srcRow, srcHeaderMap)
+    If Len(stableKey) = 0 Or StrComp(stableKey, CStr(saved("stableKey")), vbBinaryCompare) <> 0 Then _
+        Err.Raise vbObjectError + 2921, , "保存済み判断の正式識別情報が現在の対象と一致しません。"
+    If Not BidirectionalSyncDestinationRowIdIsUnique(wsDst, rowId, dstRow) Then _
+        Err.Raise vbObjectError + 2921, , "保存済み判断の管理行IDを一意に確認できません。"
+    If Not BidirectionalSyncBatchSourceKeyIsUnique(wsSrc, srcRow, stableKey) Then _
+        Err.Raise vbObjectError + 2921, , "保存済み判断の正式識別情報を一意に確認できません。"
+    Set keys = CreateObject("Scripting.Dictionary"): keys.CompareMode = vbTextCompare
+    Set seen = CreateObject("Scripting.Dictionary"): seen.CompareMode = vbTextCompare
+    For Each key In itemKeys
+        sourceKey = CanonicalHeaderName(CStr(key))
+        If keys.Exists(sourceKey) Then Err.Raise vbObjectError + 2921, , "比較項目が重複しています。"
+        keys.Add sourceKey, CStr(key)
+    Next key
+    Set fields = saved("headers")
+    For Each field In fields
+        savedHeader = CanonicalHeaderName(CStr(field("sourceHeader")))
+        If seen.Exists(savedHeader) Then Err.Raise vbObjectError + 2921, , "保存済み判断の項目が重複しています。"
+        seen.Add savedHeader, True
+        If Not keys.Exists(savedHeader) Then _
+            Err.Raise vbObjectError + 2921, , "保存済み判断の項目を現在の項目に対応付けできません。"
+        sourceKey = CStr(keys(savedHeader))
+        If Not srcHeaderMap.Exists(sourceKey) Or Not srcToDstMap.Exists(sourceKey) Then _
+            Err.Raise vbObjectError + 2921, , "保存済み判断の見出しを確認できません。"
+        dstCol = CLng(srcToDstMap(sourceKey))
+        If StrComp(CanonicalHeaderName(CStr(field("destinationHeader"))), _
+            CanonicalHeaderName(CStr(wsDst.Cells(1, dstCol).Value2)), vbTextCompare) <> 0 Then _
+            Err.Raise vbObjectError + 2921, , "保存済み判断のExcel項目が変わっています。"
+    Next field
+End Sub
+
+Private Function BidirectionalSyncSavedHistoryIsClosed( _
+    ByVal targetYearValue As Long, ByVal rowId As String, ByVal groupName As String) As Boolean
+    Dim caseKey As String, savedKeys As Object, saved As Object
+    On Error GoTo FailClosed
+    If Not BidirectionalSyncProtectHeldConflict(targetYearValue, rowId, groupName) Then Exit Function
+    If Not CBool(mBidirectionalSyncContext("SavedConflictKeysValid")) Then Exit Function
+    caseKey = CStr(targetYearValue) & Chr$(30) & BidirectionalSyncConflictCaseKey(rowId, groupName)
+    Set savedKeys = mBidirectionalSyncContext("SavedConflictKeys")
+    Set saved = savedKeys(caseKey)
+    BidirectionalSyncSavedHistoryIsClosed = (CStr(saved("decision")) = BIDIRECTIONAL_SYNC_CONFLICT_AUTO_RESOLVED)
+    Exit Function
+FailClosed:
+    Err.Clear
+End Function
+
+Private Function BidirectionalSyncProtectSavedDecision( _
+    ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
+    ByVal rowId As String, ByVal srcHeaderMap As Object, ByVal srcToDstMap As Object, _
+    ByVal itemKeys As Collection, ByVal groupName As String, ByVal excelEqualsCsv As Boolean, _
+    ByVal classificationCodeReady As Boolean) As Boolean
+    Dim yearValue As Long, caseKey As String, stableKey As String
+    Dim saved As Object, savedKeys As Object, keys As Object, key As Variant, field As Object, fields As Collection
+    Dim savedHeader As String, sourceKey As String, dstCol As Long, resolution As Object
+
+    yearValue = CLng(mBidirectionalSyncContext("TargetYear"))
+    If Not BidirectionalSyncProtectHeldConflict(yearValue, rowId, groupName) Then Exit Function
+    If Not CBool(mBidirectionalSyncContext("SavedConflictKeysValid")) Then _
+        Err.Raise vbObjectError + 2920, , "保存済みの判断履歴を確認できないため自動更新を中止しました。"
+    caseKey = CStr(yearValue) & Chr$(30) & BidirectionalSyncConflictCaseKey(rowId, groupName)
+    Set savedKeys = mBidirectionalSyncContext("SavedConflictKeys")
+    Set saved = savedKeys(caseKey)
+    stableKey = BuildFileKeyFromSheetRow(wsSrc, srcRow, srcHeaderMap)
+    If Len(stableKey) = 0 Then stableKey = BuildFolderNameSyncKeyFromSheetRow(wsSrc, srcRow, GetLastHeaderCol(wsSrc))
+    If Len(stableKey) = 0 Or StrComp(stableKey, CStr(saved("stableKey")), vbBinaryCompare) <> 0 Then _
+        Err.Raise vbObjectError + 2921, , "保存済み判断のCSV識別情報が現在の対象と一致しないため自動更新を中止しました。"
+    If Not BidirectionalSyncDestinationRowIdIsUnique(wsDst, rowId, dstRow) Then _
+        Err.Raise vbObjectError + 2921, , "保存済み判断の管理行IDを一意に確認できません。"
+    If Not BidirectionalSyncBatchSourceKeyIsUnique(wsSrc, srcRow, stableKey) Then _
+        Err.Raise vbObjectError + 2921, , "保存済み判断のCSV識別情報を一意に確認できません。"
+
+    Set keys = CreateObject("Scripting.Dictionary"): keys.CompareMode = vbTextCompare
+    For Each key In itemKeys
+        sourceKey = CanonicalHeaderName(CStr(key))
+        If keys.Exists(sourceKey) Then Err.Raise vbObjectError + 2921, , "比較項目が重複しています。"
+        keys.Add sourceKey, CStr(key)
+    Next key
+    Set fields = saved("headers")
+    For Each field In fields
+        savedHeader = CanonicalHeaderName(CStr(field("sourceHeader")))
+        If Not keys.Exists(savedHeader) Then _
+            Err.Raise vbObjectError + 2921, , "保存済み判断の項目を現在の項目に対応付けできません。"
+        sourceKey = CStr(keys(savedHeader))
+        If Not srcHeaderMap.Exists(sourceKey) Or Not srcToDstMap.Exists(sourceKey) Then _
+            Err.Raise vbObjectError + 2921, , "保存済み判断の見出しを確認できません。"
+        dstCol = CLng(srcToDstMap(sourceKey))
+        If StrComp(CanonicalHeaderName(CStr(field("destinationHeader"))), _
+            CanonicalHeaderName(CStr(wsDst.Cells(1, dstCol).Value2)), vbTextCompare) <> 0 Then _
+            Err.Raise vbObjectError + 2921, , "保存済み判断のExcel項目が変わっています。"
+    Next field
+
+    If CStr(saved("decision")) = BIDIRECTIONAL_SYNC_CONFLICT_AUTO_RESOLVED Then Exit Function
+    If excelEqualsCsv And classificationCodeReady Then
+        Set resolution = BidirectionalSyncCaptureConflictCase(wsSrc, wsDst, srcRow, dstRow, rowId, _
+            srcHeaderMap, srcToDstMap, itemKeys, groupName, "現在のExcel値とCSV値の一致を確認しました。")
+        If resolution Is Nothing Then Err.Raise vbObjectError + 2921, , "差異解消を記録できません。"
+        resolution.Add "autoResolved", True
+        Exit Function
+    End If
+    BidirectionalSyncAppendGroupDecision "競合保留", wsSrc, wsDst, srcRow, dstRow, rowId, _
+        srcHeaderMap, srcToDstMap, itemKeys, groupName, _
+        "保存済み判断があります。現在の値を確認し、必要に応じて再判断してください。"
+    BidirectionalSyncProtectSavedDecision = True
 End Function
 
 
@@ -19645,25 +19797,62 @@ End Function
 
 Private Function BidirectionalSyncLoadSavedConflictKeys( _
     ByVal targetYearValue As Long, ByVal conflictKeys As Object) As Boolean
-
-    Dim cases As Collection, item As Object, caseKey As String
+    Dim ws As Worksheet, created As Boolean, r As Long, values As Variant
+    Dim rowYear As Long, caseKey As String, historyKey As String
+    Dim item As Object, field As Object, fields As Collection, seenHistory As Object, hasFormula As Variant
 
     On Error GoTo FailClosed
     If conflictKeys Is Nothing Then Exit Function
-    Set cases = BidirectionalSyncConflictReviewCases(targetYearValue)
-    For Each item In cases
-        caseKey = CStr(targetYearValue) & Chr$(30) & _
-            BidirectionalSyncConflictCaseKey(CStr(item("rowId")), CStr(item("groupName")))
-        If conflictKeys.Exists(caseKey) Then GoTo FailClosed
-        conflictKeys.Add caseKey, True
-    Next item
+    Set ws = BidirectionalSyncConflictSheet(False, created)
+    If ws Is Nothing Then
+        BidirectionalSyncLoadSavedConflictKeys = True
+        Exit Function
+    End If
+    Set seenHistory = CreateObject("Scripting.Dictionary")
+    seenHistory.CompareMode = vbBinaryCompare
+    For r = 2 To BidirectionalSyncConflictLastRow(ws)
+        hasFormula = ws.Range(ws.Cells(r, 1), ws.Cells(r, BIDIRECTIONAL_SYNC_CONFLICT_LAST_COL)).HasFormula
+        If IsNull(hasFormula) Then GoTo FailClosed
+        If CBool(hasFormula) Then GoTo FailClosed
+        values = ws.Range(ws.Cells(r, 1), ws.Cells(r, BIDIRECTIONAL_SYNC_CONFLICT_LAST_COL)).Value2
+        If Not IsNumeric(values(1, 1)) Then GoTo FailClosed
+        rowYear = CLng(values(1, 1))
+        If rowYear = targetYearValue Then
+            If Len(Trim$(CStr(values(1, 2)))) = 0 Or Len(CStr(values(1, 3))) = 0 Or _
+               Len(CStr(values(1, 4))) = 0 Or Len(CStr(values(1, 5))) = 0 Then GoTo FailClosed
+            If CStr(values(1, 10)) <> BIDIRECTIONAL_SYNC_CONFLICT_VERSION Then GoTo FailClosed
+            If Not BidirectionalSyncConflictDecisionIsValid(CStr(values(1, 6))) Then GoTo FailClosed
+            Set fields = BidirectionalSyncUnpackConflictHeaders(CStr(values(1, 5)))
+            If fields Is Nothing Then GoTo FailClosed
+            If CStr(values(1, 6)) = BIDIRECTIONAL_SYNC_CONFLICT_AUTO_RESOLVED Then
+                For Each field In fields
+                    If StrComp(CStr(field("excelValue")), CStr(field("systemValue")), vbTextCompare) <> 0 Then GoTo FailClosed
+                Next field
+            End If
+            historyKey = BidirectionalSyncConflictHistoryKey(rowYear, CStr(values(1, 2)), _
+                CStr(values(1, 3)), CStr(values(1, 4)), CStr(values(1, 5)))
+            If seenHistory.Exists(historyKey) Then GoTo FailClosed
+            seenHistory.Add historyKey, True
+            caseKey = CStr(rowYear) & Chr$(30) & _
+                BidirectionalSyncConflictCaseKey(CStr(values(1, 2)), CStr(values(1, 4)))
+            If Not conflictKeys.Exists(caseKey) Then
+                Set item = CreateObject("Scripting.Dictionary")
+                item.Add "rowId", CStr(values(1, 2))
+                item.Add "stableKey", CStr(values(1, 3))
+                item.Add "groupName", CStr(values(1, 4))
+                item.Add "snapshot", CStr(values(1, 5))
+                item.Add "decision", CStr(values(1, 6))
+                item.Add "headers", fields
+                conflictKeys.Add caseKey, Empty
+                Set conflictKeys(caseKey) = item
+            End If
+        End If
+    Next r
     BidirectionalSyncLoadSavedConflictKeys = True
     Exit Function
-
 FailClosed:
     Err.Clear
     BidirectionalSyncLoadSavedConflictKeys = False
-
 End Function
 
 Private Function BidirectionalSyncConflictLastRow(ByVal ws As Worksheet) As Long
@@ -19714,7 +19903,7 @@ End Function
 
 Private Sub BidirectionalSyncRefreshConflictState(ByVal targetYearValue As Long, ByVal currentCases As Collection)
     Dim ws As Worksheet, created As Boolean, oldLastRow As Long, writeLastRow As Long
-    Dim previousByKey As Object, currentByKey As Object, currentHistoryKeys As Object
+    Dim previousByKey As Object, currentByKey As Object, currentHistoryKeys As Object, latestHistoryByCase As Object
     Dim preservedRows As Collection, outputRows As Collection
     Dim oldData As Variant, newData As Variant, rowValues As Variant, flatRow As Variant
     Dim hasFormulaValue As Variant
@@ -19734,6 +19923,8 @@ Private Sub BidirectionalSyncRefreshConflictState(ByVal targetYearValue As Long,
 
     Set previousByKey = CreateObject("Scripting.Dictionary")
     previousByKey.CompareMode = vbBinaryCompare
+    Set latestHistoryByCase = CreateObject("Scripting.Dictionary")
+    latestHistoryByCase.CompareMode = vbBinaryCompare
     Set currentByKey = CreateObject("Scripting.Dictionary")
     currentByKey.CompareMode = vbBinaryCompare
     Set currentHistoryKeys = CreateObject("Scripting.Dictionary")
@@ -19777,6 +19968,8 @@ Private Sub BidirectionalSyncRefreshConflictState(ByVal targetYearValue As Long,
                 historyKey = BidirectionalSyncConflictHistoryKey(rowYear, rowId, rowStableKey, rowGroup, rowSnapshot)
                 If previousByKey.Exists(historyKey) Then Err.Raise vbObjectError + 2835, , "同一判断履歴の保存行が重複しています。"
                 previousByKey.Add historyKey, CStr(rowValues(1, 6))
+                caseKey = BidirectionalSyncConflictCaseKey(rowId, rowGroup)
+                If Not latestHistoryByCase.Exists(caseKey) Then latestHistoryByCase.Add caseKey, historyKey
             Else
                 historyKey = ""
             End If
@@ -19795,7 +19988,21 @@ Private Sub BidirectionalSyncRefreshConflictState(ByVal targetYearValue As Long,
         groupName = CStr(item("groupName")): snapshot = CStr(item("snapshot"))
         historyKey = BidirectionalSyncConflictHistoryKey(targetYearValue, rowId, stableKey, groupName, snapshot)
         decision = BIDIRECTIONAL_SYNC_CONFLICT_UNRESOLVED
-        If previousByKey.Exists(historyKey) Then decision = CStr(previousByKey(historyKey))
+        caseKey = BidirectionalSyncConflictCaseKey(rowId, groupName)
+        If latestHistoryByCase.Exists(caseKey) Then
+            If CStr(latestHistoryByCase(caseKey)) = historyKey Then
+                If previousByKey.Exists(historyKey) Then decision = CStr(previousByKey(historyKey))
+            End If
+        End If
+        If item.Exists("autoResolved") Then
+            If CBool(item("autoResolved")) Then
+                If previousByKey.Exists(historyKey) Then
+                    If CStr(previousByKey(historyKey)) <> BIDIRECTIONAL_SYNC_CONFLICT_AUTO_RESOLVED Then _
+                        Err.Raise vbObjectError + 2922, , "差異解消記録が既存判断と重複しています。"
+                End If
+                decision = BIDIRECTIONAL_SYNC_CONFLICT_AUTO_RESOLVED
+            End If
+        End If
         item("decision") = decision
         outputRows.Add Array(CLng(targetYearValue), rowId, stableKey, groupName, snapshot, decision, _
             Format$(Now, "yyyy/mm/dd hh:nn:ss"), CLng(item("sourceRow")), CLng(item("destinationRow")), _
@@ -19860,7 +20067,7 @@ End Sub
 Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As Collection
     Dim result As Collection, ws As Worksheet, created As Boolean
     Dim r As Long, lastRow As Long, values As Variant, item As Object
-    Dim seenHistory As Object, activeCaseKeys As Object
+    Dim seenHistory As Object, activeCaseKeys As Object, seenCaseKeys As Object
     Dim historyKey As String, caseKey As String, decision As String, liveReason As String
     Dim hasFormulaValue As Variant, baselineCacheReady As Boolean
     Dim baselineValues As Object, baselineRows As Object, baselineSheet As Worksheet
@@ -19876,6 +20083,8 @@ Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As
     End If
     Set seenHistory = CreateObject("Scripting.Dictionary")
     seenHistory.CompareMode = vbBinaryCompare
+    Set seenCaseKeys = CreateObject("Scripting.Dictionary")
+    seenCaseKeys.CompareMode = vbBinaryCompare
     Set activeCaseKeys = CreateObject("Scripting.Dictionary")
     activeCaseKeys.CompareMode = vbBinaryCompare
     lastRow = BidirectionalSyncConflictLastRow(ws)
@@ -19897,8 +20106,12 @@ Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As
                 CLng(values(1, 1)), CStr(values(1, 2)), CStr(values(1, 3)), CStr(values(1, 4)), CStr(values(1, 5)))
             If seenHistory.Exists(historyKey) Then Err.Raise vbObjectError + 2853, , "同一判断履歴が重複しています。"
             seenHistory.Add historyKey, True
+            caseKey = BidirectionalSyncConflictCaseKey(CStr(values(1, 2)), CStr(values(1, 4)))
+            If seenCaseKeys.Exists(caseKey) Then GoTo ContinueHistoryRow
+            seenCaseKeys.Add caseKey, True
 
             If decision <> BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then
+                If decision = BIDIRECTIONAL_SYNC_CONFLICT_AUTO_RESOLVED Then GoTo ContinueHistoryRow
                 If Not baselineCacheReady Then
                     On Error GoTo BaselineCacheUnavailable
                     If BidirectionalSyncContextIsActive() Then
@@ -19942,6 +20155,7 @@ Public Function BidirectionalSyncConflictReviewCases(ByVal yearValue As Long) As
                 End If
             End If
         End If
+ContinueHistoryRow:
     Next r
 
     SyncBaselineAccumulate "FormPrepareSeconds", preparationStarted
