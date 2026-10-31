@@ -1,9 +1,11 @@
 """Independent scenario oracle; this does not execute or compile VBA."""
 import unittest
 
-def decide(base, excel, csv, saved=None, *, identity=True, classification_ready=True):
+def decide(base, excel, csv, saved=None, *, identity=True, classification_ready=True, accepted_value=None):
     if saved is not None and not identity:
         return ('stop_identity', excel, base)
+    if saved == 'システム採用' and accepted_value is not None and excel == base == accepted_value:
+        saved = '自動解決'
     if saved not in (None, '自動解決'):
         if excel == csv and classification_ready:
             return ('auto_resolved', excel, csv)
@@ -44,6 +46,15 @@ class SavedDecisionScenarios(unittest.TestCase):
 
     def test_closed_history_does_not_block_future_csv_changes(self):
         self.assertEqual(decide('3', '3', '8', '自動解決'), ('csv_apply', '8', '8'))
+
+    def test_confirmed_system_adoption_allows_future_changes_then_closed_history(self):
+        self.assertEqual(decide('3', '3', '4', 'システム採用', accepted_value='3'), ('csv_apply', '4', '4'))
+        self.assertEqual(decide('4', '4', '5', '自動解決'), ('csv_apply', '5', '5'))
+
+    def test_legacy_or_changed_system_adoption_never_skips_review(self):
+        self.assertEqual(decide('5', '5', '4', 'システム採用', accepted_value='3'), ('review', '5', '5'))
+        self.assertEqual(decide('3', '7', '4', 'システム採用', accepted_value='3'), ('review', '7', '3'))
+        self.assertEqual(decide('3', '3', '4', 'システム採用', accepted_value='3', identity=False), ('stop_identity', '3', '3'))
 
 if __name__ == '__main__':
     unittest.main()

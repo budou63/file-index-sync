@@ -24,5 +24,13 @@ class AutoUpdateFormulaSafety(unittest.TestCase):
             self.assertIn(token, body)
         self.assertNotIn('WriteStep2SourceValue', body)
 
+    def test_identity_updates_preflight_all_write_targets_before_any_identity_write(self):
+        body = proc('BidirectionalSyncApplyThreeWayToRow')
+        self.assertLess(body.index('BidirectionalSyncAutoUpdateTargetsAreSafe'), body.index('WriteStep2SourceValue'))
+        self.assertIn('identityWriteKeys.Add', body)
+        self.assertIn('identityWriteKeys.Count > 0', body)
+        self.assertIn('Err.Raise', body[body.index('BidirectionalSyncAutoUpdateTargetsAreSafe'):body.index('WriteStep2SourceValue')])
+        self.assertIn('preserveExactIdentity', body)
+
 if __name__ == '__main__':
     unittest.main()

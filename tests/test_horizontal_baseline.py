@@ -370,18 +370,20 @@ class HorizontalBaselineIntegrationContracts(unittest.TestCase):
         self.assertLess(start.index('HorizontalBaselineEnsureSheet'), start.index('SyncRecoveryCaptureInternalSheets'))
         self.assertNotIn('BidirectionalSyncEnsureBaselineSheet(wsDst', start)
         self.assertIn('Private Function BidirectionalSyncEnsureBaselineSheet(', MODULE)
+        self.assertIn('Private Function HorizontalBaselineDataFromLegacy(', MODULE)
         ensure = proc('HorizontalBaselineEnsureSheet')
-        self.assertIn('HorizontalBaselineDataFromLegacy(legacy)', ensure)
-        self.assertNotIn('wsDst.Cells', ensure)
+        self.assertNotIn('HorizontalBaselineDataFromLegacy(', ensure)
         self.assertNotIn('legacy.Delete', ensure)
-        self.assertIn('data = skeleton', ensure)
+        self.assertNotIn('wsDst.Copy', ensure)
+        self.assertIn('HorizontalBaselineCopyWithoutSheetEvents(wsDst)', ensure)
+        self.assertIn('If ws Is Nothing Then', ensure)
 
     def test_existing_wide_sheet_is_selected_before_legacy_without_fallback_on_bad_data(self):
         getter = proc('BidirectionalSyncExistingBaselineSheet')
-        self.assertLess(getter.index('Worksheets(HORIZONTAL_BASELINE_SHEET)'), getter.index('Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)'))
-        self.assertIn('If ws Is Nothing Then', getter)
-        self.assertNotIn('HorizontalBaselineMapsFromData', getter)
-        self.assertIn('GetLastUsedCol(ws) <> lastCol', proc('HorizontalBaselineReadData'))
+        self.assertIn('Worksheets(HORIZONTAL_BASELINE_SHEET)', getter)
+        self.assertNotIn('Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)', getter)
+        self.assertIn('CopyBaselineValidateData ws, False', proc('CopyBaselineLoadMaps'))
+        self.assertIn('HorizontalBaselineMatchesDestinationHeaders(ws, wsDst)', proc('CopyBaselineLoadMaps'))
         failed = proc('BidirectionalSyncConflictReviewCases').split('BaselineCacheUnavailable:', 1)[1]
         self.assertIn('Err.Raise vbObjectError + 2918', failed)
         self.assertNotIn('Set BidirectionalSyncConflictReviewCases = result', failed)
@@ -396,9 +398,17 @@ class HorizontalBaselineIntegrationContracts(unittest.TestCase):
 
     def test_persisted_lookup_revalidates_key_known_flag_and_no_formula(self):
         getter = proc('BidirectionalSyncPersistedBaselineValue')
-        for text in ['IsArray(location)', 'location(0)', 'location(1)',
-                     'StrComp(key, expectedKey, vbTextCompare)', 'Mid$(mask,', '.HasFormula', 'rows.Exists(key)']:
+        for text in ['IsArray(location)', 'location(0)', 'location(1)', 'location(4)',
+                     'StrComp(key, expectedKey, vbTextCompare)', 'CopyBaselineValidateCachedFlag location',
+                     '.HasFormula', 'rows.Exists(key)']:
             self.assertIn(text, getter)
+        flag = proc('CopyBaselineValidateCachedFlag')
+        for text in ['marker.RefersToRange', 'ws.Visible <> xlSheetVeryHidden', 'location(4)',
+                     'location(7)', 'HasFormula', 'Err.Raise']:
+            self.assertIn(text, flag)
+        loader = proc('CopyBaselineLoadMaps')
+        self.assertIn('CopyBaselineIsKnownField(flags, rowId, header)', loader)
+        self.assertIn('flagRow, flagToken', loader)
 
     def test_recovery_capture_ignores_mixed_format_baseline_candidates(self):
         capture = proc('SyncRecoveryCaptureInternalSheets')
@@ -413,38 +423,38 @@ class HorizontalBaselineIntegrationContracts(unittest.TestCase):
         capture = proc('SyncRecoveryCaptureInternalSheets')
         self.assertNotIn('Array(BIDIRECTIONAL_SYNC_BASELINE_SHEET,', capture)
         commit = proc('BidirectionalSyncCommitPendingBaselines')
-        branch = commit.split('If baselineSheet.Name = HORIZONTAL_BASELINE_SHEET Then',1)[1].split('End If',1)[0]
-        self.assertIn('HorizontalBaselineReplaceData', branch)
-        self.assertIn('pending.RemoveAll', branch)
-        self.assertIn('Exit Sub', branch)
+        self.assertIn('CopyBaselineCommitPending', commit)
+        self.assertNotIn('BIDIRECTIONAL_SYNC_BASELINE_SHEET', commit)
+        copy_commit = proc('CopyBaselineCommitPending')
+        self.assertIn('baselineSheet.Name <> HORIZONTAL_BASELINE_SHEET', copy_commit)
+        self.assertIn('CopyBaselineApplyEntries', copy_commit)
+        self.assertIn('pending.RemoveAll', copy_commit)
+        self.assertNotIn('BIDIRECTIONAL_SYNC_BASELINE_SHEET', copy_commit)
 
     def test_new_sheet_cleanup_is_owned_guarded_and_preserves_old_baseline(self):
-        create = proc('HorizontalBaselineEnsureSheet')
-        self.assertLess(create.index('HorizontalBaselineDataFromLegacy'), create.index('Worksheets.Add'))
-        for text in ['HorizontalBaselineRequireSufficientLegacy', 'HorizontalBaselineIsCanonicalSheet(ws)',
-                     'HorizontalBaselineMatchesDestinationHeaders(ws, wsDst)', 'HorizontalBaselineUniqueArchiveName()',
-                     'HorizontalBaselineDeleteTemporarySheet tempSheet, temporaryName',
-                     'ws.Visible = archivedVisibility', 'created = True',
-                     'HorizontalBaselineProtect tempSheet', 'tempSheet.UsedRange.NumberFormat = "@"',
-                     'Application.EnableEvents = oldEvents']:
-            self.assertIn(text, create)
-        self.assertIn('HorizontalBaselineProtect ws', create)
-        self.assertIn('ws.UsedRange.NumberFormat = "@"', create)
-        self.assertIn('archiveName = HorizontalBaselineUniqueArchiveName()', create)
-        capture = proc('SyncRecoveryCaptureInternalSheets')
-        self.assertNotIn('If IsNull(numberFormat)', capture)
-        classifier = proc('HorizontalBaselineIsCanonicalSheet')
-        self.assertIn('HorizontalBaselineMapsFromData data, values, rows', classifier)
-        self.assertIn('破損した基準を自動移行しません', classifier)
+        ensure = proc('HorizontalBaselineEnsureSheet')
+        create = proc('HorizontalBaselineCopyWithoutSheetEvents')
+        for forbidden in ['HorizontalBaselineDataFromLegacy', 'HorizontalBaselineUniqueArchiveName',
+                          'ws.Name =', 'ws.Delete', 'wsDst.Copy']:
+            self.assertNotIn(forbidden, ensure)
+        self.assertIn('HorizontalBaselineMatchesDestinationHeaders(ws, wsDst)', ensure)
+        self.assertIn('CopyBaselineValidateData ws, False', ensure)
+        self.assertIn('Application.EnableEvents = oldEvents', ensure)
+        for required in ['Worksheets.Add', 'sourceRange.Copy', 'target.PasteSpecial Paste:=xlPasteFormats', 'target.Value2 = sourceValues',
+                         'HorizontalBaselineDataMatches(sourceValues, actual, True)', 'target.HasFormula',
+                         'HorizontalBaselineProtect ws', 'Application.EnableEvents = oldEvents',
+                         'If created And Not ws Is Nothing Then', 'ws.Delete']:
+            self.assertIn(required, create)
+        self.assertNotIn('wsDst.Copy', create)
         matcher = proc('HorizontalBaselineMatchesDestinationHeaders')
-        self.assertIn('Excel管理行ID', matcher)
-        self.assertIn('matchCount <> 1', matcher)
-        self.assertIn('mapped.Exists(CStr(mappedCol))', matcher)
+        for text in ['Excel管理行ID', 'matchCount <> 1', 'mapped.Exists(CStr(mappedCol))']:
+            self.assertIn(text, matcher)
         delete = proc('BidirectionalSyncDeleteNewBaselineSheet')
         self.assertIn('baselineSheet.Name <> HORIZONTAL_BASELINE_SHEET', delete)
         self.assertIn('baselineSheet.Parent Is ThisWorkbook', delete)
         self.assertLess(delete.index('baselineSheet.Visible = xlSheetHidden'), delete.index('baselineSheet.Delete'))
-        self.assertIn('HorizontalBaselineRestoreArchivedCopy archivedBaselineCopy', proc('BidirectionalSyncDiscardContext'))
+        self.assertIn('If baselineSheetCreated Then', proc('BidirectionalSyncDiscardContext'))
+        self.assertNotIn('Array(BIDIRECTIONAL_SYNC_BASELINE_SHEET,', proc('SyncRecoveryCaptureInternalSheets'))
 
     def test_outer_rollback_restores_horizontal_undo_and_internal_state(self):
         discard = proc('BidirectionalSyncDiscardContext')

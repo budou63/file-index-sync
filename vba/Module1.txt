@@ -30,8 +30,14 @@ Private Const BIDIRECTIONAL_SYNC_BASELINE_VERSION As String = "1"
 Private Const HORIZONTAL_BASELINE_SHEET As String = "前回同期基準表"
 Private Const HORIZONTAL_BASELINE_VERSION As String = "HB1"
 Private Const HORIZONTAL_BASELINE_META_COLS As Long = 4
-' 前回同期基準表のコピー元は3行目が見出し、4行目以降がデータ。
-Private Const HORIZONTAL_BASELINE_COPY_HEADER_ROW As Long = 3
+' 本表・前回同期基準表はいずれも1行目が見出し。
+Private Const HORIZONTAL_BASELINE_COPY_HEADER_ROW As Long = 1
+Private Const COPY_BASELINE_FLAGS_SHEET As String = "前回同期項目確定"
+Private Const COPY_BASELINE_FLAGS_MARKER As String = "_CopyBaselineKnownState"
+Private Const COPY_BASELINE_FLAGS_PROPERTY As String = "CopyBaselineKnownStateV1"
+Private Const COPY_BASELINE_LOCAL_MARKER As String = "_CopyBaselineHasPartialV1"
+Private Const COPY_BASELINE_INITIALIZED_PROPERTY As String = "CopyBaselineInitializedV1"
+Private Const COPY_BASELINE_INITIALIZED_LOCAL As String = "_CopyBaselineInitializedV1"
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_SHEET As String = "双方向同期競合"
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_VERSION As String = "1"
 Private Const BIDIRECTIONAL_SYNC_CONFLICT_LAST_COL As Long = 10
@@ -17667,6 +17673,7 @@ Private Sub BidirectionalSyncDiscardContext()
     If context.Exists("GuideCodeSnapshots") Then _
         rollbackDescription = BidirectionalSyncRollbackGuideCodeSnapshots(context)
     If context.Exists("HorizontalUndo") Then HorizontalBaselineRestoreUndo context("HorizontalUndo")
+    If context.Exists("CopyBaselineUndo") Then CopyBaselineRestoreUndo context("CopyBaselineUndo")
     If context.Exists("InternalSnapshots") Then SyncRecoveryRestoreInternalSheets context("InternalSnapshots")
     If context.Exists("BaselineSheetCreated") Then baselineSheetCreated = CBool(context("BaselineSheetCreated"))
     If context.Exists("BaselineArchive") Then
@@ -17868,7 +17875,7 @@ Private Sub BidirectionalSyncLoadBaselineMaps( _
     If ws Is Nothing Then Err.Raise vbObjectError + 2788, , "双方向同期基準値シートが見つかりません。"
     If baselineValues Is Nothing Or baselineRows Is Nothing Then Err.Raise vbObjectError + 2789, , "同期基準値の内部マップを作成できません。"
     If ws.Name = HORIZONTAL_BASELINE_SHEET Then
-        HorizontalBaselineLoadMaps ws, baselineValues, baselineRows
+        CopyBaselineLoadMaps ws, baselineValues, baselineRows
         Exit Sub
     End If
     baselineValues.RemoveAll
@@ -17998,33 +18005,75 @@ Private Function BidirectionalSyncExistingBaselineSheet() As Worksheet
     Dim ws As Worksheet
     On Error Resume Next
     Set ws = ThisWorkbook.Worksheets(HORIZONTAL_BASELINE_SHEET)
-    If ws Is Nothing Then Set ws = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
     On Error GoTo 0
-    ' 横型が存在する場合、不正でも旧表へ黙って戻さない。利用側で検証して停止する。
+    ' 旧縦型基準はバックアップとして保持し、通常の比較には使わない。
     Set BidirectionalSyncExistingBaselineSheet = ws
 End Function
 
+Private Sub CopyBaselineValidateCachedFlag(ByVal location As Variant)
+    Dim ws As Worksheet, baseline As Worksheet, marker As Name, localMarker As Name, markerRange As Range
+    Dim flagRow As Long, sentinel As Object
+    If UBound(location) < 7 Then Err.Raise vbObjectError + 2933
+    flagRow = CLng(location(6))
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(COPY_BASELINE_FLAGS_SHEET)
+    Set baseline = ThisWorkbook.Worksheets(HORIZONTAL_BASELINE_SHEET)
+    If Not baseline Is Nothing Then Set localMarker = baseline.Names(COPY_BASELINE_LOCAL_MARKER)
+    Set marker = ThisWorkbook.Names(COPY_BASELINE_FLAGS_MARKER)
+    Set sentinel = ThisWorkbook.CustomDocumentProperties(COPY_BASELINE_FLAGS_PROPERTY)
+    Err.Clear
+    On Error GoTo Invalid
+    If baseline Is Nothing Then Err.Raise vbObjectError + 2933
+    If flagRow = 0 Then
+        If Not ws Is Nothing Or Not marker Is Nothing Or Not sentinel Is Nothing Or Not localMarker Is Nothing Then _
+            Err.Raise vbObjectError + 2933
+        Exit Sub
+    End If
+    If flagRow < 2 Or ws Is Nothing Or marker Is Nothing Or sentinel Is Nothing Or localMarker Is Nothing Then _
+        Err.Raise vbObjectError + 2933
+    If StrComp(localMarker.RefersTo, "=TRUE", vbTextCompare) <> 0 Then Err.Raise vbObjectError + 2933
+    If CLng(sentinel.Type) <> 2 Or Not CBool(sentinel.Value) Then Err.Raise vbObjectError + 2933
+    Set markerRange = marker.RefersToRange
+    If Not (markerRange.Worksheet Is ws) Then Err.Raise vbObjectError + 2933
+    If markerRange.Address <> ws.Range("A1").Address Or ws.Visible <> xlSheetVeryHidden Then Err.Raise vbObjectError + 2933
+    If ws.Cells(flagRow, 1).HasFormula Or ws.Cells(flagRow, 2).HasFormula Or ws.Cells(flagRow, 3).HasFormula Then _
+        Err.Raise vbObjectError + 2933
+    If IsError(ws.Cells(flagRow, 1).Value2) Or IsError(ws.Cells(flagRow, 2).Value2) Or _
+       IsError(ws.Cells(flagRow, 3).Value2) Then Err.Raise vbObjectError + 2933
+    If StrComp(Trim$(CStr(ws.Cells(flagRow, 1).Value2)), CStr(location(4)), vbTextCompare) <> 0 Or _
+       CStr(ws.Cells(flagRow, 2).Value2) <> CStr(location(7)) Or CStr(ws.Cells(flagRow, 3).Value2) <> "1" Then _
+        Err.Raise vbObjectError + 2933
+    Exit Sub
+Invalid:
+    Err.Raise vbObjectError + 2933, "CopyBaselineValidateCachedFlag", _
+        "前回同期値の確定状態が変わったため、判断を中止しました。"
+End Sub
+
 Private Function BidirectionalSyncPersistedBaselineValue(ByVal ws As Worksheet, ByVal rows As Object, ByVal key As String) As Variant
-    Dim location As Variant, r As Long, c As Long, expectedKey As String, mask As String
+    Dim location As Variant, r As Long, c As Long, idCol As Long, expectedKey As String, sourceHeader As String
     If ws Is Nothing Or rows Is Nothing Then Err.Raise vbObjectError + 2915, , "同期基準の参照がありません。"
     If Not rows.Exists(key) Then Err.Raise vbObjectError + 2915, , "前回同期値がありません。"
     location = rows(key)
     If ws.Name = HORIZONTAL_BASELINE_SHEET Then
-        If Not IsArray(location) Then Err.Raise vbObjectError + 2915, , "横型同期基準の位置情報が不正です。"
-        r = CLng(location(0)): c = CLng(location(1))
-        If r < 2 Or c <= HORIZONTAL_BASELINE_META_COLS Then Err.Raise vbObjectError + 2915, , "横型同期基準の参照範囲が不正です。"
-        expectedKey = BidirectionalSyncBaselineKey(CStr(ws.Cells(r, 1).Value2), CStr(ws.Cells(1, c).Value2))
-        mask = CStr(ws.Cells(r, 3).Value2)
-        If Mid$(mask, c - HORIZONTAL_BASELINE_META_COLS, 1) <> "1" Then Err.Raise vbObjectError + 2915, , "横型同期基準の項目が未確定です。"
-    Else
-        If ws.Name <> BIDIRECTIONAL_SYNC_BASELINE_SHEET Or IsArray(location) Then Err.Raise vbObjectError + 2915, , "旧同期基準の位置情報が不正です。"
-        r = CLng(location): c = 3
-        If r < 2 Then Err.Raise vbObjectError + 2915, , "旧同期基準の参照範囲が不正です。"
-        expectedKey = BidirectionalSyncBaselineKey(CStr(ws.Cells(r, 1).Value2), CStr(ws.Cells(r, 2).Value2))
+        If Not IsArray(location) Then Err.Raise vbObjectError + 2915, , "同期基準の位置情報が不正です。"
+        If UBound(location) <> 7 Then Err.Raise vbObjectError + 2915, , "同期基準の位置情報が不正です。"
+        CopyBaselineValidateCachedFlag location
+        r = CLng(location(0)): c = CLng(location(1)): idCol = CLng(location(5))
+        sourceHeader = CStr(location(2))
+        If r < 2 Or c < 1 Or idCol < 1 Then Err.Raise vbObjectError + 2915, , "同期基準の参照範囲が不正です。"
+        If StrComp(CanonicalHeaderName(CStr(ws.Cells(1, c).Value2)), _
+            CanonicalHeaderName(CStr(location(3))), vbTextCompare) <> 0 Then Err.Raise vbObjectError + 2915
+        If StrComp(Trim$(CStr(ws.Cells(r, idCol).Value2)), CStr(location(4)), vbTextCompare) <> 0 Then _
+            Err.Raise vbObjectError + 2915, , "同期基準の管理行IDが読込後に変わりました。"
+        If CanonicalHeaderName(CStr(ws.Cells(1, idCol).Value2)) <> CanonicalHeaderName("Excel管理行ID") Then _
+            Err.Raise vbObjectError + 2915
+        expectedKey = BidirectionalSyncBaselineKey(CStr(ws.Cells(r, idCol).Value2), sourceHeader)
+        If StrComp(key, expectedKey, vbTextCompare) <> 0 Then Err.Raise vbObjectError + 2915
+        If ws.Cells(r, c).HasFormula Or IsError(ws.Cells(r, c).Value2) Then Err.Raise vbObjectError + 2915
+        BidirectionalSyncPersistedBaselineValue = NormalizeValueForUpdateCompare(sourceHeader, ws.Cells(r, c).Value)
+        Exit Function
     End If
-    If StrComp(key, expectedKey, vbTextCompare) <> 0 Then Err.Raise vbObjectError + 2915, , "同期基準の行または項目が読込後に変わりました。"
-    If ws.Cells(r, c).HasFormula Then Err.Raise vbObjectError + 2915, , "同期基準に数式が入っています。"
-    BidirectionalSyncPersistedBaselineValue = ws.Cells(r, c).Value2
+    Err.Raise vbObjectError + 2915, , "旧基準は通常比較に使用しません。"
 End Function
 
 Private Function HorizontalBaselineIsCanonicalSheet(ByVal ws As Worksheet) As Boolean
@@ -18166,114 +18215,774 @@ Private Sub HorizontalBaselineRestoreArchivedCopy(ByVal archived As Worksheet, _
     archived.Visible = originalVisibility
 End Sub
 
+Private Function CopyBaselineHasInitializationMarker() As Boolean
+    Dim prop As Object, found As Boolean
+    For Each prop In ThisWorkbook.CustomDocumentProperties
+        If StrComp(CStr(prop.Name), COPY_BASELINE_INITIALIZED_PROPERTY, vbTextCompare) = 0 Then
+            If found Then Err.Raise vbObjectError + 2936, , "同期基準の初期化情報が重複しています。"
+            found = True
+            If CLng(prop.Type) <> 2 Or Not CBool(prop.Value) Then _
+                Err.Raise vbObjectError + 2936, , "同期基準の初期化情報が不正です。"
+        End If
+    Next prop
+    CopyBaselineHasInitializationMarker = found
+End Function
+
+Private Sub CopyBaselineInstallInitializationMarker()
+    If CopyBaselineHasInitializationMarker() Then Exit Sub
+    ThisWorkbook.CustomDocumentProperties.Add Name:=COPY_BASELINE_INITIALIZED_PROPERTY, _
+        LinkToContent:=False, Type:=2, Value:=True
+    If Not CopyBaselineHasInitializationMarker() Then _
+        Err.Raise vbObjectError + 2936, , "同期基準の初期化情報を保存できません。"
+End Sub
+
+Private Function CopyBaselineHasSheetInitializationMarker(ByVal ws As Worksheet) As Boolean
+    Dim localName As Name, token As String, separator As Long, found As Boolean
+    If ws Is Nothing Then Err.Raise vbObjectError + 2936
+    For Each localName In ws.Names
+        token = CStr(localName.Name): separator = InStrRev(token, "!")
+        If separator > 0 Then token = Mid$(token, separator + 1)
+        If StrComp(token, COPY_BASELINE_INITIALIZED_LOCAL, vbTextCompare) = 0 Then
+            If found Then Err.Raise vbObjectError + 2936
+            found = True
+            If StrComp(localName.RefersTo, "=TRUE", vbTextCompare) <> 0 Then Err.Raise vbObjectError + 2936
+        End If
+    Next localName
+    CopyBaselineHasSheetInitializationMarker = found
+End Function
+
+Private Sub CopyBaselineInstallSheetInitializationMarker(ByVal ws As Worksheet)
+    If CopyBaselineHasSheetInitializationMarker(ws) Then Exit Sub
+    ws.Names.Add Name:=COPY_BASELINE_INITIALIZED_LOCAL, RefersTo:="=TRUE", Visible:=False
+    If Not CopyBaselineHasSheetInitializationMarker(ws) Then Err.Raise vbObjectError + 2936
+End Sub
+
+Private Sub CopyBaselineEnsureInitializationPair(ByVal ws As Worksheet, Optional ByVal newSheet As Boolean = False)
+    Dim bookMarker As Boolean, sheetMarker As Boolean
+    bookMarker = CopyBaselineHasInitializationMarker()
+    sheetMarker = CopyBaselineHasSheetInitializationMarker(ws)
+    If newSheet Then
+        If Not bookMarker Or sheetMarker Then Err.Raise vbObjectError + 2936
+        CopyBaselineInstallSheetInitializationMarker ws
+        Exit Sub
+    End If
+    If bookMarker Xor sheetMarker Then _
+        Err.Raise vbObjectError + 2936, , "前回同期基準表の初期化情報が一致しません。再生成せず復旧コピーを確認してください。"
+    If Not bookMarker Then
+        CopyBaselineInstallInitializationMarker
+        CopyBaselineInstallSheetInitializationMarker ws
+    End If
+End Sub
+
 Private Function HorizontalBaselineEnsureSheet(ByVal wsDst As Worksheet, ByRef created As Boolean, _
     ByRef archivedCopy As Worksheet, ByRef archivedVisibility As XlSheetVisibility) As Worksheet
-    Dim ws As Worksheet, legacy As Worksheet, tempSheet As Worksheet
-    Dim data As Variant, skeleton As Variant, metadata As Variant, actual As Variant
-    Dim values As Object, rows As Object
-    Dim i As Long, oldEvents As Boolean, failure As Long, detail As String, cleanupFailure As Long
-    Dim candidateCopy As Boolean, candidateRenamed As Boolean, canonicalRenamed As Boolean
-    Dim temporaryName As String, archiveName As String
+    Dim ws As Worksheet, oldEvents As Boolean, eventsCaptured As Boolean
+    Dim oldVisibility As XlSheetVisibility, wasProtected As Boolean, changedProtection As Boolean
+    Dim failure As Long, detail As String, cleanupFailure As Long, hasFormula As Variant
     created = False: Set archivedCopy = Nothing
+    If Not IsNewFileStandardWorksheet(wsDst) Then _
+        Err.Raise vbObjectError + 2916, , "本表の所属または名称を確認できません。"
+    If ThisWorkbook.ReadOnly Or ThisWorkbook.ProtectStructure Then _
+        Err.Raise vbObjectError + 2916, , "前回同期基準表を準備できないブック状態です。"
+    If wsDst.Visible <> xlSheetVisible Then _
+        Err.Raise vbObjectError + 2916, , "本表が非表示のため基準表を安全に隠せません。"
+    If Not HorizontalBaselineMatchesDestinationHeaders(wsDst, wsDst) Then _
+        Err.Raise vbObjectError + 2916, , "本表の見出しが空欄または重複しています。"
+    CopyBaselineValidateData wsDst, True
     On Error Resume Next
     Set ws = ThisWorkbook.Worksheets(HORIZONTAL_BASELINE_SHEET)
-    Set legacy = ThisWorkbook.Worksheets(BIDIRECTIONAL_SYNC_BASELINE_SHEET)
     On Error GoTo 0
-    If wsDst Is Nothing Then Err.Raise vbObjectError + 2916, , "新ファイル基準表がありません。"
-    If Not (wsDst.Parent Is ThisWorkbook) Then Err.Raise vbObjectError + 2916, , "移行対象のブックが一致しません。"
-    If ThisWorkbook.ReadOnly Or ThisWorkbook.ProtectStructure Then Err.Raise vbObjectError + 2916, , "横型基準を作成できないブックです。"
-    If wsDst.Visible <> xlSheetVisible Then Err.Raise vbObjectError + 2916, , "基準シートを隠すための表示シートがありません。"
-
-    If Not ws Is Nothing Then
-        If HorizontalBaselineIsCanonicalSheet(ws) Then
-            HorizontalBaselineProtect ws
-            ws.UsedRange.NumberFormat = "@"
-            If ws.Visible <> xlSheetVeryHidden Then
-                wsDst.Activate: ws.Visible = xlSheetVeryHidden
-            End If
-            Set HorizontalBaselineEnsureSheet = ws
-            Exit Function
-        End If
-        If Not HorizontalBaselineMatchesDestinationHeaders(ws, wsDst) Then _
-            Err.Raise vbObjectError + 2916, , "前回同期基準表は正規横型でも本表コピーでもありません。上書きしません。"
-        candidateCopy = True
-        If legacy Is Nothing Then _
-            Err.Raise vbObjectError + 2916, , "本表コピーはありますが移行元の縦型基準がありません。推測で初期化しません。"
-        data = HorizontalBaselineDataFromLegacy(legacy)
-        HorizontalBaselineRequireSufficientLegacy data, wsDst
-    Else
-        metadata = HorizontalBaselineMetadataHeaders()
-        ReDim skeleton(1 To 1, 1 To HORIZONTAL_BASELINE_META_COLS)
-        For i = 0 To UBound(metadata): skeleton(1, i + 1) = CStr(metadata(i)): Next i
-        If legacy Is Nothing Then
-            If GetLastUsedRow(wsDst) > 1 Then _
-                Err.Raise vbObjectError + 2916, , "本表に既存データがありますが縦型基準がありません。安全に初期化できません。"
-            data = skeleton
-        Else
-            data = HorizontalBaselineDataFromLegacy(legacy)
-            HorizontalBaselineRequireSufficientLegacy data, wsDst
-        End If
+    If ws Is Nothing Then
+        If CopyBaselineHasInitializationMarker() Then _
+            Err.Raise vbObjectError + 2936, , "使用済みの前回同期基準表が見つかりません。再生成せず復旧コピーを確認してください。"
+        CopyBaselineInstallInitializationMarker
+        Set ws = HorizontalBaselineCopyWithoutSheetEvents(wsDst)
+        CopyBaselineEnsureInitializationPair ws, True
+        created = True
+        Set HorizontalBaselineEnsureSheet = ws
+        Exit Function
     End If
-
-    oldEvents = Application.EnableEvents
+    If Not HorizontalBaselineMatchesDestinationHeaders(ws, wsDst) Then _
+        Err.Raise vbObjectError + 2916, , "前回同期基準表と本表の見出しを一意に対応できません。既存シートは変更しません。"
+    CopyBaselineValidateData ws, False
+    hasFormula = ws.UsedRange.HasFormula
+    If IsNull(hasFormula) Then Err.Raise vbObjectError + 2916, , "既存の前回同期基準表に数式があるため自動変更しません。"
+    If CBool(hasFormula) Then Err.Raise vbObjectError + 2916, , "既存の前回同期基準表に数式があるため自動変更しません。"
+    oldVisibility = ws.Visible: wasProtected = ws.ProtectContents
+    oldEvents = Application.EnableEvents: eventsCaptured = True
     On Error GoTo Failed
     Application.EnableEvents = False
-    temporaryName = HorizontalBaselineUniqueTemporaryName()
-    Set tempSheet = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
-    tempSheet.Name = temporaryName
-    With tempSheet.Range(tempSheet.Cells(1, 1), tempSheet.Cells(UBound(data, 1), UBound(data, 2)))
-        .NumberFormat = "@"
-        .Value2 = data
-        actual = .Value2
-    End With
-    If Not HorizontalBaselineDataMatches(data, actual, True) Then _
-        Err.Raise vbObjectError + 2916, , "新しい横型基準の初期書込を照合できません。"
-    Set values = CreateObject("Scripting.Dictionary"): values.CompareMode = vbTextCompare
-    Set rows = CreateObject("Scripting.Dictionary"): rows.CompareMode = vbTextCompare
-    HorizontalBaselineMapsFromData actual, values, rows
-    wsDst.Activate
-    If candidateCopy Then
-        archivedVisibility = ws.Visible
-        archiveName = HorizontalBaselineUniqueArchiveName()
-        ws.Name = archiveName: candidateRenamed = True
+    changedProtection = Not wasProtected
+    HorizontalBaselineProtect ws
+    If ws.Visible <> xlSheetVeryHidden Then
+        wsDst.Activate
         ws.Visible = xlSheetVeryHidden
-        Set archivedCopy = ws
     End If
-    tempSheet.Name = HORIZONTAL_BASELINE_SHEET: canonicalRenamed = True
-    HorizontalBaselineProtect tempSheet
-    tempSheet.UsedRange.NumberFormat = "@"
-    wsDst.Activate: tempSheet.Visible = xlSheetVeryHidden
-    Application.EnableEvents = oldEvents
-    created = True
-    Set HorizontalBaselineEnsureSheet = tempSheet
+    CopyBaselineEnsureInitializationPair ws
+    Application.EnableEvents = oldEvents: eventsCaptured = False
+    Set HorizontalBaselineEnsureSheet = ws
     Exit Function
-
 Failed:
     failure = Err.Number: detail = Err.Description
     On Error Resume Next
     Err.Clear
-    If Not tempSheet Is Nothing Then
-        If canonicalRenamed And tempSheet.Name = HORIZONTAL_BASELINE_SHEET Then tempSheet.Name = temporaryName
-        If tempSheet.Name = temporaryName Then HorizontalBaselineDeleteTemporarySheet tempSheet, temporaryName
+    If Not ws Is Nothing Then
+        If changedProtection Then ws.Unprotect Password:=""
+        If ws.Visible <> oldVisibility Then ws.Visible = oldVisibility
     End If
     If Err.Number <> 0 Then cleanupFailure = Err.Number
     Err.Clear
-    If candidateRenamed Then
-        ws.Name = HORIZONTAL_BASELINE_SHEET
-        ws.Visible = archivedVisibility
-    End If
-    If Err.Number <> 0 Then cleanupFailure = Err.Number
-    Err.Clear
-    Application.EnableEvents = oldEvents
+    If eventsCaptured Then Application.EnableEvents = oldEvents
     If Err.Number <> 0 Then cleanupFailure = Err.Number
     On Error GoTo 0
     If cleanupFailure <> 0 Then
         mSyncRecoveryRequired = True
         Err.Raise vbObjectError + 2917, "HorizontalBaselineEnsureSheet", _
-            "横型移行失敗（" & CStr(failure) & "）: " & detail & " 一時シート/コピー名またはイベント状態を戻せませんでした（" & CStr(cleanupFailure) & "）。保存せず復旧コピーから再開してください。"
+            "基準表の準備に失敗し表示・保護・イベント状態を戻せません。保存せず復旧コピーから再開してください。"
     End If
-    Err.Raise vbObjectError + 2916, "HorizontalBaselineEnsureSheet", _
-        "既存の縦型基準を保持したまま横型移行を取り消しました（" & CStr(failure) & "）: " & detail
+    Err.Raise failure, "HorizontalBaselineEnsureSheet", detail
+End Function
+
+Private Sub CopyBaselineValidateData(ByVal ws As Worksheet, ByVal allowFormulas As Boolean)
+    Dim lastRow As Long, lastCol As Long, idCol As Long, values As Variant, hasFormula As Variant
+    Dim seen As Object, r As Long, c As Long, rowId As String, rowHasData As Boolean
+    If ws Is Nothing Then Err.Raise vbObjectError + 2923, , "基準表を確認できません。"
+    lastCol = GetLastHeaderCol(ws): lastRow = GetLastUsedRow(ws)
+    If lastCol < 2 Or lastRow < 1 Or GetLastUsedCol(ws) <> lastCol Then _
+        Err.Raise vbObjectError + 2923, , "見出しのないデータ列があります。"
+    idCol = BidirectionalSyncFindUniqueHeaderColumn(ws, lastCol, Array("Excel管理行ID"))
+    If idCol <= 0 Then Err.Raise vbObjectError + 2923, , "Excel管理行ID見出しを一意に確認できません。"
+    values = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Value2
+    Set seen = CreateObject("Scripting.Dictionary"): seen.CompareMode = vbTextCompare
+    For r = 2 To lastRow
+        rowHasData = False
+        For c = 1 To lastCol
+            If IsError(values(r, c)) Or IsNull(values(r, c)) Then _
+                Err.Raise vbObjectError + 2923, , "比較対象にエラー値があります。"
+            If Len(CStr(values(r, c))) > 0 Then rowHasData = True
+        Next c
+        If Not rowHasData And allowFormulas Then
+            hasFormula = ws.Range(ws.Cells(r, 1), ws.Cells(r, lastCol)).HasFormula
+            If IsNull(hasFormula) Then
+                rowHasData = True
+            ElseIf CBool(hasFormula) Then
+                rowHasData = True
+            End If
+        End If
+        If rowHasData Then
+            If ws.Cells(r, idCol).HasFormula Then Err.Raise vbObjectError + 2923, , "管理行IDに数式があります。"
+            rowId = Trim$(CStr(values(r, idCol)))
+            If Len(rowId) = 0 Or seen.Exists(rowId) Then _
+                Err.Raise vbObjectError + 2923, , "管理行IDが空欄または重複しています。"
+            seen.Add rowId, True
+        End If
+    Next r
+    If Not allowFormulas Then
+        hasFormula = ws.UsedRange.HasFormula
+        If IsNull(hasFormula) Then Err.Raise vbObjectError + 2923, , "前回同期基準表に数式があります。"
+        If CBool(hasFormula) Then Err.Raise vbObjectError + 2923, , "前回同期基準表に数式があります。"
+    End If
+End Sub
+
+Private Function CopyBaselineLoadKnownFlags() As Object
+    Dim ws As Worksheet, baseline As Worksheet, marker As Name, localMarker As Name, markerRange As Range
+    Dim flags As Object, sentinel As Object
+    Dim fields As Object, headers As Object, values As Variant, hasFormula As Variant, rowId As String, token As String
+    Dim header As String, r As Long, position As Long, lastRow As Long
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(COPY_BASELINE_FLAGS_SHEET)
+    Set baseline = ThisWorkbook.Worksheets(HORIZONTAL_BASELINE_SHEET)
+    If Not baseline Is Nothing Then Set localMarker = baseline.Names(COPY_BASELINE_LOCAL_MARKER)
+    Set marker = ThisWorkbook.Names(COPY_BASELINE_FLAGS_MARKER)
+    Set sentinel = ThisWorkbook.CustomDocumentProperties(COPY_BASELINE_FLAGS_PROPERTY)
+    On Error GoTo Invalid
+    If baseline Is Nothing Then Err.Raise vbObjectError + 2925
+    If ws Is Nothing And marker Is Nothing And sentinel Is Nothing And localMarker Is Nothing Then Exit Function
+    If ws Is Nothing Or marker Is Nothing Or sentinel Is Nothing Or localMarker Is Nothing Then Err.Raise vbObjectError + 2925
+    If StrComp(localMarker.RefersTo, "=TRUE", vbTextCompare) <> 0 Then Err.Raise vbObjectError + 2925
+    If CLng(sentinel.Type) <> 2 Or Not CBool(sentinel.Value) Then Err.Raise vbObjectError + 2925
+    Set markerRange = marker.RefersToRange
+    If Not (markerRange.Worksheet Is ws) Then Err.Raise vbObjectError + 2925
+    If markerRange.Address <> ws.Range("A1").Address Then Err.Raise vbObjectError + 2925
+    If ws.Visible <> xlSheetVeryHidden Then Err.Raise vbObjectError + 2925
+    If CStr(ws.Cells(1, 1).Value2) <> "Excel管理行ID" Or _
+       CStr(ws.Cells(1, 2).Value2) <> "確定項目" Or CStr(ws.Cells(1, 3).Value2) <> "形式" Then _
+        Err.Raise vbObjectError + 2925
+    If GetLastUsedCol(ws) <> 3 Then Err.Raise vbObjectError + 2925
+    hasFormula = ws.UsedRange.HasFormula
+    If IsNull(hasFormula) Then Err.Raise vbObjectError + 2925
+    If CBool(hasFormula) Then Err.Raise vbObjectError + 2925
+    Set flags = CreateObject("Scripting.Dictionary"): flags.CompareMode = vbTextCompare
+    lastRow = GetLastUsedRow(ws)
+    If lastRow >= 2 Then
+        values = ws.Range(ws.Cells(2, 1), ws.Cells(lastRow, 3)).Value2
+        For r = 1 To UBound(values, 1)
+            If IsError(values(r, 1)) Or IsError(values(r, 2)) Or IsError(values(r, 3)) Then Err.Raise vbObjectError + 2925
+            rowId = Trim$(CStr(values(r, 1))): token = CStr(values(r, 2))
+            If Len(rowId) = 0 Or flags.Exists(rowId) Or CStr(values(r, 3)) <> "1" Then Err.Raise vbObjectError + 2925
+            Set fields = CreateObject("Scripting.Dictionary")
+            Set headers = CreateObject("Scripting.Dictionary"): headers.CompareMode = vbTextCompare
+            fields.Add "all", False: fields.Add "headers", Empty: Set fields("headers") = headers
+            If token = "*" Then
+                fields("all") = True
+            ElseIf Left$(token, 1) = "P" Then
+                position = 2
+                Do While position <= Len(token)
+                    header = CanonicalHeaderName(BidirectionalSyncUnpackConflictValue(token, position))
+                    If Len(header) = 0 Or headers.Exists(header) Then Err.Raise vbObjectError + 2925
+                    headers.Add header, True
+                Loop
+            Else
+                Err.Raise vbObjectError + 2925
+            End If
+            fields.Add "flagRow", CLng(r + 1)
+            fields.Add "token", token
+            flags.Add rowId, Empty: Set flags(rowId) = fields
+        Next r
+    End If
+    Set CopyBaselineLoadKnownFlags = flags
+    Exit Function
+Invalid:
+    Err.Raise vbObjectError + 2925, "CopyBaselineLoadKnownFlags", _
+        "前回同期の確定項目情報を確認できません。推測で基準を確定せず、同期を中止しました。"
+End Function
+
+Private Function CopyBaselineIsKnownField(ByVal flags As Object, ByVal rowId As String, ByVal header As String) As Boolean
+    Dim fields As Object, headers As Object
+    If flags Is Nothing Then
+        CopyBaselineIsKnownField = True
+        Exit Function
+    End If
+    If Not flags.Exists(rowId) Then Err.Raise vbObjectError + 2925, , "基準行の確定項目情報がありません。"
+    Set fields = flags(rowId): Set headers = fields("headers")
+    CopyBaselineIsKnownField = (CBool(fields("all")) Or headers.Exists(CanonicalHeaderName(header)))
+End Function
+
+Private Function CopyBaselineNewFlagRecord(ByVal allKnown As Boolean) As Object
+    Dim record As Object, headers As Object
+    Set record = CreateObject("Scripting.Dictionary")
+    Set headers = CreateObject("Scripting.Dictionary"): headers.CompareMode = vbTextCompare
+    record.Add "all", allKnown: record.Add "headers", Empty: Set record("headers") = headers
+    Set CopyBaselineNewFlagRecord = record
+End Function
+
+Private Sub CopyBaselineWriteKnownFlags(ByVal flags As Object, ByRef undo As Object)
+    Dim ws As Worksheet, current As Object, record As Object, headers As Object
+    Dim output() As Variant, before As Variant, actual As Variant, target As Range
+    Dim key As Variant, header As Variant, token As String, r As Long, oldRows As Long, targetRows As Long
+    Dim oldEvents As Boolean, oldAlerts As Boolean, eventsCaptured As Boolean, created As Boolean
+    Dim markerCreated As Boolean, propertyCreated As Boolean, localCreated As Boolean
+    Dim failure As Long, detail As String, restoreFailure As Long
+    If flags Is Nothing Then Err.Raise vbObjectError + 2927
+    Set current = CopyBaselineLoadKnownFlags()
+    On Error Resume Next
+    Set ws = ThisWorkbook.Worksheets(COPY_BASELINE_FLAGS_SHEET)
+    On Error GoTo 0
+    If (ws Is Nothing) Xor (current Is Nothing) Then Err.Raise vbObjectError + 2927
+    ReDim output(1 To flags.Count + 1, 1 To 3)
+    output(1, 1) = "Excel管理行ID": output(1, 2) = "確定項目": output(1, 3) = "形式"
+    r = 1
+    For Each key In flags.Keys
+        r = r + 1
+        Set record = flags(key): Set headers = record("headers")
+        If CBool(record("all")) Then
+            If headers.Count <> 0 Then Err.Raise vbObjectError + 2927
+            token = "*"
+        Else
+            token = "P"
+            For Each header In headers.Keys
+                token = token & BidirectionalSyncPackConflictValue(CStr(header))
+            Next header
+        End If
+        If Len(token) > 30000 Then Err.Raise vbObjectError + 2927, , "確定項目情報が保存上限を超えています。"
+        output(r, 1) = CStr(key): output(r, 2) = token: output(r, 3) = "1"
+    Next key
+    oldEvents = Application.EnableEvents: oldAlerts = Application.DisplayAlerts: eventsCaptured = True
+    On Error GoTo Failed
+    Application.EnableEvents = False
+    If ws Is Nothing Then
+        Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        created = True
+        ws.Name = COPY_BASELINE_FLAGS_SHEET
+        ws.Columns("A:C").NumberFormat = "@"
+        ThisWorkbook.Names.Add Name:=COPY_BASELINE_FLAGS_MARKER, _
+            RefersTo:="=" & Chr$(39) & ws.Name & Chr$(39) & "!$A$1", Visible:=False
+        markerCreated = True
+        ThisWorkbook.CustomDocumentProperties.Add Name:=COPY_BASELINE_FLAGS_PROPERTY, _
+            LinkToContent:=False, Type:=2, Value:=True
+        propertyCreated = True
+        ThisWorkbook.Worksheets(HORIZONTAL_BASELINE_SHEET).Names.Add _
+            Name:=COPY_BASELINE_LOCAL_MARKER, RefersTo:="=TRUE", Visible:=False
+        localCreated = True
+        ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD).Activate
+        ws.Visible = xlSheetVeryHidden
+    Else
+        oldRows = GetLastUsedRow(ws)
+        If oldRows > flags.Count + 1 Then Err.Raise vbObjectError + 2927, , "確定項目情報を削除しません。"
+        If IsNull(ws.Columns("A:C").NumberFormat) Then Err.Raise vbObjectError + 2927
+        If CStr(ws.Columns("A:C").NumberFormat) <> "@" Then Err.Raise vbObjectError + 2927
+    End If
+    targetRows = flags.Count + 1
+    Set target = ws.Range(ws.Cells(1, 1), ws.Cells(targetRows, 3))
+    If Not created Then before = target.Value2
+    Set undo = CreateObject("Scripting.Dictionary")
+    undo.Add "created", created: undo.Add "sheet", Empty: Set undo("sheet") = ws
+    undo.Add "address", target.Address
+    If Not created Then undo.Add "values", before
+    target.Value2 = output
+    actual = target.Value2
+    If Not HorizontalBaselineDataMatches(output, actual, True) Then Err.Raise vbObjectError + 2927, , "確定項目の書込み照合に失敗しました。"
+    Set current = CopyBaselineLoadKnownFlags()
+    If current Is Nothing Then Err.Raise vbObjectError + 2927
+    Application.EnableEvents = oldEvents: eventsCaptured = False
+    Exit Sub
+Failed:
+    failure = Err.Number: detail = Err.Description
+    On Error Resume Next
+    Err.Clear
+    If Not undo Is Nothing Then
+        CopyBaselineRestoreFlags undo
+    ElseIf created And Not ws Is Nothing Then
+        If markerCreated Then
+            ThisWorkbook.Names(COPY_BASELINE_FLAGS_MARKER).Delete
+            If Err.Number <> 0 Then restoreFailure = Err.Number
+            Err.Clear
+        End If
+        ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD).Activate
+        Application.DisplayAlerts = False
+        If ws.Visible = xlSheetVeryHidden Then ws.Visible = xlSheetHidden
+        ws.Delete
+        If Err.Number <> 0 Then restoreFailure = Err.Number
+        Err.Clear
+        If propertyCreated Then ThisWorkbook.CustomDocumentProperties(COPY_BASELINE_FLAGS_PROPERTY).Delete
+        If Err.Number <> 0 Then restoreFailure = Err.Number
+        Err.Clear
+        If localCreated Then ThisWorkbook.Worksheets(HORIZONTAL_BASELINE_SHEET).Names(COPY_BASELINE_LOCAL_MARKER).Delete
+    End If
+    If Err.Number <> 0 Then restoreFailure = Err.Number
+    Err.Clear
+    Application.DisplayAlerts = oldAlerts
+    If Err.Number <> 0 Then restoreFailure = Err.Number
+    Err.Clear
+    If eventsCaptured Then Application.EnableEvents = oldEvents
+    If Err.Number <> 0 Then restoreFailure = Err.Number
+    On Error GoTo 0
+    If restoreFailure <> 0 Then
+        mSyncRecoveryRequired = True
+        Err.Raise vbObjectError + 2927, "CopyBaselineWriteKnownFlags", _
+            "確定項目情報またはExcel設定を復元できません。保存せず復旧コピーから再開してください。"
+    End If
+    Set undo = Nothing
+    Err.Raise failure, "CopyBaselineWriteKnownFlags", detail
+End Sub
+
+Private Sub CopyBaselineRestoreFlags(ByVal undo As Object)
+    Dim ws As Worksheet, target As Range, actual As Variant, expected As Variant
+    Dim oldAlerts As Boolean, oldEvents As Boolean, failure As Long, detail As String, restoreFailure As Long
+    oldAlerts = Application.DisplayAlerts: oldEvents = Application.EnableEvents
+    On Error GoTo Failed
+    Application.EnableEvents = False
+    Set ws = undo("sheet")
+    If ws Is Nothing Then Err.Raise vbObjectError + 2927
+    If ws.Name <> COPY_BASELINE_FLAGS_SHEET Or Not (ws.Parent Is ThisWorkbook) Then Err.Raise vbObjectError + 2927
+    If CBool(undo("created")) Then
+        ThisWorkbook.Names(COPY_BASELINE_FLAGS_MARKER).Delete
+        ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD).Activate
+        Application.DisplayAlerts = False
+        If ws.Visible = xlSheetVeryHidden Then ws.Visible = xlSheetHidden
+        ws.Delete
+        ThisWorkbook.CustomDocumentProperties(COPY_BASELINE_FLAGS_PROPERTY).Delete
+        ThisWorkbook.Worksheets(HORIZONTAL_BASELINE_SHEET).Names(COPY_BASELINE_LOCAL_MARKER).Delete
+    Else
+        Set target = ws.Range(CStr(undo("address")))
+        expected = undo("values")
+        target.Value2 = expected
+        actual = target.Value2
+        If Not HorizontalBaselineDataMatches(expected, actual, True) Then Err.Raise vbObjectError + 2927
+    End If
+    Application.DisplayAlerts = oldAlerts
+    Application.EnableEvents = oldEvents
+    Exit Sub
+Failed:
+    failure = Err.Number: detail = Err.Description
+    On Error Resume Next
+    Err.Clear: Application.DisplayAlerts = oldAlerts
+    If Err.Number <> 0 Then restoreFailure = Err.Number
+    Err.Clear: Application.EnableEvents = oldEvents
+    If Err.Number <> 0 Then restoreFailure = Err.Number
+    On Error GoTo 0
+    mSyncRecoveryRequired = True
+    Err.Raise vbObjectError + 2927, "CopyBaselineRestoreFlags", _
+        "確定項目の復元に失敗しました。保存せず復旧コピーから再開してください。" & detail
+End Sub
+
+Private Function CopyBaselineRequiresTextFormat(ByVal value As Variant) As Boolean
+    Dim first As String
+    If VarType(value) <> vbString Then Exit Function
+    If Len(CStr(value)) = 0 Then Exit Function
+    first = Left$(CStr(value), 1)
+    CopyBaselineRequiresTextFormat = (first = "=" Or first = "+" Or first = "-" Or first = "@")
+End Function
+
+Private Function CopyBaselineCellMatches(ByVal expected As Variant, ByVal actual As Variant) As Boolean
+    If IsError(expected) Or IsError(actual) Or IsNull(expected) Or IsNull(actual) Then Exit Function
+    If VarType(expected) <> VarType(actual) Then Exit Function
+    CopyBaselineCellMatches = (StrComp(CStr(expected), CStr(actual), vbBinaryCompare) = 0)
+End Function
+
+Private Sub CopyBaselineCaptureCell(ByVal changes As Collection, ByVal seen As Object, _
+    ByVal target As Range, ByVal newValue As Variant, ByVal newFormat As String)
+    Dim entry As Object, address As String
+    If target Is Nothing Then Err.Raise vbObjectError + 2928
+    If target.HasFormula Or target.HasArray Or target.MergeCells Then Err.Raise vbObjectError + 2928
+    If IsError(target.Value2) Or IsError(newValue) Or IsNull(newValue) Then Err.Raise vbObjectError + 2928
+    address = target.Address(False, False)
+    If seen.Exists(address) Then Err.Raise vbObjectError + 2928, , "同期基準の更新先が重複しています。"
+    seen.Add address, True
+    Set entry = CreateObject("Scripting.Dictionary")
+    entry.Add "address", address: entry.Add "oldValue", target.Value2
+    entry.Add "oldFormat", CStr(target.NumberFormat)
+    entry.Add "newValue", newValue: entry.Add "newFormat", newFormat
+    entry.Add "changed", False
+    changes.Add entry
+End Sub
+
+Private Sub CopyBaselineRestoreUndo(ByVal undo As Object)
+    Dim ws As Worksheet, changes As Collection, entry As Object, target As Range
+    Dim i As Long, oldEvents As Boolean, failure As Long, detail As String, restoreFailure As Long
+    oldEvents = Application.EnableEvents
+    On Error GoTo Failed
+    Application.EnableEvents = False
+    Set ws = undo("sheet")
+    If ws Is Nothing Then Err.Raise vbObjectError + 2928
+    If ws.Name <> HORIZONTAL_BASELINE_SHEET Or Not (ws.Parent Is ThisWorkbook) Then Err.Raise vbObjectError + 2928
+    HorizontalBaselineProtect ws
+    Set changes = undo("changes")
+    For i = changes.Count To 1 Step -1
+        Set entry = changes(i)
+        If CBool(entry("changed")) Then
+            Set target = ws.Range(CStr(entry("address")))
+            target.NumberFormat = CStr(entry("oldFormat"))
+            If IsEmpty(entry("oldValue")) Then
+                target.ClearContents
+            Else
+                If CopyBaselineRequiresTextFormat(entry("oldValue")) Then target.NumberFormat = "@"
+                target.Value2 = entry("oldValue")
+                target.NumberFormat = CStr(entry("oldFormat"))
+            End If
+            If target.HasFormula Then Err.Raise vbObjectError + 2928
+            If Not CopyBaselineCellMatches(entry("oldValue"), target.Value2) Then Err.Raise vbObjectError + 2928
+            If CStr(target.NumberFormat) <> CStr(entry("oldFormat")) Then Err.Raise vbObjectError + 2928
+        End If
+    Next i
+    If undo.Exists("flagUndo") Then CopyBaselineRestoreFlags undo("flagUndo")
+    Application.EnableEvents = oldEvents
+    Exit Sub
+Failed:
+    failure = Err.Number: detail = Err.Description
+    On Error Resume Next
+    Err.Clear: Application.EnableEvents = oldEvents
+    If Err.Number <> 0 Then restoreFailure = Err.Number
+    On Error GoTo 0
+    mSyncRecoveryRequired = True
+    Err.Raise vbObjectError + 2928, "CopyBaselineRestoreUndo", _
+        "前回同期基準の復元に失敗しました。保存せず復旧コピーから再開してください。" & detail
+End Sub
+
+Private Function CopyBaselineBuildRowMap(ByVal ws As Worksheet, ByVal idCol As Long) As Object
+    Dim rowMap As Object, data As Variant, rowId As String, lastRow As Long, r As Long
+    Set rowMap = CreateObject("Scripting.Dictionary"): rowMap.CompareMode = vbTextCompare
+    lastRow = GetLastUsedRow(ws)
+    If lastRow >= 2 Then
+        data = ws.Range(ws.Cells(2, idCol), ws.Cells(lastRow, idCol)).Value2
+        If lastRow = 2 Then
+            rowId = Trim$(CStr(data))
+            If Len(rowId) > 0 Then rowMap.Add rowId, 2
+        Else
+            For r = 1 To UBound(data, 1)
+                rowId = Trim$(CStr(data(r, 1)))
+                If Len(rowId) > 0 Then
+                    If rowMap.Exists(rowId) Then Err.Raise vbObjectError + 2929, , "基準の管理行IDが重複しています。"
+                    rowMap.Add rowId, r + 1
+                End If
+            Next r
+        End If
+    End If
+    Set CopyBaselineBuildRowMap = rowMap
+End Function
+
+Private Function CopyBaselineFlagsForExistingRows(ByVal rowMap As Object) As Object
+    Dim flags As Object, key As Variant, record As Object
+    Set flags = CreateObject("Scripting.Dictionary"): flags.CompareMode = vbTextCompare
+    For Each key In rowMap.Keys
+        Set record = CopyBaselineNewFlagRecord(True)
+        flags.Add CStr(key), Empty: Set flags(CStr(key)) = record
+    Next key
+    Set CopyBaselineFlagsForExistingRows = flags
+End Function
+
+Private Sub CopyBaselinePrepareEntries(ByVal ws As Worksheet, ByVal wsDst As Worksheet, ByVal pending As Object, _
+    ByRef flags As Object, ByRef flagsChanged As Boolean, ByVal changes As Collection)
+    Dim wsSrc As Worksheet, baseHeaders As Object, dstHeaders As Object, srcHeaders As Object
+    Dim baseColumns As Object, dstColumns As Object, rowMap As Object, destinationRows As Object
+    Dim seen As Object, newRows As Object, record As Object, headers As Object, target As Range, source As Range, idTarget As Range
+    Dim key As Variant, entry As Variant, rowId As String, header As String, normalized As String
+    Dim baseRow As Long, dstRow As Long, baseCol As Long, dstCol As Long, idCol As Long, nextRow As Long
+    Dim lastCol As Long, sourceLastCol As Long, actualValue As Variant, sourceFormat As String
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    lastCol = GetLastHeaderCol(ws): sourceLastCol = GetLastHeaderCol(wsSrc)
+    idCol = BidirectionalSyncFindUniqueHeaderColumn(ws, lastCol, Array("Excel管理行ID"))
+    If idCol <= 0 Then Err.Raise vbObjectError + 2929
+    Set rowMap = CopyBaselineBuildRowMap(ws, idCol)
+    Set destinationRows = SyncStateBuildDestinationRowMap(wsDst)
+    Set baseHeaders = BidirectionalDiffBuildHeaderColumnMap(ws, lastCol)
+    Set dstHeaders = BidirectionalDiffBuildHeaderColumnMap(wsDst, GetLastHeaderCol(wsDst))
+    Set srcHeaders = BidirectionalDiffBuildHeaderColumnMap(wsSrc, sourceLastCol)
+    Set baseColumns = CreateObject("Scripting.Dictionary"): baseColumns.CompareMode = vbTextCompare
+    Set dstColumns = CreateObject("Scripting.Dictionary"): dstColumns.CompareMode = vbTextCompare
+    BidirectionalSyncBuildSharedTransferMap wsSrc, sourceLastCol, srcHeaders, baseHeaders, baseColumns
+    BidirectionalSyncBuildSharedTransferMap wsSrc, sourceLastCol, srcHeaders, dstHeaders, dstColumns
+    Set seen = CreateObject("Scripting.Dictionary"): seen.CompareMode = vbTextCompare
+    Set newRows = CreateObject("Scripting.Dictionary"): newRows.CompareMode = vbTextCompare
+    nextRow = GetLastUsedRow(ws) + 1
+    For Each key In pending.Keys
+        entry = pending(CStr(key))
+        If Not IsArray(entry) Then Err.Raise vbObjectError + 2929
+        rowId = Trim$(CStr(entry(0))): header = CanonicalHeaderName(CStr(entry(1)))
+        If Len(rowId) = 0 Or Len(header) = 0 Then Err.Raise vbObjectError + 2929
+        If StrComp(CStr(key), BidirectionalSyncBaselineKey(rowId, header), vbTextCompare) <> 0 Then Err.Raise vbObjectError + 2929
+        If Not baseColumns.Exists(header) Or Not dstColumns.Exists(header) Then Err.Raise vbObjectError + 2929
+        baseCol = CLng(baseColumns(header)): dstCol = CLng(dstColumns(header))
+        If baseCol = idCol Or BidirectionalSyncIsIdentityHeader(header) Then Err.Raise vbObjectError + 2929
+        dstRow = SyncStateFindDestinationRowByMap(destinationRows, rowId)
+        If Not rowMap.Exists(rowId) Then
+            If flags Is Nothing Then Set flags = CopyBaselineFlagsForExistingRows(rowMap)
+            baseRow = nextRow: nextRow = nextRow + 1
+            If Application.WorksheetFunction.CountA(ws.Range(ws.Cells(baseRow, 1), ws.Cells(baseRow, lastCol))) <> 0 Then _
+                Err.Raise vbObjectError + 2929, , "基準表の追加行が空ではありません。"
+            Set idTarget = ws.Cells(baseRow, idCol)
+            If Not idTarget.Comment Is Nothing Then Err.Raise vbObjectError + 2929, , "基準表の追加位置に既存コメントがあります。"
+            CopyBaselineCaptureCell changes, seen, idTarget, rowId, "@"
+            rowMap.Add rowId, baseRow: newRows.Add rowId, True
+            Set record = CopyBaselineNewFlagRecord(False)
+            flags.Add rowId, Empty: Set flags(rowId) = record
+            flagsChanged = True
+        Else
+            baseRow = CLng(rowMap(rowId))
+        End If
+        Set source = wsDst.Cells(dstRow, dstCol): Set target = ws.Cells(baseRow, baseCol)
+        actualValue = source.Value2
+        If IsError(actualValue) Or IsNull(actualValue) Then Err.Raise vbObjectError + 2929
+        normalized = NormalizeValueForUpdateCompare(header, source.Value)
+        If StrComp(normalized, CStr(entry(2)), vbTextCompare) <> 0 Then _
+            Err.Raise vbObjectError + 2929, , "確定対象のExcel値が比較後に変わりました。"
+        If Not CopyBaselineCellMatches(target.Value2, actualValue) Or _
+           StrComp(NormalizeValueForUpdateCompare(header, target.Value), normalized, vbTextCompare) <> 0 Then
+            If newRows.Exists(rowId) Then
+                If Not target.Comment Is Nothing Then Err.Raise vbObjectError + 2929, , "基準表の追加位置に既存コメントがあります。"
+            End If
+            sourceFormat = CStr(source.NumberFormat)
+            If CopyBaselineRequiresTextFormat(actualValue) Then sourceFormat = "@"
+            CopyBaselineCaptureCell changes, seen, target, actualValue, sourceFormat
+        End If
+        If Not flags Is Nothing Then
+            Set record = flags(rowId): Set headers = record("headers")
+            If Not CBool(record("all")) Then
+                If Not headers.Exists(header) Then headers.Add header, True: flagsChanged = True
+            End If
+        End If
+    Next key
+End Sub
+
+Private Sub CopyBaselineApplyEntries(ByVal ws As Worksheet, ByVal wsDst As Worksheet, _
+    ByVal pending As Object, ByRef undo As Object)
+    Dim flags As Object, values As Object, locations As Object, changes As Collection
+    Dim flagUndo As Object, entry As Object, target As Range
+    Dim flagsChanged As Boolean, oldEvents As Boolean, eventsCaptured As Boolean
+    Dim failure As Long, detail As String, rollbackFailure As Long
+    If ws Is Nothing Or wsDst Is Nothing Or pending Is Nothing Then Err.Raise vbObjectError + 2930
+    If pending.Count = 0 Then Exit Sub
+    Set values = CreateObject("Scripting.Dictionary"): values.CompareMode = vbTextCompare
+    Set locations = CreateObject("Scripting.Dictionary"): locations.CompareMode = vbTextCompare
+    CopyBaselineLoadMaps ws, values, locations
+    Set flags = CopyBaselineLoadKnownFlags()
+    Set changes = New Collection
+    CopyBaselinePrepareEntries ws, wsDst, pending, flags, flagsChanged, changes
+    Set undo = CreateObject("Scripting.Dictionary")
+    undo.Add "sheet", Empty: Set undo("sheet") = ws
+    undo.Add "changes", changes
+    oldEvents = Application.EnableEvents: eventsCaptured = True
+    On Error GoTo Rollback
+    Application.EnableEvents = False
+    HorizontalBaselineProtect ws
+    If flagsChanged Then
+        CopyBaselineWriteKnownFlags flags, flagUndo
+        undo.Add "flagUndo", flagUndo
+    End If
+    For Each entry In changes
+        Set target = ws.Range(CStr(entry("address")))
+        entry("changed") = True
+        target.NumberFormat = CStr(entry("newFormat"))
+        If IsEmpty(entry("newValue")) Then
+            target.ClearContents
+        Else
+            target.Value2 = entry("newValue")
+        End If
+        If target.HasFormula Then Err.Raise vbObjectError + 2930, , "基準値に数式が発生しました。"
+        If Not CopyBaselineCellMatches(entry("newValue"), target.Value2) Then _
+            Err.Raise vbObjectError + 2930, , "基準値の書込み後の値・型が一致しません。"
+        If CStr(target.NumberFormat) <> CStr(entry("newFormat")) Then Err.Raise vbObjectError + 2930
+    Next entry
+    CopyBaselineLoadMaps ws, values, locations
+    Application.EnableEvents = oldEvents: eventsCaptured = False
+    Exit Sub
+Rollback:
+    failure = Err.Number: detail = Err.Description
+    On Error Resume Next
+    Err.Clear
+    If Not flagUndo Is Nothing Then
+        If Not undo.Exists("flagUndo") Then CopyBaselineRestoreFlags flagUndo
+    End If
+    If Err.Number <> 0 Then rollbackFailure = Err.Number
+    Err.Clear
+    CopyBaselineRestoreUndo undo
+    If Err.Number <> 0 Then rollbackFailure = Err.Number
+    Err.Clear
+    If eventsCaptured Then Application.EnableEvents = oldEvents
+    If Err.Number <> 0 Then rollbackFailure = Err.Number
+    On Error GoTo 0
+    Set undo = Nothing
+    If rollbackFailure <> 0 Then
+        mSyncRecoveryRequired = True
+        Err.Raise vbObjectError + 2930, "CopyBaselineApplyEntries", _
+            "基準値またはイベント状態の復元に失敗しました。保存せず復旧コピーから再開してください。"
+    End If
+    Err.Raise failure, "CopyBaselineApplyEntries", detail
+End Sub
+
+Private Sub CopyBaselineLoadMaps(ByVal ws As Worksheet, ByVal baselineValues As Object, ByVal baselineRows As Object)
+    Dim wsSrc As Worksheet, wsDst As Worksheet, flags As Object, seen As Object
+    Dim srcHeaders As Object, baseHeaders As Object, columns As Object, mappedColumns As Object, data As Variant
+    Dim idCol As Long, lastRow As Long, lastCol As Long, srcLastCol As Long, r As Long, c As Long
+    Dim rowId As String, header As String, mapKey As String, key As Variant
+    Dim flagRow As Long, flagToken As String, record As Object
+    If ws Is Nothing Or baselineValues Is Nothing Or baselineRows Is Nothing Then Err.Raise vbObjectError + 2926
+    If ws.Name <> HORIZONTAL_BASELINE_SHEET Or Not (ws.Parent Is ThisWorkbook) Then Err.Raise vbObjectError + 2926
+    If Not CopyBaselineHasInitializationMarker() Or Not CopyBaselineHasSheetInitializationMarker(ws) Then _
+        Err.Raise vbObjectError + 2936, , "前回同期基準表の初期化情報を確認できません。"
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
+    If Not HorizontalBaselineMatchesDestinationHeaders(ws, wsDst) Then _
+        Err.Raise vbObjectError + 2926, , "前回同期基準表の見出しを確認できません。"
+    CopyBaselineValidateData ws, False
+    Set flags = CopyBaselineLoadKnownFlags()
+    Set seen = CreateObject("Scripting.Dictionary"): seen.CompareMode = vbTextCompare
+    lastCol = GetLastHeaderCol(ws): lastRow = GetLastUsedRow(ws): srcLastCol = GetLastHeaderCol(wsSrc)
+    idCol = BidirectionalSyncFindUniqueHeaderColumn(ws, lastCol, Array("Excel管理行ID"))
+    If idCol <= 0 Then Err.Raise vbObjectError + 2926
+    Set srcHeaders = BidirectionalDiffBuildHeaderColumnMap(wsSrc, srcLastCol)
+    Set baseHeaders = BidirectionalDiffBuildHeaderColumnMap(ws, lastCol)
+    Set columns = CreateObject("Scripting.Dictionary"): columns.CompareMode = vbTextCompare
+    BidirectionalSyncBuildSharedTransferMap wsSrc, srcLastCol, srcHeaders, baseHeaders, columns
+    Set mappedColumns = CreateObject("Scripting.Dictionary")
+    For Each key In columns.Keys
+        c = CLng(columns(key))
+        If mappedColumns.Exists(CStr(c)) Then _
+            Err.Raise vbObjectError + 2926, , "複数のCSV項目が同じ基準列に対応するため比較を中止しました。"
+        mappedColumns.Add CStr(c), True
+    Next key
+    baselineValues.RemoveAll: baselineRows.RemoveAll
+    data = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol)).Value
+    For r = 2 To lastRow
+        rowId = Trim$(CStr(data(r, idCol)))
+        If Len(rowId) > 0 Then
+            If seen.Exists(rowId) Then Err.Raise vbObjectError + 2926
+            seen.Add rowId, True: flagRow = 0: flagToken = ""
+            If Not flags Is Nothing Then
+                If Not flags.Exists(rowId) Then Err.Raise vbObjectError + 2926, , "基準行の確定項目情報がありません。"
+                Set record = flags(rowId)
+                flagRow = CLng(record("flagRow")): flagToken = CStr(record("token"))
+            End If
+            For Each key In columns.Keys
+                header = CStr(key)
+                c = BidirectionalDiffFindCachedColumn(baseHeaders, GetStep2HeaderCandidates(header))
+                If c <= 0 Or c <> CLng(columns(key)) Then Err.Raise vbObjectError + 2926
+                If CopyBaselineIsKnownField(flags, rowId, header) Then
+                    mapKey = BidirectionalSyncBaselineKey(rowId, header)
+                    If baselineValues.Exists(mapKey) Then Err.Raise vbObjectError + 2926
+                    baselineValues.Add mapKey, NormalizeValueForUpdateCompare(header, data(r, c))
+                    baselineRows.Add mapKey, Array(CLng(r), CLng(c), header, CStr(data(1, c)), rowId, CLng(idCol), flagRow, flagToken)
+                End If
+            Next key
+        End If
+    Next r
+    If Not flags Is Nothing Then
+        For Each key In flags.Keys
+            If Not seen.Exists(CStr(key)) Then _
+                Err.Raise vbObjectError + 2926, , "確定項目情報に対応する基準行がありません。"
+        Next key
+    End If
+End Sub
+
+Private Function HorizontalBaselineCopyWithoutSheetEvents(ByVal wsDst As Worksheet) As Worksheet
+    Dim ws As Worksheet, sourceRange As Range, target As Range
+    Dim sourceValues As Variant, actual As Variant, lastRow As Long, lastCol As Long, hasFormula As Variant
+    Dim oldEvents As Boolean, oldAlerts As Boolean, eventsCaptured As Boolean, created As Boolean
+    Dim failure As Long, detail As String, cleanupFailure As Long, r As Long, c As Long
+    lastRow = GetLastUsedRow(wsDst): lastCol = GetLastHeaderCol(wsDst)
+    Set sourceRange = wsDst.Range(wsDst.Cells(1, 1), wsDst.Cells(lastRow, lastCol))
+    sourceValues = sourceRange.Value2
+    oldEvents = Application.EnableEvents: oldAlerts = Application.DisplayAlerts: eventsCaptured = True
+    On Error GoTo Failed
+    Application.EnableEvents = False
+    Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    created = True
+    ws.Name = HORIZONTAL_BASELINE_SHEET
+    Set target = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+    sourceRange.Copy
+    target.PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+    For r = 1 To lastRow
+        For c = 1 To lastCol
+            If CopyBaselineRequiresTextFormat(sourceValues(r, c)) Then target.Cells(r, c).NumberFormat = "@"
+        Next c
+    Next r
+    target.Value2 = sourceValues
+    actual = target.Value2
+    If Not HorizontalBaselineDataMatches(sourceValues, actual, True) Then _
+        Err.Raise vbObjectError + 2924, , "初期基準の値または型を照合できません。"
+    hasFormula = target.HasFormula
+    If IsNull(hasFormula) Then Err.Raise vbObjectError + 2924, , "初期基準に数式が残っています。"
+    If CBool(hasFormula) Then Err.Raise vbObjectError + 2924, , "初期基準に数式が残っています。"
+    target.Locked = True
+    HorizontalBaselineProtect ws
+    wsDst.Activate: ws.Visible = xlSheetVeryHidden
+    Application.EnableEvents = oldEvents: eventsCaptured = False
+    Set HorizontalBaselineCopyWithoutSheetEvents = ws
+    Exit Function
+Failed:
+    failure = Err.Number: detail = Err.Description
+    On Error Resume Next
+    Err.Clear
+    If created And Not ws Is Nothing Then
+        wsDst.Activate
+        Application.DisplayAlerts = False
+        ws.Delete
+    End If
+    If Err.Number <> 0 Then cleanupFailure = Err.Number
+    Err.Clear
+    Application.DisplayAlerts = oldAlerts
+    If Err.Number <> 0 Then cleanupFailure = Err.Number
+    Err.Clear
+    If eventsCaptured Then Application.EnableEvents = oldEvents
+    If Err.Number <> 0 Then cleanupFailure = Err.Number
+    On Error GoTo 0
+    If cleanupFailure <> 0 Then
+        mSyncRecoveryRequired = True
+        Err.Raise vbObjectError + 2924, "HorizontalBaselineCopyWithoutSheetEvents", _
+            "新規基準表の後片付けまたはExcel設定の復元に失敗しました。保存せず復旧コピーから再開してください。"
+    End If
+    Err.Raise failure, "HorizontalBaselineCopyWithoutSheetEvents", detail
 End Function
 
 ' 行番号は永続キーにせず、管理行ID・正規化見出しで同じ既存3方向比較マップへ変換する。
@@ -18600,99 +19309,44 @@ End Sub
 ' 手動編集一覧CSVの出力成功後だけ、保留した基準値を一括確定する。
 ' 書込み失敗時は開始時点の値・書式へ戻し、部分的な基準値を残さない。
 Private Sub BidirectionalSyncCommitPendingBaselines()
+    If Not BidirectionalSyncContextIsActive() Then Exit Sub
+    CopyBaselineCommitPending
+End Sub
 
-    Dim pending As Object
-    Dim baselineRows As Object
-    Dim baselineSheet As Worksheet
-    Dim key As Variant
-    Dim entry As Variant
-    Dim initialLastRow As Long, nextNewRow As Long, lastWrittenRow As Long
-    Dim rowNo As Long
-    Dim originalFormulas As Variant
-    Dim originalNumberFormats() As Variant
-    Dim formatRow As Long, formatCol As Long
-    Dim newRows As Object
-    Dim errorNumber As Long, errorDescription As String
-    Dim rollbackSucceeded As Boolean
-
+Private Sub CopyBaselineCommitPending()
+    Dim pending As Object, baselineRows As Object, baselineSheet As Worksheet, wsDst As Worksheet
+    Dim undo As Object, registered As Boolean, failure As Long, detail As String, rollbackFailure As Long
     If Not BidirectionalSyncContextIsActive() Then Exit Sub
     Set pending = mBidirectionalSyncContext("PendingBaselines")
     If pending.Count = 0 Then Exit Sub
     Set baselineRows = mBidirectionalSyncContext("BaselineRows")
     Set baselineSheet = mBidirectionalSyncContext("BaselineSheet")
-    If baselineSheet Is Nothing Then Err.Raise vbObjectError + 2805, , "同期基準値シートを確認できません。"
-    If baselineSheet.Name = HORIZONTAL_BASELINE_SHEET Then
-        HorizontalBaselineReplaceData baselineSheet, HorizontalBaselineApplyPending(HorizontalBaselineReadData(baselineSheet), pending)
-        BidirectionalSyncLoadBaselineMaps baselineSheet, mBidirectionalSyncContext("BaselineValues"), baselineRows
-        pending.RemoveAll
-        Exit Sub
-    End If
-
-    initialLastRow = baselineSheet.Cells(baselineSheet.Rows.Count, 1).End(xlUp).Row
-    If initialLastRow < 1 Then initialLastRow = 1
-    originalFormulas = baselineSheet.Range(baselineSheet.Cells(1, 1), baselineSheet.Cells(initialLastRow, 5)).Formula
-    ReDim originalNumberFormats(1 To initialLastRow, 1 To 5)
-    For formatRow = 1 To initialLastRow
-        For formatCol = 1 To 5
-            originalNumberFormats(formatRow, formatCol) = baselineSheet.Cells(formatRow, formatCol).NumberFormat
-        Next formatCol
-    Next formatRow
-    nextNewRow = initialLastRow + 1
-    Set newRows = CreateObject("Scripting.Dictionary")
-    newRows.CompareMode = vbTextCompare
-
+    Set wsDst = mBidirectionalSyncContext("DestinationSheet")
+    If baselineSheet Is Nothing Or wsDst Is Nothing Then Err.Raise vbObjectError + 2931
+    If baselineSheet.Name <> HORIZONTAL_BASELINE_SHEET Then Err.Raise vbObjectError + 2931
+    If mBidirectionalSyncContext.Exists("CopyBaselineUndo") Then Err.Raise vbObjectError + 2931
     On Error GoTo Rollback
-    For Each key In pending.Keys
-        entry = pending(CStr(key))
-        If baselineRows.Exists(CStr(key)) Then
-            rowNo = CLng(baselineRows(CStr(key)))
-        Else
-            rowNo = nextNewRow
-            nextNewRow = nextNewRow + 1
-            newRows.Add CStr(key), rowNo
-        End If
-        lastWrittenRow = rowNo
-
-        baselineSheet.Cells(rowNo, 1).NumberFormat = "@"
-        baselineSheet.Cells(rowNo, 2).NumberFormat = "@"
-        baselineSheet.Cells(rowNo, 3).NumberFormat = "@"
-        baselineSheet.Cells(rowNo, 1).Value2 = CStr(entry(0))
-        baselineSheet.Cells(rowNo, 2).Value2 = CStr(entry(1))
-        baselineSheet.Cells(rowNo, 3).Value2 = CStr(entry(2))
-        baselineSheet.Cells(rowNo, 4).Value = Now
-        baselineSheet.Cells(rowNo, 5).Value2 = BIDIRECTIONAL_SYNC_BASELINE_VERSION
-        lastWrittenRow = rowNo
-    Next key
-
-    For Each key In newRows.Keys
-        baselineRows.Add CStr(key), CLng(newRows(CStr(key)))
-    Next key
+    CopyBaselineApplyEntries baselineSheet, wsDst, pending, undo
+    mBidirectionalSyncContext.Add "CopyBaselineUndo", Empty
+    Set mBidirectionalSyncContext("CopyBaselineUndo") = undo
+    registered = True
+    BidirectionalSyncLoadBaselineMaps baselineSheet, mBidirectionalSyncContext("BaselineValues"), baselineRows
     pending.RemoveAll
     Exit Sub
-
 Rollback:
-    errorNumber = Err.Number
-    errorDescription = Err.Description
-    rollbackSucceeded = True
-    On Error Resume Next
-    baselineSheet.Range(baselineSheet.Cells(1, 1), baselineSheet.Cells(initialLastRow, 5)).Formula = originalFormulas
-    For formatRow = 1 To initialLastRow
-        For formatCol = 1 To 5
-            baselineSheet.Cells(formatRow, formatCol).NumberFormat = originalNumberFormats(formatRow, formatCol)
-        Next formatCol
-    Next formatRow
-    If lastWrittenRow > initialLastRow Then
-        baselineSheet.Range(baselineSheet.Cells(initialLastRow + 1, 1), baselineSheet.Cells(lastWrittenRow, 5)).Clear
+    failure = Err.Number: detail = Err.Description
+    If Not registered And Not undo Is Nothing Then
+        On Error Resume Next
+        Err.Clear: CopyBaselineRestoreUndo undo
+        rollbackFailure = Err.Number
+        On Error GoTo 0
     End If
-    If Err.Number <> 0 Then rollbackSucceeded = False
-    On Error GoTo 0
-
-    If Not rollbackSucceeded Then _
-        Err.Raise vbObjectError + 2806, "BidirectionalSyncCommitPendingBaselines", _
-            "同期基準値の確定中に失敗し、復元できません。ブックを保存せずに終了してください。"
-    Err.Raise errorNumber, "BidirectionalSyncCommitPendingBaselines", _
-        "同期基準値の確定を取り消しました: " & errorDescription
-
+    If rollbackFailure <> 0 Then
+        mSyncRecoveryRequired = True
+        Err.Raise vbObjectError + 2931, "CopyBaselineCommitPending", _
+            "基準値の復元に失敗しました。保存せず復旧コピーから再開してください。"
+    End If
+    Err.Raise failure, "CopyBaselineCommitPending", detail
 End Sub
 
 Private Function BidirectionalSyncDefaultOutputPath(ByVal targetYearValue As Long) As String
@@ -18715,6 +19369,7 @@ Private Sub BidirectionalSyncApplyThreeWayToRow( _
     Dim rowIdCol As Long
     Dim rowId As String
     Dim key As Variant
+    Dim identityWriteKeys As Collection, identitySafetyReason As String
 
     If Not BidirectionalSyncContextIsActive() Then Exit Sub
     If wsSrc Is Nothing Or wsDst Is Nothing Or srcHeaderMap Is Nothing Or srcToDstMap Is Nothing Then Exit Sub
@@ -18732,6 +19387,20 @@ Private Sub BidirectionalSyncApplyThreeWayToRow( _
     SyncStateTrackMatchedRow wsSrc, wsDst, srcRow, dstRow, rowId, srcToDstMap
     Set processed = CreateObject("Scripting.Dictionary")
     processed.CompareMode = vbTextCompare
+
+    ' 全ての識別情報の反映先を先に確認し、数式等を一部でも上書きしない。
+    Set identityWriteKeys = New Collection
+    For Each key In srcToDstMap.Keys
+        If BidirectionalSyncIsIdentityHeader(CStr(key)) And srcHeaderMap.Exists(CStr(key)) Then
+            If Not (preserveExactIdentity And (CanonicalHeaderName(CStr(key)) = CanonicalHeaderName("ファイルID") Or _
+                CanonicalHeaderName(CStr(key)) = CanonicalHeaderName("バーコード番号"))) Then identityWriteKeys.Add CStr(key)
+        End If
+    Next key
+    If identityWriteKeys.Count > 0 Then
+        If Not BidirectionalSyncAutoUpdateTargetsAreSafe(wsSrc, wsDst, srcRow, dstRow, _
+            srcHeaderMap, srcToDstMap, identityWriteKeys, identitySafetyReason) Then _
+            Err.Raise vbObjectError + 2934, "BidirectionalSyncApplyThreeWayToRow", identitySafetyReason
+    End If
 
     ' 正式IDの補完だけは、既存の同一性判定が成立した行に限って従来どおり行う。
     For Each key In srcToDstMap.Keys
@@ -19186,6 +19855,8 @@ Private Sub BidirectionalSyncApplyManagedGroup( _
             mBidirectionalSyncContext("BaselineConfirmedCount") = _
                 CLng(mBidirectionalSyncContext("BaselineConfirmedCount")) + 1
         Next key
+        BidirectionalSyncCloseConfirmedSystemDecision wsSrc, wsDst, srcRow, dstRow, rowId, _
+            srcHeaderMap, srcToDstMap, itemKeys, groupName
         Exit Sub
     End If
 
@@ -19260,6 +19931,8 @@ Private Sub BidirectionalSyncApplyManagedGroup( _
             BidirectionalSyncStoreBaseline rowId, CStr(key), csvValue
             mBidirectionalSyncContext("CsvAppliedCount") = CLng(mBidirectionalSyncContext("CsvAppliedCount")) + 1
         Next key
+        BidirectionalSyncCloseConfirmedSystemDecision wsSrc, wsDst, srcRow, dstRow, rowId, _
+            srcHeaderMap, srcToDstMap, itemKeys, groupName
     Else
         BidirectionalSyncAppendGroupDecision "競合保留", wsSrc, wsDst, srcRow, dstRow, rowId, srcHeaderMap, srcToDstMap, _
             itemKeys, groupName, "Excel側と管理システム側の両方が前回確認値から異なる値へ変更されています。自動採用せず、両方の値を保持しました。"
@@ -19662,6 +20335,60 @@ FailClosed:
     Err.Clear
 End Function
 
+Private Function BidirectionalSyncSystemDecisionStillConfirmed(ByVal saved As Object, ByVal wsDst As Worksheet, _
+    ByVal dstRow As Long, ByVal rowId As String, ByVal srcToDstMap As Object) As Boolean
+    Dim baselineValues As Object, fields As Collection, field As Object, target As Range
+    Dim header As String, baselineKey As String, currentValue As String
+    On Error GoTo FailClosed
+    If saved Is Nothing Or wsDst Is Nothing Or srcToDstMap Is Nothing Then Exit Function
+    If Not BidirectionalSyncContextIsActive() Then Exit Function
+    Set baselineValues = mBidirectionalSyncContext("BaselineValues")
+    Set fields = saved("headers")
+    If fields.Count = 0 Then Exit Function
+    For Each field In fields
+        header = CanonicalHeaderName(CStr(field("sourceHeader")))
+        If Not srcToDstMap.Exists(header) Then Exit Function
+        baselineKey = BidirectionalSyncBaselineKey(rowId, header)
+        If Not baselineValues.Exists(baselineKey) Then Exit Function
+        Set target = wsDst.Cells(dstRow, CLng(srcToDstMap(header)))
+        If target.HasFormula Or target.HasArray Or target.MergeCells Or IsError(target.Value2) Then Exit Function
+        currentValue = NormalizeValueForUpdateCompare(header, wsDst.Cells(dstRow, target.Column).Value2)
+        If StrComp(currentValue, CStr(field("systemValue")), vbTextCompare) <> 0 Then Exit Function
+        currentValue = NormalizeValueForUpdateCompare(header, target.Value)
+        If StrComp(currentValue, CStr(baselineValues(baselineKey)), vbTextCompare) <> 0 Then Exit Function
+    Next field
+    BidirectionalSyncSystemDecisionStillConfirmed = True
+    Exit Function
+FailClosed:
+    Err.Clear
+End Function
+
+Private Sub BidirectionalSyncCloseConfirmedSystemDecision(ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, _
+    ByVal srcRow As Long, ByVal dstRow As Long, ByVal rowId As String, ByVal srcHeaderMap As Object, _
+    ByVal srcToDstMap As Object, ByVal itemKeys As Collection, ByVal groupName As String)
+    Dim confirmed As Object, resolution As Object, key As Variant, caseKey As String
+    Dim source As Range, target As Range, sourceValue As Variant, targetValue As Variant
+    If Not mBidirectionalSyncContext.Exists("ConfirmedSystemCases") Then Exit Sub
+    Set confirmed = mBidirectionalSyncContext("ConfirmedSystemCases")
+    caseKey = CStr(CLng(mBidirectionalSyncContext("TargetYear"))) & Chr$(30) & _
+        BidirectionalSyncConflictCaseKey(rowId, groupName)
+    If Not confirmed.Exists(caseKey) Then Exit Sub
+    For Each key In itemKeys
+        If Not srcHeaderMap.Exists(CStr(key)) Or Not srcToDstMap.Exists(CStr(key)) Then Err.Raise vbObjectError + 2935
+        Set source = wsSrc.Cells(srcRow, CLng(srcHeaderMap(CStr(key))))
+        Set target = wsDst.Cells(dstRow, CLng(srcToDstMap(CStr(key))))
+        sourceValue = source.Value2: targetValue = target.Value2
+        If IsError(sourceValue) Or IsNull(sourceValue) Or IsError(targetValue) Or IsNull(targetValue) Then Exit Sub
+        If StrComp(NormalizeValueForUpdateCompare(CStr(key), sourceValue), _
+            NormalizeValueForUpdateCompare(CStr(key), targetValue), vbTextCompare) <> 0 Then Exit Sub
+    Next key
+    Set resolution = BidirectionalSyncCaptureConflictCase(wsSrc, wsDst, srcRow, dstRow, rowId, _
+        srcHeaderMap, srcToDstMap, itemKeys, groupName, "採用済み判断を再確認し、現在の一致を記録しました。")
+    If resolution Is Nothing Then Err.Raise vbObjectError + 2935
+    resolution.Add "autoResolved", True
+    confirmed.Remove caseKey
+End Sub
+
 Private Function BidirectionalSyncProtectSavedDecision( _
     ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
     ByVal rowId As String, ByVal srcHeaderMap As Object, ByVal srcToDstMap As Object, _
@@ -19669,7 +20396,7 @@ Private Function BidirectionalSyncProtectSavedDecision( _
     ByVal classificationCodeReady As Boolean) As Boolean
     Dim yearValue As Long, caseKey As String, stableKey As String
     Dim saved As Object, savedKeys As Object, keys As Object, key As Variant, field As Object, fields As Collection
-    Dim savedHeader As String, sourceKey As String, dstCol As Long, resolution As Object
+    Dim savedHeader As String, sourceKey As String, dstCol As Long, resolution As Object, confirmed As Object
 
     yearValue = CLng(mBidirectionalSyncContext("TargetYear"))
     If Not BidirectionalSyncProtectHeldConflict(yearValue, rowId, groupName) Then Exit Function
@@ -19708,6 +20435,18 @@ Private Function BidirectionalSyncProtectSavedDecision( _
     Next field
 
     If CStr(saved("decision")) = BIDIRECTIONAL_SYNC_CONFLICT_AUTO_RESOLVED Then Exit Function
+    If CStr(saved("decision")) = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then
+        If BidirectionalSyncSystemDecisionStillConfirmed(saved, wsDst, dstRow, rowId, srcToDstMap) Then
+            If Not mBidirectionalSyncContext.Exists("ConfirmedSystemCases") Then
+                mBidirectionalSyncContext.Add "ConfirmedSystemCases", Empty
+                Set mBidirectionalSyncContext("ConfirmedSystemCases") = CreateObject("Scripting.Dictionary")
+            End If
+            Set confirmed = mBidirectionalSyncContext("ConfirmedSystemCases")
+            If confirmed.Exists(caseKey) Then Err.Raise vbObjectError + 2935
+            confirmed.Add caseKey, True
+            Exit Function
+        End If
+    End If
     If excelEqualsCsv And classificationCodeReady Then
         Set resolution = BidirectionalSyncCaptureConflictCase(wsSrc, wsDst, srcRow, dstRow, rowId, _
             srcHeaderMap, srcToDstMap, itemKeys, groupName, "現在のExcel値とCSV値の一致を確認しました。")
@@ -21735,6 +22474,7 @@ Public Function BidirectionalSyncResolveFileDecisions( _
     Dim plan As Collection, wsDst As Worksheet, wsConflict As Worksheet
     Dim preview As String, reason As String, failureText As String
     Dim firstEntry As Object, firstItem As Object, syncRecoveryPath As String
+    Dim baselineUndo As Object
     Dim oldEvents As Boolean, eventsCaptured As Boolean, changing As Boolean, restoreOk As Boolean
     On Error GoTo Failed
     If mSyncRecoveryRequired Then Err.Raise vbObjectError + 2890, , "前回同期が失敗しています。復旧コピーから再開してください。"
@@ -21749,6 +22489,7 @@ Public Function BidirectionalSyncResolveFileDecisions( _
     Application.EnableEvents = False: changing = True
     If Not BidirectionalSyncCommitFilePlan(plan, wsDst, wsConflict, 0) Then _
         Err.Raise vbObjectError + 2876, , "一括更新が完了しませんでした。"
+    CopyBaselineConfirmResolvedBatch plan, baselineUndo
     Set firstEntry = plan(1): Set firstItem = firstEntry("item")
     SyncStateUpdateDecision ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV), CLng(firstItem("sourceRow")), _
         wsDst, CLng(firstItem("destinationRow")), CLng(firstItem("year"))
@@ -21762,6 +22503,9 @@ Failed:
     If changing Then
         Err.Clear
         Application.EnableEvents = False
+        If Err.Number <> 0 Then restoreOk = False
+        Err.Clear
+        If Not baselineUndo Is Nothing Then CopyBaselineRestoreUndo baselineUndo
         If Err.Number <> 0 Then restoreOk = False
         Err.Clear
         If Not BidirectionalSyncRestoreFileDecisions(plan, wsDst, wsConflict) Then restoreOk = False
@@ -21782,6 +22526,60 @@ Failed:
     End If
 End Function
 
+Private Sub CopyBaselinePendingAddItem(ByVal item As Object, ByVal pending As Object)
+    Dim fields As Collection, field As Object, rowId As String, header As String, key As String
+    Dim wsDst As Worksheet, dstRow As Long, dstCol As Long, idCol As Long, lastCol As Long, actualValue As Variant
+    If item Is Nothing Or pending Is Nothing Then Err.Raise vbObjectError + 2932
+    rowId = Trim$(CStr(item("rowId")))
+    If Len(rowId) = 0 Then Err.Raise vbObjectError + 2932
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    lastCol = GetLastHeaderCol(wsDst): dstRow = CLng(item("destinationRow"))
+    idCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, lastCol, Array("Excel管理行ID"))
+    If idCol <= 0 Or dstRow < 2 Then Err.Raise vbObjectError + 2932
+    If StrComp(Trim$(CStr(wsDst.Cells(dstRow, idCol).Value2)), rowId, vbTextCompare) <> 0 Then Err.Raise vbObjectError + 2932
+    If Not BidirectionalSyncDestinationRowIdIsUnique(wsDst, rowId, dstRow) Then Err.Raise vbObjectError + 2932
+    Set fields = BidirectionalSyncUnpackConflictHeaders(CStr(item("snapshot")))
+    For Each field In fields
+        header = CanonicalHeaderName(CStr(field("sourceHeader")))
+        If Len(header) = 0 Or BidirectionalSyncIsIdentityHeader(header) Then Err.Raise vbObjectError + 2932
+        dstCol = BidirectionalSyncFindUniqueHeaderColumn(wsDst, lastCol, GetStep2HeaderCandidates(CStr(field("destinationHeader"))))
+        If dstCol <= 0 Then Err.Raise vbObjectError + 2932
+        actualValue = wsDst.Cells(dstRow, dstCol).Value2
+        If IsError(actualValue) Or IsNull(actualValue) Then Err.Raise vbObjectError + 2932
+        If StrComp(NormalizeValueForUpdateCompare(header, actualValue), CStr(field("systemValue")), vbTextCompare) <> 0 Then _
+            Err.Raise vbObjectError + 2932, , "採用後のExcel値がシステム値と一致しません。"
+        key = BidirectionalSyncBaselineKey(rowId, header)
+        If pending.Exists(key) Then Err.Raise vbObjectError + 2932, , "確定対象が重複しています。"
+        pending.Add key, Array(rowId, header, NormalizeValueForUpdateCompare(header, wsDst.Cells(dstRow, dstCol).Value))
+    Next field
+End Sub
+
+Private Sub CopyBaselineConfirmResolvedSystem(ByVal item As Object, ByRef undo As Object)
+    Dim pending As Object, ws As Worksheet, wsDst As Worksheet
+    Set pending = CreateObject("Scripting.Dictionary"): pending.CompareMode = vbTextCompare
+    CopyBaselinePendingAddItem item, pending
+    Set ws = BidirectionalSyncExistingBaselineSheet()
+    If ws Is Nothing Then Err.Raise vbObjectError + 2932, , "前回同期基準表がありません。"
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    CopyBaselineApplyEntries ws, wsDst, pending, undo
+End Sub
+
+Private Sub CopyBaselineConfirmResolvedBatch(ByVal plan As Collection, ByRef undo As Object)
+    Dim pending As Object, entry As Object, item As Object, ws As Worksheet, wsDst As Worksheet
+    Set pending = CreateObject("Scripting.Dictionary"): pending.CompareMode = vbTextCompare
+    For Each entry In plan
+        If CStr(entry("decision")) = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then
+            Set item = entry("item")
+            CopyBaselinePendingAddItem item, pending
+        End If
+    Next entry
+    If pending.Count = 0 Then Exit Sub
+    Set ws = BidirectionalSyncExistingBaselineSheet()
+    If ws Is Nothing Then Err.Raise vbObjectError + 2932, , "前回同期基準表がありません。"
+    Set wsDst = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    CopyBaselineApplyEntries ws, wsDst, pending, undo
+End Sub
+
 Public Function BidirectionalSyncResolveConflict(ByVal item As Object, ByVal decision As String) As Boolean
     Dim wsSrc As Worksheet, wsDst As Worksheet, wsConflict As Worksheet
     Dim fieldItems As Collection, fieldItem As Object, snapshots As Collection, snapshot As Object
@@ -21791,6 +22589,7 @@ Public Function BidirectionalSyncResolveConflict(ByVal item As Object, ByVal dec
     Dim reason As String, failureText As String, systemValue As Variant, i As Long
     Dim classificationPreview As String, retentionPreview As String
     Dim syncStatusCell As Range, oldSyncStatus As Variant, statusCaptured As Boolean, syncRecoveryPath As String
+    Dim baselineUndo As Object
 
     On Error GoTo Failed
     If mSyncRecoveryRequired Then Err.Raise vbObjectError + 2890, , "前回同期が失敗しています。復旧コピーから再開してください。"
@@ -21859,6 +22658,7 @@ Public Function BidirectionalSyncResolveConflict(ByVal item As Object, ByVal dec
             If NormalizeValueForUpdateCompare(CStr(fieldItem("sourceHeader")), wsDst.Cells(dstRow, dstCol).Value2) <> _
                CStr(fieldItem("systemValue")) Then Err.Raise vbObjectError + 2848, , "Excel更新後の値を検証できません。"
         Next fieldItem
+        CopyBaselineConfirmResolvedSystem item, baselineUndo
     End If
     wsConflict.Cells(stateRow, 6).Value2 = decision
     wsConflict.Cells(stateRow, 7).Value2 = Format$(Now, "yyyy/mm/dd hh:nn:ss")
@@ -21873,6 +22673,11 @@ Failed:
     On Error Resume Next
     Err.Clear
     restoreOk = True
+    If changing And Not baselineUndo Is Nothing Then
+        Err.Clear: CopyBaselineRestoreUndo baselineUndo
+        If Err.Number <> 0 Then restoreOk = False
+        Err.Clear
+    End If
     If changing And decision = BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM Then
         For i = 1 To snapshots.Count
             Set snapshot = snapshots(i)

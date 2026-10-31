@@ -64,5 +64,27 @@ class SavedDecisionSourceContract(unittest.TestCase):
         self.assertLess(code.index('stableKey'), code.index('resolution.Add "autoResolved", True'))
         self.assertIn('saved("decision")) = BIDIRECTIONAL_SYNC_CONFLICT_AUTO_RESOLVED', code)
 
+    def test_system_acceptance_is_closed_only_when_accepted_value_and_baseline_still_match(self):
+        guard = proc('BidirectionalSyncProtectSavedDecision')
+        self.assertIn('BIDIRECTIONAL_SYNC_CONFLICT_SYSTEM', guard)
+        self.assertIn('BidirectionalSyncSystemDecisionStillConfirmed', guard)
+        self.assertLess(guard.index('BidirectionalSyncSystemDecisionStillConfirmed'),
+                        guard.index('BidirectionalSyncAppendGroupDecision'))
+        check = proc('BidirectionalSyncSystemDecisionStillConfirmed')
+        for part in ('BaselineValues', 'BidirectionalSyncBaselineKey', 'systemValue',
+                     'NormalizeValueForUpdateCompare', 'wsDst.Cells', 'baselineValues.Exists'):
+            self.assertIn(part, check)
+
+    def test_confirmed_system_history_is_closed_after_successful_reconfirmation(self):
+        guard = proc('BidirectionalSyncProtectSavedDecision')
+        self.assertIn('ConfirmedSystemCases', guard)
+        managed = proc('BidirectionalSyncApplyManagedGroup')
+        self.assertGreaterEqual(managed.count('BidirectionalSyncCloseConfirmedSystemDecision'), 2)
+        close = proc('BidirectionalSyncCloseConfirmedSystemDecision')
+        self.assertIn('BidirectionalSyncCaptureConflictCase', close)
+        self.assertIn('resolution.Add "autoResolved", True', close)
+        self.assertIn('NormalizeValueForUpdateCompare', close)
+        self.assertIn('ConfirmedSystemCases', close)
+
 if __name__ == '__main__':
     unittest.main()
