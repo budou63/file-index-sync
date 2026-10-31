@@ -19133,7 +19133,7 @@ Private Sub BidirectionalSyncApplyManagedGroup( _
     Dim mismatchedKeys As Collection
     Dim initialMismatchReason As String
     Dim classificationCodeReady As Boolean
-    Dim classificationCodeHoldReason As String
+    Dim classificationCodeHoldReason As String, autoUpdateReason As String
     Dim savedHistoryPresent As Boolean
 
     If itemKeys Is Nothing Then Exit Sub
@@ -19243,6 +19243,12 @@ Private Sub BidirectionalSyncApplyManagedGroup( _
                 srcHeaderMap, srcToDstMap, itemKeys, groupName, classificationCodeHoldReason
             Exit Sub
         End If
+        If Not BidirectionalSyncAutoUpdateTargetsAreSafe( _
+            wsSrc, wsDst, srcRow, dstRow, srcHeaderMap, srcToDstMap, itemKeys, autoUpdateReason) Then
+            BidirectionalSyncAppendGroupDecision "競合保留", wsSrc, wsDst, srcRow, dstRow, rowId, _
+                srcHeaderMap, srcToDstMap, itemKeys, groupName, autoUpdateReason
+            Exit Sub
+        End If
         For Each key In itemKeys
             srcCol = CLng(srcHeaderMap(CStr(key)))
             dstCol = CLng(srcToDstMap(CStr(key)))
@@ -19260,6 +19266,42 @@ Private Sub BidirectionalSyncApplyManagedGroup( _
     End If
 
 End Sub
+
+Private Function BidirectionalSyncAutoUpdateTargetsAreSafe( _
+    ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
+    ByVal srcHeaderMap As Object, ByVal srcToDstMap As Object, ByVal itemKeys As Collection, _
+    ByRef reason As String) As Boolean
+    Dim key As Variant, target As Range, source As Range, seen As Object, columnKey As String
+    reason = "CSV値の反映先を安全に確認できないため、対象項目を自動更新しません。"
+    On Error GoTo FailClosed
+    If wsSrc Is Nothing Or wsDst Is Nothing Or itemKeys Is Nothing Then Exit Function
+    If wsDst.ProtectContents Or srcRow < 2 Or dstRow < 2 Then Exit Function
+    Set seen = CreateObject("Scripting.Dictionary")
+    For Each key In itemKeys
+        If Not srcHeaderMap.Exists(CStr(key)) Or Not srcToDstMap.Exists(CStr(key)) Then Exit Function
+        Set source = wsSrc.Cells(srcRow, CLng(srcHeaderMap(CStr(key))))
+        Set target = wsDst.Cells(dstRow, CLng(srcToDstMap(CStr(key))))
+        columnKey = CStr(target.Column)
+        If seen.Exists(columnKey) Then Exit Function
+        seen.Add columnKey, True
+        If source.HasFormula Or source.MergeCells Then
+            reason = "目録CSVの対象セルが数式または結合セルのため、自動更新しません。"
+            Exit Function
+        End If
+        If target.HasFormula Or target.HasArray Or target.MergeCells Then
+            reason = "Excelの対象セルが数式・配列数式・結合セルのため、CSV値で上書きしません。"
+            Exit Function
+        End If
+        If IsError(target.Value2) Or IsError(source.Value2) Then
+            reason = "ExcelまたはCSVの対象セルがエラー値のため、自動更新しません。"
+            Exit Function
+        End If
+    Next key
+    BidirectionalSyncAutoUpdateTargetsAreSafe = True
+    Exit Function
+FailClosed:
+    Err.Clear
+End Function
 
 Private Sub BidirectionalSyncAppendGroupIssue( _
     ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, ByVal srcRow As Long, ByVal dstRow As Long, _
