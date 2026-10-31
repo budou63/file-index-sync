@@ -16,6 +16,7 @@ Private mFileIdSelectionSnapshotEpoch As Double
 '========================================================
 Private Sub Worksheet_Activate()
 
+    If Not IsNewFileStandardWorksheet(Me) Then Exit Sub
     On Error Resume Next
     Set mRowIdSelectionSnapshot = ExcelRowIdCaptureSelection(Application.ActiveCell, Me)
     CaptureFileIdSelectionSnapshot Application.ActiveCell, Me
@@ -27,6 +28,7 @@ Private Sub Worksheet_Change(ByVal Target As Range)
 
     Dim oldEnableEvents As Boolean
 
+    If Not IsNewFileStandardWorksheet(Me) Then Exit Sub
     oldEnableEvents = Application.EnableEvents
     On Error GoTo ExitHandler
     If Target Is Nothing Then Exit Sub
@@ -85,6 +87,7 @@ Private Sub Worksheet_SelectionChange(ByVal Target As Range)
     Dim clickMode As Boolean
     Dim targetRow As Long
 
+    If Not IsNewFileStandardWorksheet(Me) Then Exit Sub
     On Error GoTo ExitHandler
 
     oldEnableEvents = Application.EnableEvents

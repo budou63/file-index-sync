@@ -573,6 +573,7 @@ Public Sub ExcelRowIdHandleWorksheetChange(ByVal Target As Range, ByVal ws As Wo
 
     If Target Is Nothing Then Exit Sub
     If ws Is Nothing Then Exit Sub
+    If Not IsNewFileStandardWorksheet(ws) Then Exit Sub
     If Not (Target.Worksheet Is ws) Then Exit Sub
 
     oldEnableEvents = Application.EnableEvents

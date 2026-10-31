@@ -627,6 +627,7 @@ Public Sub 行移動_移動先クリックで確定(ByVal targetRow As Long)
     On Error GoTo ErrorHandler
 
     If Not gRowMoveClickModeActive Then Exit Sub
+    If Not IsNewFileStandardActiveSheet() Then Exit Sub
 
     oldScreenUpdating = Application.ScreenUpdating
     oldEnableEvents = Application.EnableEvents
@@ -687,7 +688,7 @@ End Sub
 
 Public Function IsRowMoveModeActive() As Boolean
 
-    IsRowMoveModeActive = gRowMoveModeActive
+    IsRowMoveModeActive = gRowMoveModeActive And IsNewFileStandardActiveSheet()
 
 End Function
 
@@ -697,9 +698,27 @@ Public Function IsRowMoveUndoAvailable() As Boolean
 
 End Function
 
+Public Function IsNewFileStandardWorksheet(ByVal ws As Worksheet) As Boolean
+    Dim expected As Worksheet
+    If ws Is Nothing Then Exit Function
+    If Not (ws.Parent Is ThisWorkbook) Then Exit Function
+    On Error Resume Next
+    Set expected = ThisWorkbook.Worksheets(SHEET_NEW_FILE_STANDARD)
+    On Error GoTo 0
+    If expected Is Nothing Then Exit Function
+    IsNewFileStandardWorksheet = (ws Is expected)
+End Function
+
+Private Function IsNewFileStandardActiveSheet() As Boolean
+    Dim activeWs As Worksheet
+    If TypeName(Application.ActiveSheet) <> "Worksheet" Then Exit Function
+    Set activeWs = Application.ActiveSheet
+    IsNewFileStandardActiveSheet = IsNewFileStandardWorksheet(activeWs)
+End Function
+
 Public Function IsRowMoveClickModeActive() As Boolean
 
-    IsRowMoveClickModeActive = gRowMoveClickModeActive
+    IsRowMoveClickModeActive = gRowMoveClickModeActive And IsNewFileStandardActiveSheet()
 
 End Function
 
@@ -722,6 +741,7 @@ Public Sub UpdateRowMoveSelectionRange(ByVal startRow As Long, ByVal endRow As L
     Dim lastDataRow As Long
 
     If Not gRowMoveModeActive Then Exit Sub
+    If Not IsNewFileStandardActiveSheet() Then Exit Sub
 
     If startRow > endRow Then
         tmp = startRow
@@ -868,6 +888,8 @@ Private Function ExecuteRowMoveToTargetRow( _
 
     ExecuteRowMoveToTargetRow = False
     If ws Is Nothing Then Exit Function
+    If Not IsNewFileStandardWorksheet(ws) Then Exit Function
+    If Not IsNewFileStandardActiveSheet() Then Exit Function
     If selectedStartRow < 2 Or selectedEndRow < selectedStartRow Then Exit Function
 
     blockRows = selectedEndRow - selectedStartRow + 1
@@ -6469,6 +6491,8 @@ Public Sub 新ファイル基準表_登録予定識別番号を自動クリア( 
     Dim errNumber As Long, errSource As String, errDescription As String
 
     If ws Is Nothing Or Target Is Nothing Then Exit Sub
+    If Not IsNewFileStandardWorksheet(ws) Then Exit Sub
+    If Not (Target.Worksheet Is ws) Then Exit Sub
     oldEnableEvents = Application.EnableEvents
     On Error GoTo ErrorHandler
     Application.EnableEvents = False
@@ -8209,6 +8233,7 @@ Public Sub ReindexSerial_NewFileStandard(Optional ByVal ws As Worksheet)
         Set targetWs = ws
     End If
 
+    If Not IsNewFileStandardWorksheet(targetWs) Then Exit Sub
     dummy = AssignMissingSerial_NewFileStandardCore(targetWs)
 
 SafeExit:
@@ -16308,6 +16333,7 @@ Public Sub 新ファイル基準表_最終編集情報を記録(ByVal Target As 
 
     If Target Is Nothing Then Exit Sub
     If ws Is Nothing Then Exit Sub
+    If Not IsNewFileStandardWorksheet(ws) Then Exit Sub
 
     previousEnableEvents = Application.EnableEvents
     eventsCaptured = True
