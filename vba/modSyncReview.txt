@@ -1629,6 +1629,15 @@ Failed:
     MsgBox "判断を記録できません: " & Err.Description, vbExclamation
 End Function
 
+Private Function ReviewBApprovalDecisionAllowed(ByVal item As Object, ByVal selectedRow As Long) As Boolean
+    Dim caseDecision As String, rowDecision As String
+    caseDecision = SyncReviewDecision(item)
+    rowDecision = SyncReviewDecision(item, selectedRow)
+    If caseDecision = "保留" Or caseDecision = "別物" Then Exit Function
+    If rowDecision = "保留" Or rowDecision = "別物" Then Exit Function
+    ReviewBApprovalDecisionAllowed = True
+End Function
+
 Public Function SyncReviewApprove(ByVal item As Object, ByVal selectedRow As Long) As Boolean
     Dim src As Worksheet, dst As Worksheet, sRow As Long, id As String, no As String, bar As String
     Dim oldText As String, newText As String, backup As String, failureText As String
@@ -1638,6 +1647,8 @@ Public Function SyncReviewApprove(ByVal item As Object, ByVal selectedRow As Lon
     On Error GoTo Failed
     If CStr(item("category")) <> "B" Then Err.Raise vbObjectError + 6110, , "ID競合や複数行の統合は自動承認できません。手動で確認してください。"
     If Not ReviewCurrent(item) Then Err.Raise vbObjectError + 6109, , "候補・行・データが変わりました。再読み込みしてください。"
+    If Not ReviewBApprovalDecisionAllowed(item, selectedRow) Then _
+        Err.Raise vbObjectError + 6160, , "保留または別物の判断が残っています。同一として処理せず、履歴を確認してください。"
     Set src = ThisWorkbook.Worksheets(CSV_SHEET): Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
     sRow = CLng(item("sourceRow"))
     If CStr(item("rows")) <> CStr(selectedRow) Then Err.Raise vbObjectError + 6111, , "候補が複数あります。既存行の統合は行いません。"
@@ -1679,17 +1690,21 @@ Public Function SyncReviewApprove(ByVal item As Object, ByVal selectedRow As Lon
     If MsgBox(oldText & vbCrLf & ReviewDescription(src, sRow, True) & vbCrLf & vbCrLf & newText & vbCrLf & _
         "実行しますか？", vbYesNo + vbQuestion + vbDefaultButton2, "最終確認") <> vbYes Then Exit Function
     If Not ReviewCurrent(item) Then Err.Raise vbObjectError + 6120, , "確認中にCSVまたはExcelの内容が変わりました。"
+    If Not ReviewBApprovalDecisionAllowed(item, selectedRow) Then _
+        Err.Raise vbObjectError + 6160, , "確認中に保留または別物の判断が記録されました。"
     If ThisWorkbook.ReadOnly Or dst.ProtectContents Then Err.Raise vbObjectError + 6121, , "ブックが読み取り専用またはシートが保護されています。"
     cols(1) = ReviewCol(dst, "ファイルID"): cols(2) = ReviewCol(dst, "ファイル番号")
     cols(3) = ReviewCol(dst, "バーコード番号"): cols(4) = ReviewCol(dst, "同期状態")
     For j = 1 To 4
         oldValues(j) = dst.Cells(selectedRow, cols(j)).Value2
         wasFormula(j) = dst.Cells(selectedRow, cols(j)).HasFormula
-        If wasFormula(j) Then oldFormulas(j) = dst.Cells(selectedRow, cols(j)).Formula
+        If wasFormula(j) Then Err.Raise vbObjectError + 6161, , "識別番号または同期状態が数式のため、上書きしません。"
         oldFormats(j) = dst.Cells(selectedRow, cols(j)).NumberFormat
     Next j
     backup = ReviewBackup()
     If Not ReviewCurrent(item) Then Err.Raise vbObjectError + 6137, , "バックアップ後に候補が変わりました。"
+    If Not ReviewBApprovalDecisionAllowed(item, selectedRow) Then _
+        Err.Raise vbObjectError + 6160, , "バックアップ後に保留または別物の判断が記録されました。"
     新ファイル基準表_ファイルID編集スナップショットを無効化
     prevEvents = Application.EnableEvents: Application.EnableEvents = False: changing = True
     For j = 1 To 3: dst.Cells(selectedRow, cols(j)).NumberFormat = "@": Next j
