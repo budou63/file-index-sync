@@ -738,6 +738,28 @@ Private Function CompareCellText(ByVal ws As Worksheet, ByVal rowNo As Long, ByV
         CompareCellText = shownText
 End Function
 
+Private Function CompareEditorValue(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal aliases As Variant) As String
+    Dim headerFound As Boolean, valueText As String
+    If rowNo < 2 Then
+        CompareEditorValue = "未取得"
+        Exit Function
+    End If
+    valueText = CompareCellText(ws, rowNo, aliases, headerFound)
+    If Not headerFound Then
+        CompareEditorValue = "未取得"
+    ElseIf Len(valueText) = 0 Then
+        CompareEditorValue = "（空欄）"
+    Else
+        CompareEditorValue = valueText
+    End If
+End Function
+
+Private Function CompareEditorInfo(ByVal src As Worksheet, ByVal sourceRow As Long, _
+                                   ByVal dst As Worksheet, ByVal excelRow As Long) As String
+    CompareEditorInfo = "【Excel側の最終編集者】" & CompareEditorValue(dst, excelRow, Array("最終編集者")) & vbCrLf & _
+        "【CSV側の更新者メンバーID】" & CompareEditorValue(src, sourceRow, Array("更新者メンバーID"))
+End Function
+
 Private Function CompareDisplayStatus(ByVal csvHeaderFound As Boolean, ByVal excelHeaderFound As Boolean, _
                                       ByVal csvText As String, ByVal excelText As String) As String
     If Not csvHeaderFound Or Not excelHeaderFound Then
@@ -869,6 +891,10 @@ Private Sub RenderComparison(ByVal item As Object, ByVal excelRow As Long)
         If Len(decisionComment) > 0 Then previousDecision = previousDecision & " / " & decisionComment
         mTxtDetails.Text = "【保留理由】" & CStr(item("reason")) & vbCrLf & _
             "【前回判断】" & previousDecision
+    End If
+    If CStr(item("category")) = "A" Or CStr(item("category")) = "B" Or _
+       CStr(item("category")) = "C" Then
+        mTxtDetails.Text = mTxtDetails.Text & vbCrLf & CompareEditorInfo(src, sourceRow, dst, excelRow)
     End If
 End Sub
 
