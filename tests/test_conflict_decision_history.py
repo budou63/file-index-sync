@@ -68,6 +68,30 @@ class DecisionHistory:
 
 
 class ConflictDecisionHistoryTests(unittest.TestCase):
+    def test_same_snapshot_reuses_each_of_three_judgments_in_model(self) -> None:
+        mismatch = Conflict(2026, "RID-1", "FILE-1", "保存期間", "5年", "10年")
+        for decision in (EXCEL, SYSTEM, HOLD):
+            with self.subTest(decision=decision):
+                history = DecisionHistory()
+                history.decide(mismatch, decision)
+                self.assertEqual(history.refresh([mismatch]), [(mismatch, decision)])
+
+    def test_change_of_either_side_does_not_reuse_old_judgment_in_model(self) -> None:
+        before = Conflict(2026, "RID-1", "FILE-1", "保存期間", "5年", "10年")
+        changes = (
+            Conflict(2026, "RID-1", "FILE-1", "保存期間", "7年", "10年"),
+            Conflict(2026, "RID-1", "FILE-1", "保存期間", "5年", "3年"),
+        )
+        for decision in (EXCEL, SYSTEM, HOLD):
+            for changed in changes:
+                with self.subTest(decision=decision, changed=changed):
+                    history = DecisionHistory()
+                    history.decide(before, decision)
+                    self.assertEqual(history.refresh([changed]), [(changed, UNRESOLVED)])
+                    original_key = before.history_key()
+                    assert original_key is not None
+                    self.assertEqual(history.saved[original_key], decision)
+
     def test_excel_decision_is_carried_through_first_second_and_third_run(self) -> None:
         history = DecisionHistory()
         mismatch = Conflict(2026, "RID-1", "FILE-1", "保存期間", "5年", "10年")
