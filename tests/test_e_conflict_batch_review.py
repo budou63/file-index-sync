@@ -76,10 +76,14 @@ class ESelectionOnlyContracts(unittest.TestCase):
         self.assertIn('If MsgBox(', approve)
 
     def test_e_mouse_keyboard_and_focus_changes_refresh_selected_flags(self):
-        for event in ('mLstCases_MouseUp', 'mLstCases_KeyUp', 'mLstCases_Change'):
+        for event in ('mLstCases_MouseUp', 'mLstCases_Change'):
             body = procedure(FORM, event)
             self.assertIn('If Not rendering And mCboCategory.ListIndex = 4 Then ShowCurrent', body)
             self.assertNotIn('BidirectionalSyncResolveConflict(', body)
+        keyup = procedure(FORM, 'mLstCases_KeyUp')
+        self.assertIn('If rendering Or mCboCategory.ListIndex <> 4 Then Exit Sub', keyup)
+        self.assertIn('If ESelectFocusedCase() Then ShowCurrent', keyup)
+        self.assertNotIn('BidirectionalSyncResolveConflict(', keyup)
         exit_body = procedure(FORM, 'mLstCases_Exit')
         self.assertIn('If Not rendering And mCboCategory.ListIndex = 4 Then', exit_body)
         self.assertIn('eRenderedFieldSelection = ""', exit_body)

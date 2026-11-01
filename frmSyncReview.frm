@@ -175,6 +175,7 @@ Private rendering As Boolean
 Private eDisplayHeaderMaps As Object
 Private eDisplayNormalizedKeys As Object
 Private eRenderedSelection As String
+Private ePlainArrowKey As Long
 Private eRenderedFieldSelection As String
 Private mDUnavailableReason As String
 Private Const COMPARE_FIELD_COUNT As Long = 9
@@ -1209,7 +1210,12 @@ Private Sub mLstCases_MouseDown(ByVal Button As Integer, ByVal Shift As Integer,
 End Sub
 
 Private Sub mLstCases_KeyDown(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
-    If Not rendering Then eRenderedSelection = ""
+    If rendering Then Exit Sub
+    eRenderedSelection = ""
+    ePlainArrowKey = 0
+    If mCboCategory.ListIndex = 4 And Shift = 0 Then
+        If KeyCode = vbKeyUp Or KeyCode = vbKeyDown Then ePlainArrowKey = CLng(KeyCode)
+    End If
 End Sub
 
 Private Sub mLstCases_Click()
@@ -1227,8 +1233,35 @@ Private Sub mLstCases_MouseUp(ByVal Button As Integer, ByVal Shift As Integer, _
     If Not rendering And mCboCategory.ListIndex = 4 Then ShowCurrent
 End Sub
 
+Private Function ESelectFocusedCase() As Boolean
+    Dim i As Long, focusIndex As Long
+    On Error GoTo Failed
+    focusIndex = mLstCases.ListIndex
+    If focusIndex < 0 Or focusIndex >= mLstCases.ListCount Then _
+        Err.Raise vbObjectError + 6162, , "キーボード移動先を確認できません。"
+    rendering = True
+    For i = 0 To mLstCases.ListCount - 1
+        mLstCases.Selected(i) = (i = focusIndex)
+    Next i
+    rendering = False
+    eRenderedSelection = ""
+    ESelectFocusedCase = True
+    Exit Function
+Failed:
+    rendering = False
+    EDisplayFailed Err.Description
+End Function
+
 Private Sub mLstCases_KeyUp(ByVal KeyCode As MSForms.ReturnInteger, ByVal Shift As Integer)
-    If Not rendering And mCboCategory.ListIndex = 4 Then ShowCurrent
+    Dim selectFocus As Boolean
+    If rendering Or mCboCategory.ListIndex <> 4 Then Exit Sub
+    selectFocus = (ePlainArrowKey <> 0 And ePlainArrowKey = CLng(KeyCode) And Shift = 0)
+    ePlainArrowKey = 0
+    If selectFocus Then
+        If ESelectFocusedCase() Then ShowCurrent
+    Else
+        ShowCurrent
+    End If
 End Sub
 
 Private Sub mLstCases_Exit(ByVal Cancel As MSForms.ReturnBoolean)
