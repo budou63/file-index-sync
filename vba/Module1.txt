@@ -17550,6 +17550,8 @@ Private Sub BidirectionalSyncStartContext( _
     Set context("ConflictCases") = conflictCases
     context.Add "StateRows", Empty
     Set context("StateRows") = CreateObject("Scripting.Dictionary")
+    context.Add "StateNonFormalRows", Empty
+    Set context("StateNonFormalRows") = CreateObject("Scripting.Dictionary")
     context.Add "StateReviewRows", Empty
     Set context("StateReviewRows") = CreateObject("Scripting.Dictionary")
     context.Add "StateTransferMap", Empty
@@ -23143,10 +23145,13 @@ End Sub
 ' 状態は既存の同一性照合が通った行だけを対象にする。行番号を永続キーにしない。
 Private Sub SyncStateTrackMatchedRow(ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet, _
     ByVal srcRow As Long, ByVal dstRow As Long, ByVal rowId As String, ByVal transferMap As Object)
-    Dim rows As Object
+    Dim rows As Object, nonFormalRows As Object
     If Not BidirectionalSyncDestinationRowIdIsUnique(wsDst, rowId, dstRow) Then _
         Err.Raise vbObjectError + 2900, , "同期状態の対象管理行IDが一意ではありません。"
     Set rows = mBidirectionalSyncContext("StateRows")
+    Set nonFormalRows = mBidirectionalSyncContext("StateNonFormalRows")
+    If StrComp(BidirectionalSyncCurrentMatchKind(), "正式ID一意一致", vbBinaryCompare) <> 0 Then _
+        nonFormalRows(rowId) = True
     If rows.Exists(rowId) Then
         If CLng(rows(rowId)) <> srcRow Then Err.Raise vbObjectError + 2901, , "複数CSV行が同じ管理行IDに対応しています。"
     Else
@@ -23357,20 +23362,28 @@ Private Sub SyncStateAlignCases(ByVal cases As Collection)
 End Sub
 
 Private Sub SyncStateApplyMatchedRows()
-    Dim rows As Object, transferMap As Object, rowMap As Object
+    Dim rows As Object, transferMap As Object, rowMap As Object, nonFormalRows As Object
     Dim key As Variant, wsSrc As Worksheet, wsDst As Worksheet
-    Dim dstRow As Long, cases As Collection
+    Dim dstRow As Long, statusCol As Long, cases As Collection
+    Dim oldStatus As String, calculatedStatus As String
     Set rows = mBidirectionalSyncContext("StateRows")
     If rows.Count = 0 Then Exit Sub
     Set wsSrc = ThisWorkbook.Worksheets(SHEET_MOKUROKU_CSV)
     Set wsDst = mBidirectionalSyncContext("DestinationSheet")
+    Set nonFormalRows = mBidirectionalSyncContext("StateNonFormalRows")
     Set transferMap = mBidirectionalSyncContext("StateTransferMap")
     Set rowMap = SyncStateCurrentDestinationRowMap(wsDst)
     Set cases = BidirectionalSyncConflictReviewCases(CLng(mBidirectionalSyncContext("TargetYear")))
+    statusCol = SyncStateFindStatusColumn(wsDst)
     For Each key In rows.Keys
         dstRow = SyncStateFindDestinationRowByMap(rowMap, CStr(key))
-        SyncStateWrite wsDst, dstRow, SyncStateCalculate(wsSrc, CLng(rows(key)), wsDst, dstRow, _
+        oldStatus = GetSyncStatusValue(wsDst, dstRow, statusCol)
+        calculatedStatus = SyncStateCalculate(wsSrc, CLng(rows(key)), wsDst, dstRow, _
             CStr(key), CLng(mBidirectionalSyncContext("TargetYear")), transferMap, cases)
+        If oldStatus = "要確認" Then
+            If calculatedStatus <> "同期済" Or nonFormalRows.Exists(CStr(key)) Then calculatedStatus = "要確認"
+        End If
+        SyncStateWrite wsDst, dstRow, calculatedStatus
     Next key
 End Sub
 
