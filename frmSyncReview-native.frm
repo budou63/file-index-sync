@@ -229,6 +229,7 @@ Private Sub BuildControls()
     mChkDelete.Caption = "選択したExcel行を削除対象にする"
     Set mLblStatus = EnsureControl("lblStatus", "Forms.Label.1")
     PlaceControl mLblStatus, 9, 333, 740, 21
+    mLblStatus.WordWrap = True
     mLblStatus.Caption = "フォームを開いただけでは変更しません。"
     Set mLblDWarning = EnsureControl("lblDWarning", "Forms.Label.1")
     PlaceControl mLblDWarning, 9, 356, 740, 21
@@ -1658,7 +1659,7 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         Else
             detailsHeight = 55
         End If
-        footerTop = Me.InsideHeight - 84
+        footerTop = Me.InsideHeight - 105
         detailsTop = footerTop - detailsHeight - 2
         listHeight = detailsTop - 85.5
         If listHeight < 150 Then listHeight = 150
@@ -1667,8 +1668,8 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         PlaceControl mTxtDetails, rightLeft, detailsTop, rightWidth, detailsHeight
         PlaceControl mLblESelection, 9, detailsTop + 2.5, leftWidth - 120, 19
         PlaceControl mCmdEClear, 9 + leftWidth - 110, detailsTop + 2.5, 108, 22
-        PlaceControl mLblStatus, 9, footerTop, availableWidth - 18, 21
-        PlaceControl mLblDWarning, 9, footerTop + 24, availableWidth - 18, 21
+        PlaceControl mLblStatus, 9, footerTop, availableWidth - 18, 40
+        PlaceControl mLblDWarning, 9, footerTop + 44, availableWidth - 18, 21
         mLblDWarning.Visible = False
         mFraCompare.Visible = False
         mLblESelection.Visible = True
@@ -1676,16 +1677,16 @@ Private Sub LayoutReviewForE(ByVal isE As Boolean)
         mCmdGoTo.Visible = False
         mCmdDelete.Visible = False
         mCmdClear.Visible = False
-        PlaceControl mCmdApprove, 9, footerTop + 23.5, 110, 21
+        PlaceControl mCmdApprove, 9, footerTop + 44, 110, 21
         mCmdApprove.Caption = "文書管理を採用"
-        PlaceControl mCmdOther, 124, footerTop + 23.5, 125, 21
+        PlaceControl mCmdOther, 124, footerTop + 44, 125, 21
         mCmdOther.Caption = "Excel基準表を採用"
-        PlaceControl mCmdHold, 254, footerTop + 23.5, 55, 21
+        PlaceControl mCmdHold, 254, footerTop + 44, 55, 21
         mCmdHold.Caption = "保留"
-        PlaceControl mCmdNext, 314, footerTop + 23.5, 100, 21
+        PlaceControl mCmdNext, 314, footerTop + 44, 100, 21
         mCmdNext.Caption = "次の未解決項目"
-        PlaceControl mCmdRefresh, 419, footerTop + 23.5, 75, 21
-        PlaceControl mCmdFinish, 499, footerTop + 23.5, 82, 21
+        PlaceControl mCmdRefresh, 419, footerTop + 44, 75, 21
+        PlaceControl mCmdFinish, 499, footerTop + 44, 82, 21
 
     Else
         Me.Width = 760

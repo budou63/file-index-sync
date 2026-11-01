@@ -147,7 +147,7 @@ class NormalDisplayTests(unittest.TestCase):
             "PlaceControl mLstRows, rightLeft, 79.5, rightWidth, listHeight",
             "PlaceControl mEColumnHeaders(i), headerLeft, 65, columnWidths(i), 14",
             "PlaceControl mTxtDetails, rightLeft, detailsTop, rightWidth, detailsHeight",
-            "PlaceControl mLblStatus, 9, footerTop, availableWidth - 18, 21",
+            "PlaceControl mLblStatus, 9, footerTop, availableWidth - 18, 40",
         ):
             self.assertIn(token, layout)
         self.assertIn("mLstRows.ColumnWidths = CStr(CLng(columnWidths(0)))", layout)
@@ -159,8 +159,8 @@ class NormalDisplayTests(unittest.TestCase):
         for (left, width), (next_left, _) in zip(top_row, top_row[1:]):
             self.assertLessEqual(left + width, next_left)
         self.assertLessEqual(top_row[-1][0] + top_row[-1][1], 900)
-        self.assertIn("footerTop = Me.InsideHeight - 84", layout)
-        self.assertIn("PlaceControl mCmdApprove, 9, footerTop + 23.5, 110, 21", layout)
+        self.assertIn("footerTop = Me.InsideHeight - 105", layout)
+        self.assertIn("PlaceControl mCmdApprove, 9, footerTop + 44, 110, 21", layout)
         for event_name in ("mCboEWindowSize_Change", "mCboEPaneSize_Change"):
             self.assertIn("ShowECategory True", procedure(event_name))
         for forbidden in ("SetWindowLong", "FindWindow", "CreateWindow", "PtrSafe"):
