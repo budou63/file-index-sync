@@ -29,11 +29,11 @@ def detect(csv, dest, year, indexed):
         dest_indexes = {k: defaultdict(list) for k in keys}
         for i, row in enumerate(csv):
             for k in keys:
-                if value(row, k) and (k != "no" or row["year"] == year):
+                if value(row, k) and row["year"] == year:
                     source_indexes[k][value(row, k)].append(i)
         for i, row in enumerate(dest):
             for k in keys:
-                if value(row, k) and (k != "no" or row["year"] == year):
+                if value(row, k) and row["year"] == year:
                     dest_indexes[k][value(row, k)].append(i)
 
     def other_match(row, source_index):
@@ -41,7 +41,7 @@ def detect(csv, dest, year, indexed):
             return any(any(i != source_index for i in source_indexes[k].get(value(row, k), ()))
                        for k in keys if value(row, k))
         return any(i != source_index and any(value(other, k) == value(row, k) and value(row, k) and
-                                             (k != "no" or other["year"] == year)
+                                             other["year"] == year
                                              for k in keys)
                    for i, other in enumerate(csv))
 
@@ -56,7 +56,7 @@ def detect(csv, dest, year, indexed):
         else:
             matches = [i for i, row in enumerate(dest)
                        if any(value(row, k) == value(source, k) and
-                              (k != "no" or row["year"] == year) for k in keys)]
+                              row["year"] == year for k in keys)]
         keepers = [i for i in matches if all(value(dest[i], k) == value(source, k) for k in keys)
                    and dest[i]["year"] == year and name(dest[i]) == name(source)]
         if len(keepers) != 1 or dest[keepers[0]]["status"] not in ("登録予定", "同期済"):
@@ -99,12 +99,15 @@ def test_d_oracle_cross_year_duplicates_and_candidate_safeguards():
     dest = [row("ID", "42", "barcode", "Folder"),
             row("ID", "00042", "barcode", "Another")]
     assert detect(csv, dest, 2026, False) == [(0, 0, (1,))]
-    # Global ID/barcode collisions remain unsafe; a cross-year number-only duplicate does not veto.
+    # BUD-151: other-year identifiers do not block D; same-year conflicts still do.
     for conflicting in (row("ID", "44", "unrelated", "Foreign", year=2025),
                         row("unrelated", "44", "barcode", "Foreign", year=2025)):
         changed = csv + [conflicting]
-        assert detect(changed, dest, 2026, False) == []
-        assert detect(changed, dest, 2026, True) == []
+        assert detect(changed, dest, 2026, False) == [(0, 0, (1,))]
+        assert detect(changed, dest, 2026, True) == [(0, 0, (1,))]
+        same_year = csv + [dict(conflicting, year=2026)]
+        assert detect(same_year, dest, 2026, False) == []
+        assert detect(same_year, dest, 2026, True) == []
     number_only_cross_year = csv + [row("unrelated", "00042", "unrelated", "Foreign", year=2025)]
     assert detect(number_only_cross_year, dest, 2026, False) == [(0, 0, (1,))]
     assert detect(number_only_cross_year, dest, 2026, True) == [(0, 0, (1,))]
@@ -177,8 +180,12 @@ def test_d_detector_uses_indexes_not_nested_sheet_scans():
     assert body.index('ReviewMapAdd csvIds') < body.index('If ReviewFiscal(src, sRow) <> yearValue')
     assert 'Set csvTargetNumbers = CreateObject("Scripting.Dictionary")' in body
     assert 'Set dstTargetNumbers = CreateObject("Scripting.Dictionary")' in body
-    assert 'If ReviewFiscal(src, sRow) = yearValue Then ReviewMapAdd csvTargetNumbers' in body
-    assert 'If ReviewFiscal(dst, dRow) = yearValue Then ReviewMapAdd dstTargetNumbers' in body
+    for side, row_var, maps in (("src", "sRow", ("csvIds", "csvBars", "csvTargetNumbers")),
+                                ("dst", "dRow", ("dstIds", "dstBars", "dstTargetNumbers"))):
+        guard = f"If ReviewFiscal({side}, {row_var}) = yearValue Then"
+        block = body.split(guard, 1)[1].split("End If", 1)[0]
+        for name in maps:
+            assert f"ReviewMapAdd {name}," in block
     assert 'ReviewOtherRowsMatch(csvTargetNumbers, fileNo, sRow)' in body
     assert 'ReviewMatchingRows(dstIds, dstBars, dstTargetNumbers, fid, barcode, fileNo)' in body
     assert 'ReviewOtherRowsMatch(csvTargetNumbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), sRow)' in body

@@ -214,6 +214,59 @@ Private Function ReviewYear(ByVal raw As String) As Long
     End Select
 End Function
 
+Public Sub ValidateFiscalDataRows(ByVal ws As Worksheet)
+    Dim warekiCol As Long, westernCol As Long, lastUsedCol As Long, lastUsedRow As Long, rowNo As Long
+    Dim warekiText As String, westernText As String, warekiYear As Long, westernYear As Long, reason As String
+    Dim lastCell As Range
+    ' 独立実行時にも現在の列配置・行数を確認する。
+    Set reviewHeaderCache = CreateObject("Scripting.Dictionary")
+    Set reviewLastCache = CreateObject("Scripting.Dictionary")
+    Set lastCell = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, LookAt:=xlPart, _
+        SearchOrder:=xlByRows, SearchDirection:=xlPrevious, SearchFormat:=False)
+    If lastCell Is Nothing Then Exit Sub
+    lastUsedRow = lastCell.Row
+    Set lastCell = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, LookAt:=xlPart, _
+        SearchOrder:=xlByColumns, SearchDirection:=xlPrevious, SearchFormat:=False)
+    lastUsedCol = lastCell.Column
+    warekiCol = ReviewCol(ws, "年度（和暦）", "年度(和暦)")
+    westernCol = ReviewCol(ws, "年度")
+    For rowNo = 2 To lastUsedRow
+        If Application.WorksheetFunction.CountA(ws.Range(ws.Cells(rowNo, 1), ws.Cells(rowNo, lastUsedCol))) > 0 Then
+            warekiText = ReviewFiscalDiagnosticValue(ws, rowNo, warekiCol)
+            westernText = ReviewFiscalDiagnosticValue(ws, rowNo, westernCol)
+            warekiYear = 0: westernYear = 0
+            If Len(warekiText) > 0 Then warekiYear = ReviewStrictAliasYear(warekiText)
+            If Len(westernText) > 0 Then westernYear = ReviewStrictAliasYear(westernText)
+            reason = ""
+            If warekiCol = 0 Then
+                reason = "年度（和暦）列がありません"
+            ElseIf Len(warekiText) = 0 Then
+                reason = "年度（和暦）が空欄です"
+            ElseIf warekiYear = 0 Or NormalizeYearValue(warekiText) <> warekiYear Then
+                reason = "年度（和暦）が不正です"
+            ElseIf Len(westernText) > 0 And (westernYear = 0 Or NormalizeYearValue(westernText) <> westernYear) Then
+                reason = "年度が不正です"
+            ElseIf westernYear > 0 And warekiYear <> westernYear Then
+                reason = "年度（和暦）と年度が一致しません"
+            End If
+            If Len(reason) > 0 Then
+                Err.Raise vbObjectError + 6155, , ws.Name & " の " & CStr(rowNo) & _
+                    " 行目: " & reason & "。修正してから再実行してください。" & vbCrLf & _
+                    "年度（和暦）: [" & warekiText & "] / 年度: [" & westernText & "]"
+            End If
+        End If
+    Next rowNo
+End Sub
+
+Private Function ReviewFiscalDiagnosticValue(ByVal ws As Worksheet, ByVal rowNo As Long, ByVal col As Long) As String
+    If col < 1 Then Exit Function
+    If IsError(ws.Cells(rowNo, col).Value2) Then
+        ReviewFiscalDiagnosticValue = "エラー値 " & ws.Cells(rowNo, col).Text
+    Else
+        ReviewFiscalDiagnosticValue = Trim$(CStr(ws.Cells(rowNo, col).Value2))
+    End If
+End Function
+
 Private Function ReviewFiscal(ByVal ws As Worksheet, ByVal r As Long) As Long
     ReviewFiscal = ReviewYear(ReviewValue(ws, r, ReviewCol(ws, "年度（和暦）", "年度(和暦)")))
     If ReviewFiscal = 0 Then ReviewFiscal = ReviewYear(ReviewValue(ws, r, ReviewCol(ws, "年度")))
@@ -609,6 +662,8 @@ Public Function SyncReviewCandidates(ByVal yearValue As Long) As Collection
     Set reviewLastCache = CreateObject("Scripting.Dictionary")
     Set src = ThisWorkbook.Worksheets(CSV_SHEET)
     Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
+    ValidateFiscalDataRows src
+    ValidateFiscalDataRows dst
     If ReviewCol(src, "ファイルID") = 0 Or ReviewCol(src, "ファイル番号") = 0 Or _
         ReviewCol(src, "バーコード番号") = 0 Or ReviewCol(dst, "同期状態") = 0 Or _
         ReviewCol(dst, "ファイルID") = 0 Or ReviewCol(dst, "ファイル番号") = 0 Or _
@@ -630,23 +685,27 @@ Public Function SyncReviewCandidates(ByVal yearValue As Long) As Collection
     dstLast = ReviewLast(dst)
     ReviewBuildManagementIdIndex dst
     For dRow = 2 To dstLast
-        ReviewMapAdd ids, ReviewField(dst, dRow, "ファイルID"), dRow
-        ReviewMapAdd bars, ReviewField(dst, dRow, "バーコード番号"), dRow
-        ReviewMapAdd numbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), dRow
-        ReviewMapAdd names, ReviewName(dst, dRow, False, True), dRow
-        ReviewMapAdd guides, ReviewName(dst, dRow, False, False), dRow
-        ReviewMapAdd folders, ReviewTextKey(ReviewValue(dst, dRow, ReviewCol(dst, "個別フォルダー", "個別フォルダ", "タイトル"))), dRow
+        If ReviewFiscal(dst, dRow) = yearValue Then
+            ReviewMapAdd ids, ReviewField(dst, dRow, "ファイルID"), dRow
+            ReviewMapAdd bars, ReviewField(dst, dRow, "バーコード番号"), dRow
+            ReviewMapAdd numbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), dRow
+            ReviewMapAdd names, ReviewName(dst, dRow, False, True), dRow
+            ReviewMapAdd guides, ReviewName(dst, dRow, False, False), dRow
+            ReviewMapAdd folders, ReviewTextKey(ReviewValue(dst, dRow, ReviewCol(dst, "個別フォルダー", "個別フォルダ", "タイトル"))), dRow
+        End If
     Next dRow
     For sRow = 2 To srcLast
         fid = ReviewField(src, sRow, "ファイルID")
         bar = ReviewField(src, sRow, "バーコード番号")
         no = ReviewPadding(ReviewField(src, sRow, "ファイル番号"))
         sourceFiscalYear = ReviewFiscal(src, sRow)
-        ReviewMapAdd csvIds, fid, sRow
-        ReviewMapAdd csvBars, bar, sRow
-        ReviewMapAdd csvNumbers, no, sRow
-        ReviewMapAdd csvNames, ReviewName(src, sRow, True, True), sRow
-        ReviewMapAdd csvFolders, ReviewTextKey(ReviewValue(src, sRow, ReviewCol(src, "タイトル", "個別フォルダー"))), sRow
+        If sourceFiscalYear = yearValue Then
+            ReviewMapAdd csvIds, fid, sRow
+            ReviewMapAdd csvBars, bar, sRow
+            ReviewMapAdd csvNumbers, no, sRow
+            ReviewMapAdd csvNames, ReviewName(src, sRow, True, True), sRow
+            ReviewMapAdd csvFolders, ReviewTextKey(ReviewValue(src, sRow, ReviewCol(src, "タイトル", "個別フォルダー"))), sRow
+        End If
         If sourceFiscalYear > 0 Then
             If Len(bar) > 0 Then ReviewMapAdd csvYearBars, ReviewYearIndexKey(sourceFiscalYear, bar), sRow
             If Len(no) > 0 Then ReviewMapAdd csvYearNumbers, ReviewYearIndexKey(sourceFiscalYear, no), sRow
@@ -798,6 +857,8 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
     Set reviewLastCache = CreateObject("Scripting.Dictionary")
     Set src = ThisWorkbook.Worksheets(CSV_SHEET)
     Set dst = ThisWorkbook.Worksheets(DEST_SHEET)
+    ValidateFiscalDataRows src
+    ValidateFiscalDataRows dst
     If ReviewCol(src, "ファイルID") = 0 Or ReviewCol(src, "ファイル番号") = 0 Or _
        ReviewCol(src, "バーコード番号") = 0 Or ReviewCol(src, "年度（和暦）", "年度(和暦)", "年度") = 0 Or _
        ReviewCol(src, "作成年度（和暦）", "作成年度(和暦)") = 0 Or _
@@ -814,23 +875,27 @@ Public Function SyncReviewCopyIdCandidates(ByVal yearValue As Long) As Collectio
         Err.Raise vbObjectError + 6141, , "D候補判定に必要な見出しが不足または曖昧です。"
 
     srcLast = ReviewLast(src): dstLast = ReviewLast(dst)
-    datasetSignature = ReviewCopyDatasetSignature(src, dst)
+    datasetSignature = ReviewCopyDatasetSignature(src, dst, yearValue)
     Set csvIds = CreateObject("Scripting.Dictionary")
     Set csvBars = CreateObject("Scripting.Dictionary")
     Set csvTargetNumbers = CreateObject("Scripting.Dictionary")
     Set dstIds = CreateObject("Scripting.Dictionary")
     Set dstBars = CreateObject("Scripting.Dictionary")
     Set dstTargetNumbers = CreateObject("Scripting.Dictionary")
-    ' IDs and barcodes remain global safety keys; file numbers are scoped to the selected fiscal year.
+    ' 識別番号の重複確認は対象年度の中で行う。
     For sRow = 2 To srcLast
-        ReviewMapAdd csvIds, ReviewField(src, sRow, "ファイルID"), sRow
-        ReviewMapAdd csvBars, ReviewField(src, sRow, "バーコード番号"), sRow
-        If ReviewFiscal(src, sRow) = yearValue Then ReviewMapAdd csvTargetNumbers, ReviewPadding(ReviewField(src, sRow, "ファイル番号")), sRow
+        If ReviewFiscal(src, sRow) = yearValue Then
+            ReviewMapAdd csvIds, ReviewField(src, sRow, "ファイルID"), sRow
+            ReviewMapAdd csvBars, ReviewField(src, sRow, "バーコード番号"), sRow
+            ReviewMapAdd csvTargetNumbers, ReviewPadding(ReviewField(src, sRow, "ファイル番号")), sRow
+        End If
     Next sRow
     For dRow = 2 To dstLast
-        ReviewMapAdd dstIds, ReviewField(dst, dRow, "ファイルID"), dRow
-        ReviewMapAdd dstBars, ReviewField(dst, dRow, "バーコード番号"), dRow
-        If ReviewFiscal(dst, dRow) = yearValue Then ReviewMapAdd dstTargetNumbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), dRow
+        If ReviewFiscal(dst, dRow) = yearValue Then
+            ReviewMapAdd dstIds, ReviewField(dst, dRow, "ファイルID"), dRow
+            ReviewMapAdd dstBars, ReviewField(dst, dRow, "バーコード番号"), dRow
+            ReviewMapAdd dstTargetNumbers, ReviewPadding(ReviewField(dst, dRow, "ファイル番号")), dRow
+        End If
     Next dRow
     For sRow = 2 To srcLast
         If ReviewFiscal(src, sRow) <> yearValue Then GoTo NextCopySource
@@ -896,8 +961,8 @@ NextCopySource:
     Set SyncReviewCopyIdCandidates = cases
 End Function
 
-Private Function ReviewCopySheetSignature(ByVal ws As Worksheet) As String
-    Dim lastRow As Long, lastCol As Long, col As Long, rowNo As Long
+Private Function ReviewCopySheetSignature(ByVal ws As Worksheet, ByVal yearValue As Long) As String
+    Dim lastRow As Long, lastCol As Long, col As Long, rowNo As Long, count As Long
     Dim headerText As String, valueText As String, parts() As String
     lastRow = ReviewLast(ws)
     lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
@@ -912,13 +977,17 @@ Private Function ReviewCopySheetSignature(ByVal ws As Worksheet) As String
     ReDim parts(0 To lastRow - 1)
     parts(0) = ws.Name & "|" & ReviewDigest(headerText)
     For rowNo = 2 To lastRow
-        parts(rowNo - 1) = ReviewDigest(ReviewSignature(ws, rowNo))
+        If ReviewFiscal(ws, rowNo) = yearValue Then
+            count = count + 1
+            parts(count) = ReviewDigest(ReviewSignature(ws, rowNo))
+        End If
     Next rowNo
+    ReDim Preserve parts(0 To count)
     ReviewCopySheetSignature = ReviewDigest(Join(parts, "|"))
 End Function
 
-Private Function ReviewCopyDatasetSignature(ByVal src As Worksheet, ByVal dst As Worksheet) As String
-    ReviewCopyDatasetSignature = ReviewDigest(ReviewCopySheetSignature(src) & "|" & ReviewCopySheetSignature(dst))
+Private Function ReviewCopyDatasetSignature(ByVal src As Worksheet, ByVal dst As Worksheet, ByVal yearValue As Long) As String
+    ReviewCopyDatasetSignature = ReviewDigest(ReviewCopySheetSignature(src, yearValue) & "|" & ReviewCopySheetSignature(dst, yearValue))
 End Function
 
 Private Function ReviewCopyCollectionHasRow(ByVal rows As Collection, ByVal rowNo As Long) As Boolean
@@ -1663,14 +1732,14 @@ Public Function SyncReviewApprove(ByVal item As Object, ByVal selectedRow As Lon
     bar = ReviewField(src, sRow, "バーコード番号")
     If Len(id) = 0 Or Len(no) = 0 Or Len(bar) = 0 Then Err.Raise vbObjectError + 6115, , "3つの識別番号が揃っていません。"
     For i = 2 To ReviewLast(src)
-        If i <> sRow Then
+        If i <> sRow And ReviewFiscal(src, i) = CLng(item("year")) Then
             If ReviewField(src, i, "ファイルID") = id Or ReviewField(src, i, "バーコード番号") = bar Or _
                ReviewPadding(ReviewField(src, i, "ファイル番号")) = ReviewPadding(no) Then _
                Err.Raise vbObjectError + 6116, , "CSV側の識別番号が一意ではありません。"
         End If
     Next i
     For i = 2 To ReviewLast(dst)
-        If i <> selectedRow Then
+        If i <> selectedRow And ReviewFiscal(dst, i) = CLng(item("year")) Then
             If ReviewField(dst, i, "ファイルID") = id Or ReviewField(dst, i, "バーコード番号") = bar Or _
                ReviewPadding(ReviewField(dst, i, "ファイル番号")) = ReviewPadding(no) Then _
                Err.Raise vbObjectError + 6117, , "他のExcel行と識別番号が重なります。統合せず保留してください。"

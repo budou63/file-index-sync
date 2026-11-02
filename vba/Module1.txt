@@ -2791,7 +2791,7 @@ Private Sub PlaceStep2NewRowsNearGroups(ByVal wsDst As Worksheet, ByVal appended
     Set headers = CreateObject("Scripting.Dictionary")
     BuildHeaderMap wsDst, GetLastHeaderCol(wsDst), headers
     For Each rowKey In appendedRowKeys
-        currentRow = FindStep2RowByFileKey(wsDst, headers, CStr(rowKey))
+        currentRow = FindStep2RowByFileKey(wsDst, headers, CStr(rowKey), targetYearValue)
         If currentRow < 2 Then Err.Raise vbObjectError + 2614, , "追加した新規行を再特定できません。"
         insertRow = FindStep2NearbyInsertRow(wsDst, currentRow, targetYearValue)
         If insertRow < 2 Then Err.Raise vbObjectError + 2615, , "新規行の差し込み位置を判定できません。"
@@ -2804,19 +2804,25 @@ Private Sub PlaceStep2NewRowsNearGroups(ByVal wsDst As Worksheet, ByVal appended
 
 End Sub
 
-Private Function FindStep2RowByFileKey(ByVal ws As Worksheet, ByVal headers As Object, ByVal rowKey As String) As Long
+Private Function FindStep2RowByFileKey(ByVal ws As Worksheet, ByVal headers As Object, ByVal rowKey As String, _
+    ByVal targetYearValue As Long) As Long
 
     Dim rowNo As Long
     Dim lastRow As Long
+    Dim warekiCol As Long, yearCol As Long
 
     If ws Is Nothing Then Exit Function
     If headers Is Nothing Then Exit Function
-    If Len(rowKey) = 0 Then Exit Function
+    If Len(rowKey) = 0 Or targetYearValue <= 0 Then Exit Function
     lastRow = Step2GetLastDataRow(ws)
+    warekiCol = FindHeaderColumn(ws, GetLastHeaderCol(ws), Array("年度（和暦）", "年度(和暦)"))
+    yearCol = FindHeaderColumn(ws, GetLastHeaderCol(ws), Array("年度"))
     For rowNo = 2 To lastRow
-        If BuildFileKeyFromSheetRow(ws, rowNo, headers) = rowKey Then
-            FindStep2RowByFileKey = rowNo
-            Exit Function
+        If GetNormalizedYearFromRow(ws, rowNo, warekiCol, yearCol) = targetYearValue Then
+            If BuildFileKeyFromSheetRow(ws, rowNo, headers) = rowKey Then
+                If FindStep2RowByFileKey <> 0 Then Err.Raise vbObjectError + 2614, , "追加行の識別番号が対象年度内で重複しています。"
+                FindStep2RowByFileKey = rowNo
+            End If
         End If
     Next rowNo
 
@@ -5730,6 +5736,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
             headerDiagnostics
     End If
 
+    ValidateFiscalDataRows wsSrc
+    ValidateFiscalDataRows wsDst
+
     ' 主要表示列（左側に寄せる列）
     ' 差し替えポイント: 列順定義は専用関数で一元管理
     Step2PreflightHeaderAmbiguity wsSrc, srcLastCol, srcLastRow
@@ -5739,9 +5748,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
 
     ' ユーザー管理列（CSV上書き対象外）
     baselineUserManagedHeaders = Array("通し番号", "キャビネット番号", "ｎ＋1", "保存番号", "廃棄年月日", "同期状態", "最終編集者", "最終編集日時")
-
     ' 左側に追加したい独自列（必要時にここへ追記）
     additionalLeftDisplayHeaders = Array()
+    Step2PreflightFormulaReorder wsDst, wsSrc, displayHeaders, additionalLeftDisplayHeaders, baselineUserManagedHeaders
     If wsDst.FilterMode Then
         columnOrderMap = BuildColumnOrderMap(wsDst, displayHeaders, additionalLeftDisplayHeaders, leftFixedCount, shouldReorderColumns)
         If shouldReorderColumns Then Err.Raise vbObjectError + 2612, , _
@@ -5810,9 +5819,9 @@ Public Sub 手順2_新ファイル基準表を作成する()
     BuildExistingRowMap wsDst, dstLastRow, existingRowMap, targetYearValue
     BuildStep2IdentityIndex wsSrc, srcLastRow, srcLastCol, targetYearValue, _
         sourceFullKeyMap, sourceFileIdMap, sourceIdBarcodeMap, sourceFileNoMap, sourceFileNoPaddingMap, sourceBarcodeMap
-    BuildStep2IdentityIndex wsDst, dstLastRow, GetLastHeaderCol(wsDst), 0, _
+    BuildStep2IdentityIndex wsDst, dstLastRow, GetLastHeaderCol(wsDst), targetYearValue, _
         destFullKeyMap, destFileIdMap, destIdBarcodeMap, destFileNoMap, destFileNoPaddingMap, destBarcodeMap
-    BuildDestinationAllNameMap wsDst, dstLastRow, GetLastHeaderCol(wsDst), 0, destAllNameMap
+    BuildDestinationAllNameMap wsDst, dstLastRow, GetLastHeaderCol(wsDst), targetYearValue, destAllNameMap
     sourceFileIdCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイルID"))
     sourceFileNoCol = FindHeaderColumn(wsSrc, srcLastCol, Array("ファイル番号"))
     sourceBarcodeCol = FindHeaderColumn(wsSrc, srcLastCol, Array("バーコード番号"))
@@ -6321,17 +6330,12 @@ ContinueNextSourceRow:
         Next srcRow
     End If
 
-    ' 5) 主要列だけ左側へ並べ直し（それ以外は削除せず後ろに残す）
-    ' 高速化対応: Cut/Insert廃止済みのため Shapes退避/復元は行わない
-    ' 高速化対応: 配列一括並び替えを実行
+    ' 5) 最終の列順を検査する。CSV整形中は配列の値書戻しを行わない。
     columnOrderMap = BuildColumnOrderMap(wsDst, displayHeaders, additionalLeftDisplayHeaders, leftFixedCount, shouldReorderColumns)
 
-    ' 高速化対応: 実際に列順変更がある場合のみテンプレート退避/再適用を行う
+    ' 事前検査を通過後も、想定外の列順変更を検出した場合は値の一括書戻しをしない。
     If shouldReorderColumns Then
-        dstLastCol = GetLastHeaderCol(wsDst)
-        CreateValidationTemplateSheet wsDst, dstLastCol, validationTemplateMap, wsValidationTemplate
-        CreateFormatAndWidthTemplate wsDst, dstLastCol, formatTemplateMap, columnWidthMap, wsFormatTemplate
-        ReorderSheetColumnsByMap wsDst, columnOrderMap
+        Err.Raise vbObjectError + 2626, , "予期しない列順変更を検出しました。保存せず終了し、復旧コピーを確認してください。"
     End If
 
     ' 6) 「毎年度利用区分」表示値変換と2色名同期（更新行＋新規行）
@@ -6366,11 +6370,7 @@ ContinueNextSourceRow:
 
     ' 10) 他年度の既存データを保護するため、通し番号の全体再採番は手動マクロに委ねる
 
-    ' 11) 高速化対応: 実際に列順変更があった場合のみ再適用
-    If shouldReorderColumns Then
-        ReapplyValidationFromTemplate wsDst, validationTemplateMap, wsValidationTemplate
-        ReapplyFormatAndWidthFromTemplate wsDst, formatTemplateMap, columnWidthMap, wsFormatTemplate
-    End If
+    ' CSV整形では列全体の書式・入力規則の再適用は行わない。
 
     ' 書式再適用後に、対象年度の前回差分表示をリセットしてから今回の結果を文字色で表示する。
     serialCol = FindHeaderColumn(wsDst, GetLastHeaderCol(wsDst), GetStep2HeaderCandidates("通し番号"))
@@ -7401,7 +7401,7 @@ End Sub
 Private Sub Step2PreflightSimilarNameColumns(ByVal wsSrc As Worksheet, ByVal srcLastRow As Long, _
     ByVal srcLastCol As Long, ByVal wsDst As Worksheet, ByVal dstLastCol As Long, ByVal targetYear As Long)
     Dim required As Variant, item As Variant, srcIdCol As Long, dstIdCol As Long
-    Dim srcWarekiCol As Long, srcYearCol As Long, dstLastRow As Long, rowNo As Long
+    Dim srcWarekiCol As Long, srcYearCol As Long, dstWarekiCol As Long, dstYearCol As Long, dstLastRow As Long, rowNo As Long
     Dim existingIds As Object, id As String, missingNameColumn As Boolean
     required = Array("作成年度（和暦）", "分類名２", "分類名３", "タイトル")
     For Each item In required
@@ -7418,9 +7418,13 @@ Private Sub Step2PreflightSimilarNameColumns(ByVal wsSrc As Worksheet, ByVal src
     Set existingIds = CreateObject("Scripting.Dictionary")
     If dstIdCol > 0 Then
         dstLastRow = Step2GetLastDataRow(wsDst)
+        dstWarekiCol = FindHeaderColumn(wsDst, dstLastCol, GetStep2HeaderCandidates("年度（和暦）"))
+        dstYearCol = FindHeaderColumn(wsDst, dstLastCol, Array("年度"))
         For rowNo = 2 To dstLastRow
-            id = GetTrimmedCell(wsDst, rowNo, dstIdCol)
-            If Len(id) > 0 Then existingIds(id) = True
+            If GetNormalizedYearFromRow(wsDst, rowNo, dstWarekiCol, dstYearCol) = targetYear Then
+                id = GetTrimmedCell(wsDst, rowNo, dstIdCol)
+                If Len(id) > 0 Then existingIds(id) = True
+            End If
         Next rowNo
     End If
     For rowNo = 2 To srcLastRow
@@ -10108,6 +10112,53 @@ End Function
 '========================================================
 ' 高速化対応: 表示見出し順から列並びマップを作成
 '========================================================
+Private Sub Step2PreflightFormulaReorder(ByVal wsDst As Worksheet, ByVal wsSrc As Worksheet, _
+    ByVal displayHeaders As Variant, ByVal additionalHeaders As Variant, ByVal managedHeaders As Variant)
+    Dim map As Variant, shouldReorder As Boolean, possibleReorder As Boolean, leftCount As Long
+    Dim headers As Object, header As Variant, srcCol As Long, text As String
+    Set headers = CreateObject("Scripting.Dictionary")
+    BuildHeaderMap wsDst, GetLastHeaderCol(wsDst), headers
+    map = BuildColumnOrderMap(wsDst, displayHeaders, additionalHeaders, leftCount, shouldReorder)
+    possibleReorder = shouldReorder
+    For Each header In managedHeaders
+        If Not headers.Exists(CanonicalHeaderName(CStr(header))) Then
+            If Step2HeaderAffectsColumnOrder(CStr(header), displayHeaders, additionalHeaders) Then possibleReorder = True
+        End If
+    Next header
+    For srcCol = 1 To GetLastHeaderCol(wsSrc)
+        text = Trim$(CStr(wsSrc.Cells(1, srcCol).Value2))
+        If Len(text) > 0 And Not ExcelRowIdIsHeaderName(text) Then
+            If Not headers.Exists(CanonicalHeaderName(text)) Then
+                If Step2HeaderAffectsColumnOrder(text, displayHeaders, additionalHeaders) Then possibleReorder = True
+            End If
+        End If
+    Next srcCol
+    If possibleReorder Then
+        Err.Raise vbObjectError + 2625, , _
+            "列の並べ替えまたは見出し追加が必要なため、数式・個別書式を保護して更新前に停止しました。" & vbCrLf & _
+            "基準表の列順と見出しを確認してください。"
+    End If
+End Sub
+
+Private Function Step2HeaderAffectsColumnOrder(ByVal header As String, ByVal displayHeaders As Variant, _
+    ByVal additionalHeaders As Variant) As Boolean
+    Dim groups As Variant, headerGroup As Variant, name As Variant, aliasName As Variant, candidates As Variant
+    groups = Array(displayHeaders, additionalHeaders)
+    For Each headerGroup In groups
+        If HasArrayElements(headerGroup) Then
+            For Each name In headerGroup
+                candidates = GetStep2HeaderCandidates(CStr(name))
+                For Each aliasName In candidates
+                    If StrComp(CanonicalHeaderName(CStr(aliasName)), CanonicalHeaderName(header), vbTextCompare) = 0 Then
+                        Step2HeaderAffectsColumnOrder = True
+                        Exit Function
+                    End If
+                Next aliasName
+            Next name
+        End If
+    Next group
+End Function
+
 Private Function BuildColumnOrderMap( _
     ByVal ws As Worksheet, _
     ByVal displayHeaders As Variant, _
@@ -16591,11 +16642,11 @@ Public Function 双方向編集_項目差異一覧を抽出( _
 
     BuildStep2IdentityIndex wsSrc, srcLastRow, srcLastCol, targetYearValue, _
         sourceFullKeyMap, sourceFileIdMap, sourceIdBarcodeMap, sourceFileNoMap, sourceFileNoPaddingMap, sourceBarcodeMap
-    BuildStep2IdentityIndex wsDst, dstLastRow, dstLastCol, 0, _
+    BuildStep2IdentityIndex wsDst, dstLastRow, dstLastCol, targetYearValue, _
         destFullKeyMap, destFileIdMap, destIdBarcodeMap, destFileNoMap, destFileNoPaddingMap, destBarcodeMap
     BidirectionalDiffBuildSourceNameSyncMapCached wsSrc, srcLastRow, sourceHeaderMap, sourceNameSyncMap, targetYearValue
     BidirectionalDiffBuildDestinationNameSyncMapCached wsDst, dstLastRow, destHeaderMap, destNameSyncMap, targetYearValue
-    BidirectionalDiffBuildDestinationAllNameMapCached wsDst, dstLastRow, destHeaderMap, 0, destAllNameMap
+    BidirectionalDiffBuildDestinationAllNameMapCached wsDst, dstLastRow, destHeaderMap, targetYearValue, destAllNameMap
 
     lines.Add BidirectionalDiffCsvLine(Array( _
         "対象年度", "同一性判定", "判定", "目録CSV行", "新ファイル基準表行", "Excel管理行ID", _
@@ -22146,17 +22197,24 @@ End Function
 Private Function BidirectionalSyncBatchSourceKeyIsUnique( _
     ByVal wsSrc As Worksheet, ByVal sourceRow As Long, ByVal stableKey As String) As Boolean
     Dim headerMap As Object, rowNo As Long, currentKey As String, matches As Long
+    Dim warekiCol As Long, yearCol As Long, targetYear As Long
     On Error GoTo Invalid
     If sourceRow < 2 Or Len(stableKey) = 0 Then Exit Function
+    warekiCol = FindHeaderColumn(wsSrc, GetLastHeaderCol(wsSrc), Array("年度（和暦）", "年度(和暦)"))
+    yearCol = FindHeaderColumn(wsSrc, GetLastHeaderCol(wsSrc), Array("年度"))
+    targetYear = GetNormalizedYearFromRow(wsSrc, sourceRow, warekiCol, yearCol)
+    If targetYear <= 0 Then Exit Function
     Set headerMap = CreateObject("Scripting.Dictionary")
     BuildHeaderMap wsSrc, GetLastHeaderCol(wsSrc), headerMap
     For rowNo = 2 To GetLastUsedRow(wsSrc)
+        If GetNormalizedYearFromRow(wsSrc, rowNo, warekiCol, yearCol) <> targetYear Then GoTo NextSourceKeyRow
         currentKey = BuildFileKeyFromSheetRow(wsSrc, rowNo, headerMap)
         If Len(currentKey) = 0 Then currentKey = BuildFolderNameSyncKeyFromSheetRow(wsSrc, rowNo, GetLastHeaderCol(wsSrc))
         If StrComp(currentKey, stableKey, vbBinaryCompare) = 0 Then
             matches = matches + 1
             If rowNo <> sourceRow Or matches > 1 Then Exit Function
         End If
+NextSourceKeyRow:
     Next rowNo
     BidirectionalSyncBatchSourceKeyIsUnique = (matches = 1)
     Exit Function
@@ -22967,11 +23025,11 @@ Private Sub BidirectionalSyncRunForYear(ByVal targetYearValue As Long)
 
     BuildStep2IdentityIndex wsSrc, srcLastRow, srcLastCol, targetYearValue, _
         sourceFullKeyMap, sourceFileIdMap, sourceIdBarcodeMap, sourceFileNoMap, sourceFileNoPaddingMap, sourceBarcodeMap
-    BuildStep2IdentityIndex wsDst, dstLastRow, dstLastCol, 0, _
+    BuildStep2IdentityIndex wsDst, dstLastRow, dstLastCol, targetYearValue, _
         destFullKeyMap, destFileIdMap, destIdBarcodeMap, destFileNoMap, destFileNoPaddingMap, destBarcodeMap
     BidirectionalDiffBuildSourceNameSyncMapCached wsSrc, srcLastRow, sourceHeaderMap, sourceNameSyncMap, targetYearValue
     BidirectionalDiffBuildDestinationNameSyncMapCached wsDst, dstLastRow, destHeaderMap, destNameSyncMap, targetYearValue
-    BidirectionalDiffBuildDestinationAllNameMapCached wsDst, dstLastRow, destHeaderMap, 0, destAllNameMap
+    BidirectionalDiffBuildDestinationAllNameMapCached wsDst, dstLastRow, destHeaderMap, targetYearValue, destAllNameMap
 
     For srcRow = 2 To srcLastRow
         srcRowYearValue = GetNormalizedYearFromRow(wsSrc, srcRow, srcWarekiCol, srcYearCol)
