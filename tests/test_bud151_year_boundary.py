@@ -24,6 +24,9 @@ class YearBoundary(unittest.TestCase):
   self.assertIn('For srcCol = 1 To GetLastHeaderCol(wsSrc)',guard)
   self.assertNotIn('SpecialCells',guard)
   helper=proc(MOD,'Step2HeaderAffectsColumnOrder')
+  self.assertIn('For Each headerGroup In groups',helper)
+  self.assertIn('Next headerGroup',helper)
+  self.assertNotIn('Next group',helper)
   self.assertIn('GetStep2HeaderCandidates',helper)
   self.assertIn('CanonicalHeaderName',helper)
  def test_review_candidate_indexes_scoped_to_target_year(self):

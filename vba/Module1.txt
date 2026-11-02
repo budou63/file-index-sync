@@ -10156,7 +10156,7 @@ Private Function Step2HeaderAffectsColumnOrder(ByVal header As String, ByVal dis
                 Next aliasName
             Next name
         End If
-    Next group
+    Next headerGroup
 End Function
 
 Private Function BuildColumnOrderMap( _
